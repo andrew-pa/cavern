@@ -1,0 +1,343 @@
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// A handle allocator implemented using a fixed-size atomic bit set for concurrent handle allocation.
+///
+/// This structure allows for lock-free allocation and deallocation of handles,
+/// represented as bits in an atomic bit set. Handles are indices into the bit set,
+/// and are of type `u32`.
+///
+pub struct HandleAllocator {
+    /// Vector of atomic words representing the bits.
+    bits: Vec<AtomicUsize>,
+    /// The total number of bits in the bit set.
+    max_handle: u32,
+}
+
+impl HandleAllocator {
+    /// Creates a new `AtomicBitSet` with the given size.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The total number of bits (handles) in the bit set.
+    #[must_use]
+    pub fn new(max_handle: u32) -> Self {
+        // Calculate the number of `usize` words needed to cover `size` bits.
+        let num_words = max_handle.div_ceil(usize::BITS);
+        // Initialize the vector with zeroed atomic words.
+        let mut bits = Vec::with_capacity(num_words as usize);
+        for _ in 0..num_words {
+            bits.push(AtomicUsize::new(0));
+        }
+        Self { bits, max_handle }
+    }
+
+    /// Allocates the next available handle.
+    ///
+    /// Scans the bit set to find the first zero bit, atomically sets it to one,
+    /// and returns its index as the allocated handle.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(u32)` - The index of the allocated handle.
+    /// * `None` - If no handles are available.
+    #[must_use]
+    pub fn next_handle(&self) -> Option<u32> {
+        for word_index in 0..self.bits.len() {
+            let word = &self.bits[word_index];
+            let mut current = word.load(Ordering::Relaxed);
+
+            loop {
+                // If all bits are set, move to the next word.
+                if current == usize::MAX {
+                    break;
+                }
+
+                // Find the first zero bit in the current word.
+                let zero_bit = (!current).trailing_zeros() as usize;
+                let bit_index: u32 = (word_index * usize::BITS as usize + zero_bit)
+                    .try_into()
+                    .expect("bit index is < 2^32");
+
+                // Check if the bit index is within bounds.
+                if bit_index >= self.max_handle {
+                    // Out of bounds, no more handles.
+                    break;
+                }
+
+                // Create a mask to set the zero bit.
+                let mask = 1 << zero_bit;
+                let new = current | mask;
+
+                // Attempt to atomically set the bit.
+                match word.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Relaxed)
+                {
+                    Ok(_) => {
+                        // Successfully set the bit, return the handle.
+                        return Some(bit_index);
+                    }
+                    Err(prev) => {
+                        // Failed to set the bit, update `current` and retry.
+                        current = prev;
+                        // Note: `compare_exchange_weak` may fail spuriously, so we loop.
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // No available handles found.
+        None
+    }
+
+    /// Frees a previously allocated handle.
+    ///
+    /// Atomically clears the bit corresponding to the given handle index.
+    /// Returns an error if the handle was not allocated or is out of bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `handle` - The index of the handle to free.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the handle was successfully freed.
+    /// * `Err(&'static str)` - If the handle was not allocated or out of bounds.
+    pub fn free_handle(&self, handle: u32) -> Result<(), &'static str> {
+        // Check if the handle is within bounds.
+        if handle >= self.max_handle {
+            return Err("Handle out of bounds");
+        }
+
+        let word_index = handle / usize::BITS;
+        let bit_index = handle % usize::BITS;
+        let mask = 1 << bit_index;
+        let word = &self.bits[word_index as usize];
+        let mut current = word.load(Ordering::Relaxed);
+
+        loop {
+            // Check if the bit is currently set.
+            if current & mask == 0 {
+                // Bit was not set; handle was not allocated.
+                return Err("Handle not allocated");
+            }
+
+            let new = current & !mask;
+
+            // Attempt to atomically clear the bit.
+            match word.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => {
+                    // Successfully cleared the bit.
+                    return Ok(());
+                }
+                Err(prev) => {
+                    // Failed to clear the bit, update `current` and retry.
+                    current = prev;
+                    // Note: `compare_exchange_weak` may fail spuriously, so we loop.
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use test_case::{test_case, test_matrix};
+
+    #[test_case(1)]
+    #[test_case(15)]
+    #[test_case(4096)]
+    fn test_single_thread_allocation_and_freeing(size: u32) {
+        let bitset = HandleAllocator::new(size);
+        let mut handles = Vec::new();
+
+        // Allocate all handles
+        for _ in 0..size {
+            let handle = bitset.next_handle().expect("Should allocate handle");
+            handles.push(handle);
+        }
+
+        // Should not be able to allocate more handles
+        assert!(bitset.next_handle().is_none());
+
+        // Free all handles
+        for handle in handles {
+            bitset.free_handle(handle).expect("Should free handle");
+        }
+
+        // Now we should be able to allocate again
+        let handle = bitset
+            .next_handle()
+            .expect("Should allocate handle after freeing");
+        assert_eq!(handle, 0);
+    }
+
+    #[test]
+    fn test_freeing_unallocated_handle() {
+        let bitset = HandleAllocator::new(10);
+        // Freeing without allocation should return error
+        assert!(bitset.free_handle(0).is_err());
+    }
+
+    #[test]
+    fn test_handle_out_of_bounds() {
+        let bitset = HandleAllocator::new(10);
+        assert!(bitset.free_handle(10).is_err());
+        assert!(bitset.free_handle(100).is_err());
+    }
+
+    #[test_matrix(
+        [1,2,4,8,16],
+        [1, 15, 100, 4096]
+    )]
+    fn test_concurrent_allocation(num_threads: usize, bitset_size: u32) {
+        let bitset = Arc::new(HandleAllocator::new(bitset_size));
+        let handles = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let mut threads = Vec::new();
+
+        for _ in 0..num_threads {
+            let bitset_clone = Arc::clone(&bitset);
+            let handles_clone = Arc::clone(&handles);
+            let barrier_clone = Arc::clone(&barrier);
+            threads.push(thread::spawn(move || {
+                // Wait for all threads to be ready
+                barrier_clone.wait();
+
+                loop {
+                    match bitset_clone.next_handle() {
+                        Some(handle) => {
+                            handles_clone.lock().unwrap().push(handle);
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().expect("Thread panicked");
+        }
+
+        let handles = handles.lock().unwrap();
+        assert_eq!(handles.len(), bitset_size as usize);
+
+        // Ensure all handles are unique
+        let mut handles_set = std::collections::HashSet::new();
+        for &handle in handles.iter() {
+            assert!(
+                handles_set.insert(handle),
+                "Duplicate handle found: {}",
+                handle
+            );
+        }
+
+        // Now free all handles
+        for &handle in handles.iter() {
+            bitset.free_handle(handle).expect("Should free handle");
+        }
+
+        // Try allocating again
+        let handle = bitset
+            .next_handle()
+            .expect("Should allocate handle after freeing");
+        assert_eq!(handle, 0);
+    }
+
+    #[test_matrix(
+        [1,2,4,8,16],
+        [1, 15, 100, 4096]
+    )]
+    fn test_concurrent_allocation_and_freeing(num_threads: usize, bitset_size: u32) {
+        let bitset = Arc::new(HandleAllocator::new(bitset_size));
+
+        let iterations = 1000;
+
+        let mut threads = Vec::new();
+
+        for _ in 0..num_threads {
+            let bitset_clone = Arc::clone(&bitset);
+            threads.push(thread::spawn(move || {
+                for _ in 0..iterations {
+                    if let Some(handle) = bitset_clone.next_handle() {
+                        // Simulate some work with the handle
+                        bitset_clone
+                            .free_handle(handle)
+                            .expect("Should free handle");
+                    }
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().expect("Thread panicked");
+        }
+
+        // Ensure all handles are freed
+        for handle in 0..bitset_size {
+            assert!(
+                bitset.free_handle(handle as u32).is_err(),
+                "Handle {} should already be free",
+                handle
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_handles_allocated_once() {
+        let bitset_size = 128;
+        let bitset = HandleAllocator::new(bitset_size);
+        let mut allocated = Vec::new();
+
+        // Allocate all handles
+        for _ in 0..bitset_size {
+            let handle = bitset.next_handle().expect("Should allocate handle");
+            allocated.push(handle);
+        }
+
+        // Ensure no duplicates
+        let unique_handles: std::collections::HashSet<_> = allocated.iter().cloned().collect();
+        assert_eq!(unique_handles.len(), bitset_size as usize);
+
+        // No more handles should be available
+        assert!(bitset.next_handle().is_none());
+    }
+
+    #[test]
+    fn test_random_allocation_and_freeing() {
+        use rand::seq::SliceRandom;
+        use rand::{thread_rng, Rng};
+
+        let bitset_size = 100;
+        let bitset = HandleAllocator::new(bitset_size);
+        let mut rng = thread_rng();
+
+        // Randomly allocate handles
+        let mut allocated = Vec::new();
+        for _ in 0..bitset_size {
+            if rng.gen_bool(0.5) {
+                if let Some(handle) = bitset.next_handle() {
+                    allocated.push(handle);
+                }
+            }
+        }
+
+        // Randomly free handles
+        allocated.shuffle(&mut rng);
+        for handle in allocated {
+            bitset.free_handle(handle).expect("Should free handle");
+        }
+
+        // All handles should be free now
+        for _ in 0..bitset_size {
+            assert!(bitset.next_handle().is_some());
+        }
+    }
+}

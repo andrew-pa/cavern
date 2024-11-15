@@ -15,6 +15,7 @@ extern crate std;
 
 extern crate alloc;
 
+pub mod collections;
 pub mod exceptions;
 pub mod logger;
 pub mod memory;
