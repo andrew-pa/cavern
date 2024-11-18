@@ -1,5 +1,12 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use snafu::ensure;
+
+#[derive(Debug, snafu::Snafu)]
+pub enum Error {
+    NotAllocated,
+    OutOfBounds,
+}
 
 /// A handle allocator implemented using a fixed-size atomic bit set for concurrent handle allocation.
 ///
@@ -41,7 +48,11 @@ impl HandleAllocator {
     ///
     /// * `Some(u32)` - The index of the allocated handle.
     /// * `None` - If no handles are available.
+    ///
     #[must_use]
+    // while this function can panic, it would only do so if `self.bits.len() > u32::MAX`, which is
+    // impossible because `max_handle <= u32::MAX`, but unfortunatly the type system can't express that.
+    #[allow(clippy::missing_panics_doc)]
     pub fn next_handle(&self) -> Option<u32> {
         for word_index in 0..self.bits.len() {
             let word = &self.bits[word_index];
@@ -54,10 +65,8 @@ impl HandleAllocator {
                 }
 
                 // Find the first zero bit in the current word.
-                let zero_bit = (!current).trailing_zeros() as usize;
-                let bit_index: u32 = (word_index * usize::BITS as usize + zero_bit)
-                    .try_into()
-                    .expect("bit index is < 2^32");
+                let zero_bit = (!current).trailing_zeros();
+                let bit_index = u32::try_from(word_index).unwrap() * usize::BITS + zero_bit;
 
                 // Check if the bit index is within bounds.
                 if bit_index >= self.max_handle {
@@ -95,19 +104,12 @@ impl HandleAllocator {
     /// Atomically clears the bit corresponding to the given handle index.
     /// Returns an error if the handle was not allocated or is out of bounds.
     ///
-    /// # Arguments
-    ///
-    /// * `handle` - The index of the handle to free.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - If the handle was successfully freed.
-    /// * `Err(&'static str)` - If the handle was not allocated or out of bounds.
-    pub fn free_handle(&self, handle: u32) -> Result<(), &'static str> {
+    /// # Errors
+    /// - [`Error::OutOfBounds`] if the handle is outside of the range of handles managed by this allocator.
+    /// - [`Error::NotAllocated`] if the handle was already free.
+    pub fn free_handle(&self, handle: u32) -> Result<(), Error> {
         // Check if the handle is within bounds.
-        if handle >= self.max_handle {
-            return Err("Handle out of bounds");
-        }
+        ensure!(handle < self.max_handle, OutOfBoundsSnafu);
 
         let word_index = handle / usize::BITS;
         let bit_index = handle % usize::BITS;
@@ -117,10 +119,7 @@ impl HandleAllocator {
 
         loop {
             // Check if the bit is currently set.
-            if current & mask == 0 {
-                // Bit was not set; handle was not allocated.
-                return Err("Handle not allocated");
-            }
+            ensure!(current & mask != 0, NotAllocatedSnafu);
 
             let new = current & !mask;
 
