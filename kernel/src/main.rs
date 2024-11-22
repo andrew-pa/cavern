@@ -15,6 +15,7 @@ mod logging;
 mod memory;
 mod psci;
 mod running_image;
+mod thread;
 mod timer;
 mod uart;
 

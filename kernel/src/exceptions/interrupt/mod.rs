@@ -1,5 +1,4 @@
 //! Interrupts from hardware devices.
-use alloc::boxed::Box;
 use kernel_core::{
     exceptions::{interrupt::Handler, InterruptController},
     platform::device_tree::DeviceTree,
@@ -7,15 +6,18 @@ use kernel_core::{
 use log::{info, trace};
 use spin::once::Once;
 
-use crate::timer::Timer;
+use crate::{thread::RealSwitcher, timer::Timer};
 
 pub mod controller;
+use controller::PlatformController;
 
 /// The global interrupt handler policy.
-pub static HANDLER_POLICY: Once<Handler<'static, 'static, Timer>> = Once::new();
+pub static HANDLER_POLICY: Once<
+    Handler<'static, 'static, 'static, Timer, PlatformController, (), RealSwitcher>,
+> = Once::new();
 
 /// The current interrupt controller device in the system.
-pub static CONTROLLER: Once<Box<dyn InterruptController + Send + Sync>> = Once::new();
+pub static CONTROLLER: Once<PlatformController> = Once::new();
 
 /// The global instance of the system timer interface.
 pub static TIMER: Once<Timer> = Once::new();
@@ -37,10 +39,8 @@ pub fn init(device_tree: &DeviceTree<'_>) {
         .expect("have intc node");
 
     let controller = CONTROLLER.call_once(|| {
-        Box::new(
-            controller::gic2::GenericV2::in_device_tree(intc_node.properties)
-                .expect("configure interrupt controller"),
-        )
+        controller::PlatformController::in_device_tree(intc_node.properties)
+            .expect("configure interrupt controller")
     });
 
     controller.global_initialize();
@@ -50,11 +50,11 @@ pub fn init(device_tree: &DeviceTree<'_>) {
         .expect("have timer node");
 
     let timer = TIMER.call_once(|| {
-        Timer::in_device_tree(timer_node, controller.as_ref(), TIMER_INTERVAL)
+        Timer::in_device_tree(timer_node, controller, TIMER_INTERVAL)
             .expect("configure system timer")
     });
 
-    HANDLER_POLICY.call_once(|| Handler::new(controller.as_ref(), timer));
+    HANDLER_POLICY.call_once(|| Handler::new(controller, timer));
 
     init_for_core();
 
@@ -65,7 +65,7 @@ pub fn init(device_tree: &DeviceTree<'_>) {
 pub fn init_for_core() {
     let ctrl = CONTROLLER.get().unwrap();
     ctrl.initialize_for_core();
-    TIMER.get().unwrap().start_for_core(ctrl.as_ref());
+    TIMER.get().unwrap().start_for_core(ctrl);
 }
 
 /// Wait for an interrupt to occur, pausing execution.

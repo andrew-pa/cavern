@@ -20,6 +20,7 @@ pub mod exceptions;
 pub mod logger;
 pub mod memory;
 pub mod platform;
+pub mod process;
 
 #[cfg(test)]
 mod tests {

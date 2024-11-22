@@ -214,7 +214,6 @@ impl<T> Drop for HandleMap<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::time::Duration;
     use rand::seq::SliceRandom;
     use std::{
         collections::{HashMap, HashSet},

@@ -77,7 +77,7 @@ pub struct Timer {
 impl Timer {
     pub fn in_device_tree<'dt>(
         node: NodePropertyIter<'dt>,
-        intc: &dyn InterruptController,
+        intc: &impl InterruptController,
         interval: u32,
     ) -> Result<Self, ParseError<'dt>> {
         let mut int = None;
@@ -135,7 +135,7 @@ impl Timer {
 
     // NOTE: you've gotta call this for every CPU because the timer itself is per-CPU
     // this is kinda strange, b/c it should really be in the mech trait
-    pub fn start_for_core(&self, intc: &dyn InterruptController) {
+    pub fn start_for_core(&self, intc: &impl InterruptController) {
         let mut ctl = TimerControlRegister::read();
         ctl.set_enable(true);
         ctl.set_imask(false);
