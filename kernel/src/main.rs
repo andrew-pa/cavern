@@ -47,6 +47,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     logging::init_logging(&device_tree);
 
     memory::init(&device_tree);
+    thread::init();
     exceptions::init_interrupts(&device_tree);
 
     init_smp(&device_tree);

@@ -6,14 +6,17 @@ use kernel_core::{
 use log::{info, trace};
 use spin::once::Once;
 
-use crate::{thread::RealSwitcher, timer::Timer};
+use crate::{
+    thread::{PlatformScheduler, SCHEDULER},
+    timer::Timer,
+};
 
 pub mod controller;
 use controller::PlatformController;
 
 /// The global interrupt handler policy.
 pub static HANDLER_POLICY: Once<
-    Handler<'static, 'static, 'static, Timer, PlatformController, (), RealSwitcher>,
+    Handler<'static, 'static, 'static, Timer, PlatformController, PlatformScheduler>,
 > = Once::new();
 
 /// The current interrupt controller device in the system.
@@ -54,7 +57,15 @@ pub fn init(device_tree: &DeviceTree<'_>) {
             .expect("configure system timer")
     });
 
-    HANDLER_POLICY.call_once(|| Handler::new(controller, timer));
+    HANDLER_POLICY.call_once(|| {
+        Handler::new(
+            controller,
+            timer,
+            SCHEDULER
+                .get()
+                .expect("threads initialized before interrupts"),
+        )
+    });
 
     init_for_core();
 

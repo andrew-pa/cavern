@@ -233,8 +233,7 @@ mod tests {
         for &handle in handles.iter() {
             assert!(
                 handles_set.insert(handle),
-                "Duplicate handle found: {}",
-                handle
+                "Duplicate handle found: {handle}"
             );
         }
 
@@ -282,9 +281,8 @@ mod tests {
         // Ensure all handles are freed
         for handle in 0..bitset_size {
             assert!(
-                bitset.free_handle(handle as u32).is_err(),
-                "Handle {} should already be free",
-                handle
+                bitset.free_handle(handle).is_err(),
+                "Handle {handle} should already be free"
             );
         }
     }
@@ -302,7 +300,7 @@ mod tests {
         }
 
         // Ensure no duplicates
-        let unique_handles: std::collections::HashSet<_> = allocated.iter().cloned().collect();
+        let unique_handles: std::collections::HashSet<_> = allocated.iter().copied().collect();
         assert_eq!(unique_handles.len(), bitset_size as usize);
 
         // No more handles should be available

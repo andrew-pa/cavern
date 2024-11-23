@@ -5,14 +5,6 @@ pub mod interrupt;
 pub use interrupt::Controller as InterruptController;
 pub use interrupt::Id as InterruptId;
 
-/// A stored version of the registers x0..x31.
-#[derive(Default, Copy, Clone, Debug)]
-#[repr(C)]
-pub struct Registers {
-    /// The values of the xN registers in order.
-    pub x: [usize; 31],
-}
-
 bitfield::bitfield! {
     /// A value in the ESR (Exception Syndrome Register), which indicates the cause of an
     /// exception.

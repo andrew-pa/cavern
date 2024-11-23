@@ -52,6 +52,22 @@ impl<T> Table<T> {
         }
     }
 
+    /// Store an `Arc<T>` at some `index` in the table.
+    /// Returns whatever was in the table before, if anything.
+    ///
+    /// It is safe to [`Self::get_value()`] for `index` once this has been called for `index`.
+    ///
+    /// # Safety
+    /// Assumes that if there is a non-zero value at `index` then it is a value.
+    unsafe fn put_value(&self, index: usize, val: Arc<T>) -> Option<Arc<T>> {
+        let v = self.0[index].swap(Arc::into_raw(val) as _, Ordering::AcqRel);
+        if v == 0 {
+            None
+        } else {
+            Some(Arc::from_raw(v as _))
+        }
+    }
+
     /// Get the `Table<T>` stored at `index`, or `None` if there is no table at that index.
     ///
     /// # Safety
@@ -63,13 +79,6 @@ impl<T> Table<T> {
         } else {
             NonNull::new(v as _)
         }
-    }
-
-    /// Store an `Arc<T>` at some `index` in the table.
-    ///
-    /// It is safe to [`Self::get_value()`] for `index` once this has been called for `index`.
-    fn put_value(&self, index: usize, val: Arc<T>) {
-        self.0[index].store(Arc::into_raw(val) as _, Ordering::Release);
     }
 
     /// Attempt to store a new next-level table at `index`, assuming that the slot is empty.
@@ -183,7 +192,9 @@ impl<T> HandleMap<T> {
             handle = handle.rotate_left(8);
         }
         let index = (handle & 0xff) as usize;
-        table.put_value(index, value);
+        unsafe {
+            table.put_value(index, value);
+        }
         Ok(handle)
     }
 
@@ -402,7 +413,7 @@ mod tests {
             for _ in 0..(num_threads / 2) {
                 s.spawn(|| {
                     for _ in 0..9 {
-                        for (h, v) in test_vals.iter() {
+                        for (h, v) in &test_vals {
                             assert_eq!(map.get(*h).as_deref(), Some(v));
                         }
                     }
@@ -447,7 +458,7 @@ mod tests {
             }
 
             s.spawn(|| {
-                for (h, v) in test_vals.iter() {
+                for (h, v) in &test_vals {
                     assert_eq!(map.remove(*h).as_deref(), Some(v));
                 }
             });
