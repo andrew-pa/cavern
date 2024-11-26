@@ -1,8 +1,7 @@
 //! Interrupts are exceptions caused by hardware devices.
 
-use log::{debug, trace};
-
-use crate::platform::timer::SystemTimer;
+mod handler;
+pub use handler::{Error as HandlerError, Handler};
 
 /// The identifier of an interrupt.
 pub type Id = u32;
@@ -28,6 +27,7 @@ pub struct Config {
 
 /// An interrupt controller manages and collates interrupts for the processor.
 /// This is the generic interface for the interrupt conroller mechanism.
+#[cfg_attr(test, mockall::automock)]
 pub trait Controller {
     /// Called once at startup to perform global initialization.
     fn global_initialize(&self);
@@ -58,47 +58,4 @@ pub trait Controller {
 
     /// Inform the interrupt controller that the system has finished processing an interrupt.
     fn finish_interrupt(&self, id: Id);
-}
-
-/// Interrupt handler policy.
-pub struct Handler<'ic, 't, T: SystemTimer> {
-    controller: &'ic (dyn Controller + Sync),
-    timer: &'t T,
-}
-
-/// An error that could occur during handling an interrupt.
-#[derive(Debug)]
-pub enum Error {
-    /// An interrupt occurred that was unexpected.
-    UnknownInterrupt(Id),
-}
-
-impl<'ic, 't, T: SystemTimer> Handler<'ic, 't, T> {
-    /// Create a new interrupt handler policy.
-    pub fn new(controller: &'ic (dyn Controller + Sync), timer: &'t T) -> Self {
-        Self { controller, timer }
-    }
-
-    /// Acknowledge any interrupts that have occurred, and handle the ones that are known.
-    ///
-    /// # Errors
-    /// - [`Error::UnknownInterrupt`]: If an interrupt happens that is unknown to the handler.
-    pub fn process_interrupts(&self) -> Result<(), Error> {
-        while let Some(int_id) = self.controller.ack_interrupt() {
-            trace!("handling interrupt {int_id}");
-
-            if int_id == self.timer.interrupt_id() {
-                debug!("timer interrupt");
-                // TODO: run scheduler here
-                self.timer.reset();
-            } else {
-                return Err(Error::UnknownInterrupt(int_id));
-            }
-
-            trace!("finished interrupt {int_id}");
-            self.controller.finish_interrupt(int_id);
-        }
-
-        Ok(())
-    }
 }

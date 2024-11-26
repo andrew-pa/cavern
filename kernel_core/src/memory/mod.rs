@@ -736,6 +736,7 @@ pub mod tests {
 
     impl MockPageAllocator {
         /// Create a new `MockAllocator` with the given page size and maximum number of pages.
+        #[must_use]
         pub fn new(page_size: PageSize, max_pages: usize) -> Self {
             assert!(max_pages > 0);
             MockPageAllocator {

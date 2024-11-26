@@ -1,6 +1,8 @@
 //! The exception vector and handler functions.
 
-use kernel_core::exceptions::{ExceptionSyndromeRegister, Registers};
+use kernel_core::{exceptions::ExceptionSyndromeRegister, process::thread::Registers};
+
+use crate::thread::{restore_current_thread_state, save_current_thread_state};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
@@ -27,12 +29,17 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
 }
 
 #[no_mangle]
-unsafe extern "C" fn handle_interrupt(_regs: *mut Registers, _esr: usize, _far: usize) {
+unsafe extern "C" fn handle_interrupt(regs: *mut Registers, _esr: usize, _far: usize) {
+    let regs = regs
+        .as_mut()
+        .expect("asm exception vector code passes non-null ptr to registers object");
+    save_current_thread_state(regs);
     super::interrupt::HANDLER_POLICY
         .get()
         .expect("interrupt handler policy to be initialized before interrupts are enabled")
         .process_interrupts()
         .expect("interrupt handlers to complete successfully");
+    restore_current_thread_state(regs);
 }
 
 #[no_mangle]
