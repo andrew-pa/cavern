@@ -12,7 +12,7 @@ use kernel_core::{
     memory::{
         page_table::{MapBlockSize, MemoryKind, MemoryProperties},
         AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
-        PhysicalAddress,
+        PhysicalAddress, PhysicalPointer,
     },
     platform::device_tree::DeviceTree,
 };
@@ -133,7 +133,7 @@ pub unsafe fn switch_el0_context(
 }
 
 /// Initialize the memory subsystem.
-pub fn init(dt: &DeviceTree<'_>) {
+pub fn init(dt: &DeviceTree<'_>, initrd_slice: &(PhysicalPointer<u8>, usize)) {
     debug!("Initializing memory…");
     // create page allocator
     let page_size = PageSize::FourKiB;
@@ -154,6 +154,7 @@ pub fn init(dt: &DeviceTree<'_>) {
     let reserved_regions = [
         unsafe { running_image::memory_region() },
         dt.memory_region(),
+        (initrd_slice.0.into(), initrd_slice.1),
     ];
     let memory_start = PhysicalAddress::from(memory_range.0);
     let mut memory_regions = kernel_core::memory::subtract_ranges(

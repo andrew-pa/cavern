@@ -20,6 +20,7 @@ mod timer;
 mod uart;
 
 use kernel_core::{
+    init,
     memory::{PhysicalAddress, PhysicalPointer},
     platform::{
         cpu::{boot_all_cores, list_cores, CoreInfo},
@@ -28,6 +29,36 @@ use kernel_core::{
 };
 use log::{debug, info};
 use memory::page_allocator;
+use snafu::OptionExt;
+
+/// Use the device tree to locate the initial RAM disk using the `/chosen/linux,initrd-{start,end}` properties.
+///
+/// # Errors
+/// Returns an error if the properties cannot be located in the tree.
+fn locate_init_ramdisk<'dt>(
+    device_tree: &'dt DeviceTree,
+) -> Result<(PhysicalPointer<u8>, usize), kernel_core::platform::device_tree::ParseError<'dt>> {
+    use byteorder::{BigEndian, ByteOrder};
+    use kernel_core::platform::device_tree::*;
+    let start = device_tree
+        .find_property(b"/chosen/linux,initrd-start")
+        .context(PropertyNotFoundSnafu {
+            name: "/chosen/linux,initrd-start",
+        })?
+        .as_bytes(b"/chosen/linux,initrd-start")
+        .map(BigEndian::read_u64)?;
+    let end = device_tree
+        .find_property(b"/chosen/linux,initrd-end")
+        .context(PropertyNotFoundSnafu {
+            name: "/chosen/linux,initrd-end",
+        })?
+        .as_bytes(b"/chosen/linux,initrd-end")
+        .map(BigEndian::read_u64)?;
+    Ok((
+        PhysicalPointer::from(start as usize),
+        (end - start) as usize,
+    ))
+}
 
 /// The main entry point for the kernel.
 ///
@@ -49,7 +80,10 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 
     logging::init_logging(&device_tree);
 
-    memory::init(&device_tree);
+    let initrd_slice = locate_init_ramdisk(&device_tree).expect("locate initial RAM disk");
+    debug!("Initial RAM disk @ {initrd_slice:?}");
+
+    memory::init(&device_tree, &initrd_slice);
 
     let cores = list_cores(&device_tree).expect("list cores in system");
     debug!("System has {} cores", cores.len());
@@ -59,6 +93,10 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     exceptions::init_interrupts(&device_tree);
 
     init_smp(&device_tree, &cores);
+
+    init::spawn_init_process(unsafe {
+        core::slice::from_raw_parts(initrd_slice.0.into(), initrd_slice.1)
+    });
 
     info!("Boot succesful!");
 
