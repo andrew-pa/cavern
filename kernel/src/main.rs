@@ -20,6 +20,7 @@ mod timer;
 mod uart;
 
 use kernel_core::{
+    config::Config,
     init,
     memory::{PhysicalAddress, PhysicalPointer},
     platform::{
@@ -27,7 +28,7 @@ use kernel_core::{
         device_tree::DeviceTree,
     },
 };
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use memory::page_allocator;
 use snafu::OptionExt;
 
@@ -60,6 +61,27 @@ fn locate_init_ramdisk<'dt>(
     ))
 }
 
+/// Read the kernel configuration from the `/chosen/bootargs` device tree property.
+/// If the property does not exist, is empty, or does not parse, then the default configuration [`Config::default()`] will be used.
+/// The parse error is also returned if it occurs so it can be logged.
+fn read_config<'dt>(
+    device_tree: &'dt DeviceTree,
+) -> (Config<'dt>, Option<serde_json_core::de::Error>) {
+    let s = device_tree
+        .find_property(b"/chosen/bootargs")
+        .and_then(|v| v.as_bytes(b"/chosen/bootargs").ok())
+        // bootargs is null terminated
+        .and_then(|b| (b.len() > 1).then_some(&b[0..b.len() - 1]));
+    if let Some(s) = s {
+        match serde_json_core::from_slice(&s[0..s.len() - 1]) {
+            Ok((v, _)) => (v, None),
+            Err(e) => (Config::default(), Some(e)),
+        }
+    } else {
+        (Config::default(), None)
+    }
+}
+
 /// The main entry point for the kernel.
 ///
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
@@ -78,7 +100,14 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
 
-    logging::init_logging(&device_tree);
+    let (config, config_parse_error) = read_config(&device_tree);
+
+    logging::init_logging(&device_tree, config.log_level);
+
+    debug!("kernel configuration = {config:?}");
+    if let Some(config_parse_error) = config_parse_error {
+        warn!("error parsing provided kernel configuration, using defaults: {config_parse_error}");
+    }
 
     let initrd_slice = locate_init_ramdisk(&device_tree).expect("locate initial RAM disk");
     debug!("Initial RAM disk @ {initrd_slice:?}");
@@ -94,9 +123,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 
     init_smp(&device_tree, &cores);
 
-    init::spawn_init_process(unsafe {
-        core::slice::from_raw_parts(initrd_slice.0.into(), initrd_slice.1)
-    });
+    init::spawn_init_process(initrd_slice, config.init_exec_name);
 
     info!("Boot succesful!");
 

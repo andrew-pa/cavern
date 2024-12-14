@@ -380,6 +380,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,6 +397,17 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -457,6 +477,8 @@ dependencies = [
  "itertools",
  "kernel_core",
  "log",
+ "serde",
+ "serde-json-core",
  "snafu",
  "spin",
  "vergen",
@@ -479,6 +501,7 @@ dependencies = [
  "mockall",
  "paste",
  "rand",
+ "serde",
  "snafu",
  "spin",
  "tar-no-std",
@@ -530,6 +553,9 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "memchr"
@@ -760,6 +786,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-json-core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b81787e655bd59cecadc91f7b6b8651330b2be6c33246039a65e5cd6f4e0828"
+dependencies = [
+ "heapless",
+ "ryu",
+ "serde",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.213"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -817,6 +854,12 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
 name = "strsim"

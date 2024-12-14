@@ -63,7 +63,7 @@ make-initrd-image mkimage_args="": build
     rm $archive_path
 
 # Run the system in QEMU.
-run-qemu qemu_args="-m 4G -smp 8" boot_args="{}": make-kernel-image
+run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-kernel-image
     #!/bin/sh
     set -euxo pipefail
     qemu-system-aarch64 \
@@ -82,7 +82,7 @@ run-qemu qemu_args="-m 4G -smp 8" boot_args="{}": make-kernel-image
     END
 
 # Create an `asciinema` recording of booting the system in QEMU.
-create-boot-video output_file="/tmp/bootvideo.cast" asciinema_args="--cols 160 --rows 40 --idle-time-limit 1" qemu_args="-m 4G -smp 8" boot_args="{}":
+create-boot-video output_file="/tmp/bootvideo.cast" asciinema_args="--cols 160 --rows 40 --idle-time-limit 1" qemu_args="-m 4G -smp 8" boot_args="":
     asciinema rec --command='just run-qemu "{{qemu_args}}" "{{boot_args}}"' --title="cavern_boot@{{`git rev-parse --short=8 HEAD`}}" --overwrite {{asciinema_args}} {{output_file}}
 
 make_bin := `which make`

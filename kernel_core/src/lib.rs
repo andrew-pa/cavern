@@ -16,6 +16,7 @@ extern crate std;
 extern crate alloc;
 
 pub mod collections;
+pub mod config;
 pub mod exceptions;
 pub mod init;
 pub mod logger;
