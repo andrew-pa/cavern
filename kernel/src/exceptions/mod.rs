@@ -8,6 +8,7 @@ mod interrupt;
 pub use interrupt::init as init_interrupts;
 pub use interrupt::init_for_core as init_interrupts_for_core;
 pub use interrupt::wait_for_interrupt;
+pub use interrupt::CONTROLLER as INTERRUPT_CONTROLLER;
 
 use bitfield::bitfield;
 

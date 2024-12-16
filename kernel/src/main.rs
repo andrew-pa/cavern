@@ -28,7 +28,7 @@ use kernel_core::{
         device_tree::DeviceTree,
     },
 };
-use log::{debug, info, trace, warn};
+use log::{debug, info, warn};
 use memory::page_allocator;
 use snafu::OptionExt;
 
@@ -180,16 +180,14 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 #[panic_handler]
 #[cfg(not(test))]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
-    // TODO: somehow make sure that if one core panics, they all halt. Probably via SGI?
+    use kernel_core::exceptions::InterruptController;
 
     log::error!("{info}");
 
-    /*use core::fmt::Write;
-    unsafe {
-        let mut uart = uart::PL011::from_platform_debug_best_guess();
-
-        writeln!(&mut uart, "\x1b[31mpanic!\x1b[0m {info}").unwrap();
-    }*/
+    // let the other cores know that a panic has occurred
+    if let Some(ic) = exceptions::INTERRUPT_CONTROLLER.get() {
+        ic.broadcast_sgi(0);
+    }
 
     #[allow(clippy::empty_loop)]
     loop {}
