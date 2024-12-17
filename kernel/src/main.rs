@@ -10,14 +10,14 @@ extern crate alloc;
 
 core::arch::global_asm!(core::include_str!("./start.S"));
 
-mod exceptions;
-mod logging;
-mod memory;
-mod psci;
-mod running_image;
-mod thread;
-mod timer;
-mod uart;
+pub mod exceptions;
+pub mod logging;
+pub mod memory;
+pub mod process;
+pub mod psci;
+pub mod running_image;
+pub mod timer;
+pub mod uart;
 
 use kernel_core::{
     config::Config,
@@ -117,7 +117,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     let cores = list_cores(&device_tree).expect("list cores in system");
     debug!("System has {} cores", cores.len());
 
-    thread::init(&cores);
+    process::thread::init(&cores);
 
     exceptions::init_interrupts(&device_tree);
 

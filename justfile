@@ -58,7 +58,7 @@ make-initrd-image mkimage_args="": build
     set -euxo pipefail
     mkdir -p {{img_dir}}
     archive_path=$(mktemp -t initrd.XXXXXX.tar)
-    tar --format=ustar -cf $archive_path ./README.md
+    tar --format=ustar -cf $archive_path -C {{binary_path}} init
     {{mkimage_bin}} -A arm64 -O linux -T ramdisk -C none -a {{kernel_load_addr}} -n "cavern-initrd" -d $archive_path {{mkimage_args}} {{img_dir / "initrd.img"}}
     rm $archive_path
 

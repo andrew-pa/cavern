@@ -7,7 +7,7 @@ use log::{debug, info};
 use spin::once::Once;
 
 use crate::{
-    thread::{PlatformScheduler, SCHEDULER},
+    process::thread::{PlatformScheduler, SCHEDULER},
     timer::Timer,
 };
 

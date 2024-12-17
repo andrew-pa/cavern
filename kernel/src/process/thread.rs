@@ -5,12 +5,9 @@ use kernel_core::{
     collections::HandleMap,
     memory::{AddressSpaceIdPool, VirtualAddress},
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
-    process::{
-        thread::{
-            scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus,
-            Scheduler, State, Thread, MAX_THREAD_ID,
-        },
-        Process,
+    process::thread::{
+        scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus, Scheduler,
+        State, Thread, MAX_THREAD_ID,
     },
 };
 use log::{debug, info, trace};
@@ -35,13 +32,19 @@ impl CpuIdReader for SystemCpuIdReader {
     }
 }
 
+/// The platform selected thread scheduler.
 pub type PlatformScheduler = RoundRobinScheduler<SystemCpuIdReader>;
 
+/// The system scheduler instance.
 pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
+
+/// A map from thread ID to thread reference for all threads in the system.
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
-pub static PROCESSES: Once<HandleMap<Process>> = Once::new();
+
+/// The system address space ID pool.
 static ASID_POOL: Once<AddressSpaceIdPool> = Once::new();
 
+/// Initialize the thread scheduler.
 pub fn init(cores: &[CoreInfo]) {
     debug!("Initalizing threads...");
 
@@ -132,6 +135,12 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
     }
 }
 
+/// Save the currently executing thread state.
+///
+/// # Safety
+/// This function is only safe to call when the currently running thread has been suspended, i.e.
+/// in an exception handler. Also, this function assumes that the currently running thread is the
+/// one that the scheduler believes is currently running (which should always be true).
 pub unsafe fn save_current_thread_state(registers: &Registers) {
     // Determine the current running thread according to the scheduler.
     // We assume that this thread is the one currently executing on this processor.
@@ -157,6 +166,11 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
     );
 }
 
+/// Restore the currently scheduled thread as the currently executing one.
+///
+/// # Safety
+/// This function is only safe to call at the end of an exception handler when the currently
+/// executing thread is about to be restored.
 pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
     // Determine the current running thread according to the scheduler.
     let current_thread = SCHEDULER

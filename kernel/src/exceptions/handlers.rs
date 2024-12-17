@@ -2,7 +2,7 @@
 
 use kernel_core::{exceptions::ExceptionSyndromeRegister, process::thread::Registers};
 
-use crate::thread::{restore_current_thread_state, save_current_thread_state};
+use crate::process::thread::{restore_current_thread_state, save_current_thread_state};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.

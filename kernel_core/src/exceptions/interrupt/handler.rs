@@ -48,7 +48,8 @@ impl<'ic, 'sc, 't, T: SystemTimer, IC: super::Controller, Sched: Scheduler>
                 warn!("panic on other core, halting");
                 // this is somewhat inelegant (halting is an effect after all), but since panics
                 // themselves are both rare and inelegant it is fine for now.
-                loop { }
+                #[allow(clippy::empty_loop)]
+                loop {}
             } else {
                 return Err(Error::UnknownInterrupt(int_id));
             }

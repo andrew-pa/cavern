@@ -24,6 +24,7 @@ extern "C" {
     static mut _kernel_page_table_root: u8;
 }
 
+/// The selected platform page allocator implementation.
 pub type PlatformPageAllocator = BuddyPageAllocator;
 
 /// The global physical page allocator.
@@ -80,13 +81,21 @@ bitfield! {
     /// A value for a TTBR*_EL* register, holding the base address for the current page translation table.
     pub struct TranslationTableBaseRegister(u64);
     impl Debug;
-    impl new;
     u16, asid, set_asid: 63, 48;
     u64, baddr, set_baddr: 47, 1;
     cnp, set_cnp: 0;
 }
 
 impl TranslationTableBaseRegister {
+    /// Create a new TTBR value.
+    pub fn new(asid: u16, baddr: PhysicalAddress, cnp: bool) -> Self {
+        let mut v = Self(0);
+        v.set_asid(asid);
+        v.set_baddr(usize::from(baddr) as u64);
+        v.set_cnp(cnp);
+        v
+    }
+
     /// Read the value of TTBR0_EL1 (D19.2.152).
     unsafe fn read_ttbr0_el1() -> Self {
         let mut value: u64;
@@ -94,6 +103,7 @@ impl TranslationTableBaseRegister {
         TranslationTableBaseRegister(value)
     }
 
+    /// Write TTBR0_EL1 with this value.
     unsafe fn write_ttbr0_el1(&self) {
         asm!("msr TTBR0_EL1, {v}", v = in(reg) self.0);
     }
@@ -102,6 +112,10 @@ impl TranslationTableBaseRegister {
 /// Switch to a new set of page tables in EL0.
 /// If `full_flush` is true, then all EL0 TLB entries will be flushed, otherwise only entries for
 /// the previous address space ID will be flushed.
+///
+/// # Safety
+/// This function changes the TTBR0_EL1 register, which will change the mapping of virtual addreses
+/// in EL0, so the caller must ensure that this is correct in context.
 pub unsafe fn switch_el0_context(
     new_page_tables: &PageTables,
     new_address_space_id: AddressSpaceId,
@@ -114,7 +128,7 @@ pub unsafe fn switch_el0_context(
     // compute new TTBR value
     let new_ttbr = TranslationTableBaseRegister::new(
         new_address_space_id.into(),
-        usize::from(new_page_tables.physical_address()) as u64,
+        new_page_tables.physical_address(),
         false,
     );
     // read TTBR0

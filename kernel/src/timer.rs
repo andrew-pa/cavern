@@ -75,6 +75,13 @@ pub struct Timer {
 }
 
 impl Timer {
+    /// Create a timer instance using the properties found in the device tree node, and configure
+    /// its interrupt with the interrupt controller.
+    /// The timer will trigger every `1 / interval` seconds.
+    ///
+    /// # Errors
+    /// Returns an error if the device tree node does not contain the correct properties to
+    /// describe a timer.
     pub fn in_device_tree<'dt>(
         node: NodePropertyIter<'dt>,
         intc: &impl InterruptController,
@@ -133,6 +140,7 @@ impl Timer {
         Ok(s)
     }
 
+    /// Initialize the system timer for the current core.
     // NOTE: you've gotta call this for every CPU because the timer itself is per-CPU
     // this is kinda strange, b/c it should really be in the mech trait
     pub fn start_for_core(&self, intc: &impl InterruptController) {
