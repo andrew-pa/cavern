@@ -356,7 +356,7 @@ mod tests {
         }
         // Next insert should fail
         let result = handle_map.insert(value.clone());
-        assert!(result.is_err(), "Expected insert to fail when map is full");
+        assert!(result.is_none(), "Expected insert to fail when map is full");
     }
 
     /// Test that inserting the same value multiple times returns different handles.
@@ -397,7 +397,7 @@ mod tests {
 
         // Attempt to insert another value, which should fail if the map is full.
         let result = handle_map.insert(value.clone());
-        assert!(result.is_err(), "Expected insert to fail when map is full");
+        assert!(result.is_none(), "Expected insert to fail when map is full");
     }
 
     /// Test concurrent inserts and gets to ensure consistent behavior.

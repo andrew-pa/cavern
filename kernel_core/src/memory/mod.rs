@@ -36,6 +36,9 @@ pub use page_table::PageTables;
 mod asid_pool;
 pub use asid_pool::{AddressSpaceId, AddressSpaceIdPool};
 
+mod free_list;
+pub use free_list::FreeListAllocator;
+
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
