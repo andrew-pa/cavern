@@ -14,6 +14,9 @@ use crate::memory::{
 /// A unique id for a process.
 pub type Id = crate::collections::Handle;
 
+/// The largest possible process ID in the system.
+pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
+
 /// The type of a image section.
 pub enum ImageSectionKind {
     /// Immutable data.
@@ -177,17 +180,22 @@ impl Process {
 
 /// Errors arising from [`ProcessManager`] operations.
 #[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
 pub enum ProcessManagerError {
     /// An error occurred during a memory operation.
     Memory {
         /// Underlying error.
         source: crate::memory::Error,
     },
+
     /// An error occurred during a page table operation.
     PageTables {
         /// Underlying error.
         source: crate::memory::page_table::Error,
     },
+
+    /// The kernel has run out of handles.
+    OutOfHandles,
 }
 
 /// An interface for managing processes and threads.
@@ -203,6 +211,7 @@ pub trait ProcessManager {
     fn spawn_thread(
         &self,
         parent_process: Arc<Process>,
+        entry_point: VirtualAddress,
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.

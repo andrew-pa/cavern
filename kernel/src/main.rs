@@ -117,13 +117,17 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     let cores = list_cores(&device_tree).expect("list cores in system");
     debug!("System has {} cores", cores.len());
 
-    process::thread::init(&cores);
+    process::init(&cores);
 
     exceptions::init_interrupts(&device_tree);
 
     init_smp(&device_tree, &cores);
 
-    init::spawn_init_process(initrd_slice, config.init_exec_name);
+    init::spawn_init_process(
+        initrd_slice,
+        config.init_exec_name,
+        process::PROCESS_MANAGER.get().unwrap(),
+    );
 
     info!("Boot succesful!");
 

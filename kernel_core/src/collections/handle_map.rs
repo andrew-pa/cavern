@@ -175,31 +175,27 @@ impl<T> HandleMap<T> {
         Some((table, (handle & 0xff) as usize))
     }
 
+    /// Allocate a new handle for use with [`Self::insert_with_handle()`].
+    pub fn preallocate_handle(&self) -> Option<Handle> {
+        self.allocator.next_handle()
+    }
+
     /// Get a new handle that refers to `value`.
     /// Calling this method twice with the same value may return two different handles.
     ///
     /// # Errors
-    /// If there are no handles left, then the value is returned in `Err`.
-    pub fn insert(&self, value: Arc<T>) -> Result<Handle, Arc<T>> {
-        match self.insert_self_referential(|_| value.clone()) {
-            Some((h, _)) => Ok(h),
-            None => Err(value),
-        }
+    /// If there are no handles left, then None is returned.
+    pub fn insert(&self, value: Arc<T>) -> Option<Handle> {
+        let handle = self.allocator.next_handle()?;
+        self.insert_with_handle(handle, value);
+        Some(handle)
     }
 
-    /// Get a new handle that refers to the result of `make_value`.
-    /// Returns the handle and the value that was made.
-    ///
-    /// # Errors
-    /// If there are no handles left, then the value is returned in `Err`.
+    /// Insert a value into the map with a given pre-allocated handle.
     ///
     /// # Panics
-    /// If internal invariants are violated.
-    pub fn insert_self_referential(
-        &self,
-        make_value: impl FnOnce(Handle) -> Arc<T>,
-    ) -> Option<(Handle, Arc<T>)> {
-        let handle = self.allocator.next_handle()?;
+    /// If the handle has already been inserted.
+    pub fn insert_with_handle(&self, handle: Handle, value: Arc<T>) {
         let mut handle_ix =
             ((u32::from(handle) - 1) << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
@@ -214,12 +210,13 @@ impl<T> HandleMap<T> {
             handle_ix = handle_ix.rotate_left(8);
         }
         let index = (handle_ix & 0xff) as usize;
-        let val = make_value(handle);
         unsafe {
-            let res = table.put_value(index, val.clone());
-            assert!(res.is_none(), "Because the allocator always returns a previously free handle, there should be nothing at this table position.");
+            let res = table.put_value(index, value);
+            assert!(
+                res.is_none(),
+                "Handle must be unused for insert_with_handle"
+            );
         }
-        Some((handle, val))
     }
 
     /// Returns a reference to the value associated with `handle`.

@@ -122,6 +122,17 @@ impl ProcessorState {
             registers: Registers::default(),
         }
     }
+
+    /// Create a new processor state suitable for a new user-space thread running in EL0.
+    #[must_use]
+    pub fn new_for_user_thread(entry_point: VirtualAddress, stack_pointer: VirtualAddress) -> Self {
+        Self {
+            spsr: SavedProgramStatus::initial_for_el0(),
+            program_counter: entry_point,
+            stack_pointer,
+            registers: Registers::default(),
+        }
+    }
 }
 
 /// Execution state of a thread.
@@ -178,27 +189,18 @@ pub struct Thread {
 
 impl Thread {
     /// Create a new Thread.
-    ///
-    /// # Panics
-    /// Panics if there are no thread IDs left.
     pub fn new(
-        store: &HandleMap<Thread>,
+        id: Id,
         parent: Option<Arc<Process>>,
         initial_state: State,
         initial_processor_state: ProcessorState,
-    ) -> Arc<Thread> {
-        store
-            .insert_self_referential(|id| {
-                log::trace!("creating thread id={id}");
-                Arc::new(Self {
-                    id,
-                    parent,
-                    properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
-                    processor_state: Mutex::new(initial_processor_state),
-                })
-            })
-            .expect("thread ids not exhausted")
-            .1
+    ) -> Thread {
+        Self {
+            id,
+            parent,
+            properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
+            processor_state: Mutex::new(initial_processor_state),
+        }
     }
 
     /// Load current thread state.
@@ -211,6 +213,9 @@ impl Thread {
 /// Abstract scheduler policy
 #[cfg_attr(test, mockall::automock)]
 pub trait Scheduler: Sync {
+    /// Add a new thread to the scheduler.
+    fn spawn_new_thread(&self, thread: Arc<Thread>);
+
     /// Get the currently running thread.
     fn current_thread(&self) -> Arc<Thread>;
 

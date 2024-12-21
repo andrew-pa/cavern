@@ -1,6 +1,6 @@
 //! Thread switching mechanism.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_core::{
     collections::HandleMap,
     memory::{AddressSpaceIdPool, VirtualAddress},
@@ -55,9 +55,11 @@ pub fn init(cores: &[CoreInfo]) {
     let init_threads: Vec<_> = cores
         .iter()
         .map(|info| {
-            let idle_thread = Thread::new(threads, None, State::Running, unsafe {
+            let id = threads.preallocate_handle().unwrap();
+            let idle_thread = Arc::new(Thread::new(id, None, State::Running, unsafe {
                 ProcessorState::new_for_idle_thread()
-            });
+            }));
+            threads.insert_with_handle(id, idle_thread.clone());
             (info.id, idle_thread)
         })
         .collect();

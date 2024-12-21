@@ -73,4 +73,8 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
             queue.push(last_thread);
         }
     }
+
+    fn spawn_new_thread(&self, thread: Arc<Thread>) {
+        todo!()
+    }
 }
