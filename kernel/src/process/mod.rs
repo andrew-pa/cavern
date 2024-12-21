@@ -2,7 +2,7 @@
 use alloc::sync::Arc;
 use kernel_core::{
     collections::HandleMap,
-    memory::VirtualAddress,
+    memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
     platform::cpu::CoreInfo,
     process::{
         thread::{ProcessorState, Scheduler, State},
@@ -10,6 +10,7 @@ use kernel_core::{
         Thread, ThreadId, MAX_PROCESS_ID,
     },
 };
+use log::debug;
 use snafu::OptionExt;
 use spin::Once;
 
@@ -35,6 +36,7 @@ impl ProcessManager for SystemProcessManager {
             .processes
             .preallocate_handle()
             .context(OutOfHandlesSnafu)?;
+        debug!("spawning process #{id}");
         let proc = Arc::new(Process::new(
             page_allocator(),
             id,
@@ -43,8 +45,12 @@ impl ProcessManager for SystemProcessManager {
         )?);
         self.processes.insert_with_handle(id, proc.clone());
 
-        // spawn the main thread
-        self.spawn_thread(proc.clone(), image.entry_point)?;
+        // spawn the main thread with an 8 MiB stack
+        self.spawn_thread(
+            proc.clone(),
+            image.entry_point,
+            8 * 1024 * 1024 / page_allocator().page_size(),
+        )?;
 
         Ok(proc)
     }
@@ -53,19 +59,31 @@ impl ProcessManager for SystemProcessManager {
         &self,
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
+        stack_size: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError> {
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
-        let pstate =
-            ProcessorState::new_for_user_thread(entry_point, todo!("allocate stack for thread"));
+        let stack = parent_process.allocate_memory(
+            page_allocator(),
+            stack_size,
+            &MemoryProperties {
+                writable: true,
+                executable: false,
+                user_space_access: true,
+                ..MemoryProperties::default()
+            },
+        )?;
+        let stack_ptr = stack.byte_add(stack_size * page_allocator().page_size());
+        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr);
+        debug!("creating thread #{id} in process #{}, entry point @ {entry_point:?}, stack @ {stack_ptr:?}", parent_process.id);
         let thread = Arc::new(Thread::new(
             id,
-            Some(parent_process),
+            Some(parent_process.clone()),
             State::Running,
             pstate,
         ));
         {
-            let ts = parent_process.threads.write();
+            let mut ts = parent_process.threads.write();
             ts.push(thread.clone());
         }
         threads.insert_with_handle(id, thread.clone());
@@ -84,15 +102,12 @@ impl ProcessManager for SystemProcessManager {
         todo!()
     }
 
-    fn thread_for_id(
-        &self,
-        thread_id: ThreadId,
-    ) -> Result<Option<Arc<Thread>>, ProcessManagerError> {
-        todo!()
+    fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {
+        thread::THREADS.get().unwrap().get(thread_id)
     }
 
-    fn process_for_id(&self, process_id: Id) -> Result<Option<Arc<Process>>, ProcessManagerError> {
-        todo!()
+    fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>> {
+        self.processes.get(process_id)
     }
 }
 

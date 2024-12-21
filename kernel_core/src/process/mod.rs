@@ -3,11 +3,12 @@ use alloc::{sync::Arc, vec::Vec};
 
 pub mod thread;
 use snafu::{ResultExt, Snafu};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
 
 use crate::memory::{
-    page_table::MemoryProperties, AddressSpaceId, AddressSpaceIdPool, PageAllocator, PageTables,
+    page_table::{MapBlockSize, MemoryProperties},
+    AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
     VirtualAddress,
 };
 
@@ -99,8 +100,11 @@ pub struct Process {
     /// The threads running in this process.
     pub threads: RwLock<Vec<Arc<Thread>>>,
 
-    /// The page tables that map this process' virtual memory space.
+    /// The page tables that map this process' virtual address space.
     pub page_tables: RwLock<PageTables<'static>>,
+
+    /// Allocator for pages in the process' virtual address space.
+    pub address_space_allocator: Mutex<FreeListAllocator>,
 
     /// The current address space ID and its generation.
     pub address_space_id: RwLock<(Option<AddressSpaceId>, u32)>,
@@ -109,17 +113,24 @@ pub struct Process {
 impl Process {
     /// Create a new process object.
     pub fn new(
-        allocator: &'static dyn PageAllocator,
+        allocator: &'static impl PageAllocator,
         id: Id,
         props: Properties,
         image: &[ImageSection],
     ) -> Result<Self, ProcessManagerError> {
         // setup the process' memory space
         let mut page_tables = PageTables::empty(allocator).context(MemorySnafu)?;
+        let page_size = allocator.page_size();
+        // Allocate memory for the process from the entire virtual memory address space.
+        let mut virt_alloc = FreeListAllocator::new(
+            VirtualAddress::null(),
+            0x0000_ffff_ffff_ffff / page_size,
+            page_size,
+        );
 
         for section in image {
             // compute the size of the section
-            let size_in_pages = section.total_size.div_ceil(allocator.page_size().into());
+            let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
             let memory = allocator.allocate(size_in_pages).context(MemorySnafu)?;
             // copy the data / zero the remainder
@@ -144,6 +155,10 @@ impl Process {
                     &section.kind.as_properties(),
                 )
                 .context(PageTablesSnafu)?;
+            // reserve the range with the allocator as well
+            virt_alloc
+                .reserve_range(section.base_address, size_in_pages)
+                .context(MemorySnafu)?;
         }
 
         Ok(Self {
@@ -151,6 +166,7 @@ impl Process {
             props,
             threads: RwLock::default(),
             page_tables: RwLock::new(page_tables),
+            address_space_allocator: Mutex::new(virt_alloc),
             address_space_id: RwLock::default(),
         })
     }
@@ -175,6 +191,46 @@ impl Process {
                 return (new.0, new.1 != generation);
             }
         }
+    }
+
+    /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
+    pub fn allocate_memory(
+        &self,
+        page_allocator: &'static impl PageAllocator,
+        size_in_pages: usize,
+        properties: &MemoryProperties,
+    ) -> Result<VirtualAddress, ProcessManagerError> {
+        let phys_addr = page_allocator
+            .allocate(size_in_pages)
+            .context(MemorySnafu)?;
+        let virt_addr = self
+            .address_space_allocator
+            .lock()
+            .alloc(size_in_pages)
+            .context(MemorySnafu)?
+            .start;
+        self.page_tables
+            .write()
+            .map(
+                virt_addr,
+                phys_addr,
+                size_in_pages,
+                MapBlockSize::Page,
+                properties,
+            )
+            .context(PageTablesSnafu)?;
+        Ok(virt_addr)
+    }
+
+    /// Free previously allocated memory in the process' virtual memory space, including the
+    /// backing physical pages.
+    pub fn free_memory(
+        &self,
+        page_allocator: &'static impl PageAllocator,
+        base_address: VirtualAddress,
+        size_in_pages: usize,
+    ) -> Result<(), ProcessManagerError> {
+        todo!()
     }
 }
 
@@ -208,10 +264,12 @@ pub trait ProcessManager {
     ) -> Result<Arc<Process>, ProcessManagerError>;
 
     /// Spawn a new thread with the given parent process.
+    /// The `stack_size` is in pages.
     fn spawn_thread(
         &self,
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
+        stack_size: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.
@@ -221,11 +279,8 @@ pub trait ProcessManager {
     fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError>;
 
     /// Get the thread associated with a thread ID.
-    fn thread_for_id(
-        &self,
-        thread_id: ThreadId,
-    ) -> Result<Option<Arc<Thread>>, ProcessManagerError>;
+    fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;
 
     /// Get the process associated with a process ID.
-    fn process_for_id(&self, process_id: Id) -> Result<Option<Arc<Process>>, ProcessManagerError>;
+    fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
 }
