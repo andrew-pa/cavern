@@ -2,6 +2,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 pub mod thread;
+use log::trace;
 use snafu::{ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
@@ -19,6 +20,7 @@ pub type Id = crate::collections::Handle;
 pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
 
 /// The type of a image section.
+#[derive(Debug)]
 pub enum ImageSectionKind {
     /// Immutable data.
     ReadOnly,
@@ -56,9 +58,13 @@ impl ImageSectionKind {
 
 /// A section of memory in a process image.
 pub struct ImageSection<'d> {
-    /// The base address in the process' address space.
+    /// The base address in the process' address space. This must be page aligned.
     pub base_address: VirtualAddress,
-    /// The total size of the section in bytes. Any bytes past the size of `data` will be zeroed.
+    /// Offset from the base address where the `data` will be copied to. Any bytes between the
+    /// start and the offset will be zeroed.
+    pub data_offset: usize,
+    /// The total size of the section in bytes (including the `data_offset` bytes).
+    /// Any bytes past the size of `data` will be zeroed.
     pub total_size: usize,
     /// The data that will be copied into the beginning of this section.
     pub data: &'d [u8],
@@ -66,7 +72,20 @@ pub struct ImageSection<'d> {
     pub kind: ImageSectionKind,
 }
 
+impl<'d> core::fmt::Debug for ImageSection<'d> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ImageSection")
+            .field("base_address", &self.base_address)
+            .field("total_size", &self.total_size)
+            .field("data.len()", &self.data.len())
+            .field("data_offset", &self.data_offset)
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
 /// A description of a process executable image.
+#[derive(Debug)]
 pub struct Image<'d> {
     /// The main entry point of the executable.
     pub entry_point: VirtualAddress,
@@ -77,9 +96,9 @@ pub struct Image<'d> {
 /// Properties describing a process
 pub struct Properties {
     /// The supervisor process for this process.
-    pub supervisor: Arc<Process>,
+    pub supervisor: Option<Arc<Process>>,
     /// The parent process that spawned this process.
-    pub parent: Arc<Process>,
+    pub parent: Option<Arc<Process>>,
     /// True if this process has driver-level access to the kernel.
     pub is_driver: bool,
     /// True if this process is privileged (can send messages outside of its supervisor).
@@ -118,6 +137,8 @@ impl Process {
         props: Properties,
         image: &[ImageSection],
     ) -> Result<Self, ProcessManagerError> {
+        trace!("creating new process object #{id}");
+
         // setup the process' memory space
         let mut page_tables = PageTables::empty(allocator).context(MemorySnafu)?;
         let page_size = allocator.page_size();
@@ -129,6 +150,7 @@ impl Process {
         );
 
         for section in image {
+            trace!("mapping setion {section:?}");
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
@@ -136,7 +158,14 @@ impl Process {
             // copy the data / zero the remainder
             let ptr: *mut u8 = memory.cast().into();
             unsafe {
-                core::ptr::copy_nonoverlapping(section.data.as_ptr(), ptr, section.data.len());
+                if section.data_offset > 0 {
+                    core::ptr::write_bytes(ptr, 0, section.data_offset);
+                }
+                core::ptr::copy_nonoverlapping(
+                    section.data.as_ptr(),
+                    ptr.byte_add(section.data_offset),
+                    section.data.len(),
+                );
                 if section.data.len() < section.total_size {
                     core::ptr::write_bytes(
                         ptr.add(section.data.len()),

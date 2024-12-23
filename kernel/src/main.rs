@@ -22,7 +22,7 @@ pub mod uart;
 use kernel_core::{
     config::Config,
     init,
-    memory::{PhysicalAddress, PhysicalPointer},
+    memory::{PageAllocator, PhysicalAddress, PhysicalPointer},
     platform::{
         cpu::{boot_all_cores, list_cores, CoreInfo},
         device_tree::DeviceTree,
@@ -127,7 +127,9 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         initrd_slice,
         config.init_exec_name,
         process::PROCESS_MANAGER.get().unwrap(),
-    );
+        memory::page_allocator().page_size(),
+    )
+    .expect("spawn init process");
 
     info!("Boot succesful!");
 

@@ -315,6 +315,17 @@ pub enum PageSize {
     SixteenKiB,
 }
 
+impl PageSize {
+    /// Returns the page base and offset for an address.
+    /// For example, if the page size was [`Self::FourKiB`] then an address `0xaaaa_abbb` would
+    /// become `(0xaaaa_a000, 0xbbb)`
+    pub fn split(self, addr: impl Into<usize>) -> (usize, usize) {
+        let addr: usize = addr.into();
+        let mask = usize::from(self) - 1;
+        (addr & !mask, addr & mask)
+    }
+}
+
 impl From<usize> for PageSize {
     fn from(value: usize) -> Self {
         match value {

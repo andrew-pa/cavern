@@ -10,7 +10,7 @@ use kernel_core::{
         Thread, ThreadId, MAX_PROCESS_ID,
     },
 };
-use log::debug;
+use log::{debug, trace};
 use snafu::OptionExt;
 use spin::Once;
 
@@ -63,6 +63,7 @@ impl ProcessManager for SystemProcessManager {
     ) -> Result<Arc<Thread>, ProcessManagerError> {
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
+        trace!("spawning thread #{id}");
         let stack = parent_process.allocate_memory(
             page_allocator(),
             stack_size,

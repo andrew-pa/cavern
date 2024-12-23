@@ -161,7 +161,7 @@ impl From<State> for u8 {
 bitfield::bitfield! {
     struct ThreadProperties(u64);
     impl Debug;
-    u8, from into State, state, set_state: 8, 0;
+    u8, from into State, state, set_state: 8, 1;
 }
 
 impl ThreadProperties {
