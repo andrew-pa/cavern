@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use bytemuck::Contiguous;
 use spin::Mutex;
 
-use crate::{collections::HandleMap, memory::VirtualAddress};
+use crate::memory::VirtualAddress;
 
 use super::Process;
 
@@ -189,6 +189,7 @@ pub struct Thread {
 
 impl Thread {
     /// Create a new Thread.
+    #[must_use]
     pub fn new(
         id: Id,
         parent: Option<Arc<Process>>,

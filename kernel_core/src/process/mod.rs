@@ -32,6 +32,7 @@ pub enum ImageSectionKind {
 
 impl ImageSectionKind {
     /// Convert an image section kind into the necessary memory properties to map the pages of that section.
+    #[must_use]
     pub fn as_properties(&self) -> MemoryProperties {
         match self {
             ImageSectionKind::ReadOnly => MemoryProperties {
@@ -72,7 +73,7 @@ pub struct ImageSection<'d> {
     pub kind: ImageSectionKind,
 }
 
-impl<'d> core::fmt::Debug for ImageSection<'d> {
+impl core::fmt::Debug for ImageSection<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ImageSection")
             .field("base_address", &self.base_address)
@@ -130,7 +131,11 @@ pub struct Process {
 }
 
 impl Process {
-    /// Create a new process object.
+    /// Create a new process object and sets up the process' virtual memory space using the `image`.
+    ///
+    /// # Errors
+    /// Returns an error if allocating physical memory for the process fails, or if a page table
+    /// mapping operation is invalid.
     pub fn new(
         allocator: &'static impl PageAllocator,
         id: Id,
@@ -223,6 +228,10 @@ impl Process {
     }
 
     /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
+    ///
+    /// # Errors
+    /// Returns an error if the physical memory cannot be allocated, the virtual addresses in the
+    /// process' address space cannot be allocated, or if a page mapping operation fails.
     pub fn allocate_memory(
         &self,
         page_allocator: &'static impl PageAllocator,
@@ -253,6 +262,10 @@ impl Process {
 
     /// Free previously allocated memory in the process' virtual memory space, including the
     /// backing physical pages.
+    ///
+    /// # Errors
+    /// Returns an error if the physical pages or virtual addresses cannot be freed, or if a page
+    /// mapping operation fails.
     pub fn free_memory(
         &self,
         page_allocator: &'static impl PageAllocator,
@@ -286,6 +299,10 @@ pub enum ProcessManagerError {
 /// An interface for managing processes and threads.
 pub trait ProcessManager {
     /// Spawn a new process.
+    ///
+    /// # Errors
+    /// Returns an error if the process could not be spawned due to resource requirements or
+    /// invalid inputs.
     fn spawn_process(
         &self,
         image: &Image,
@@ -294,6 +311,10 @@ pub trait ProcessManager {
 
     /// Spawn a new thread with the given parent process.
     /// The `stack_size` is in pages.
+    ///
+    /// # Errors
+    /// Returns an error if the thread could not be spawned due to resource requirements or
+    /// invalid inputs.
     fn spawn_thread(
         &self,
         parent_process: Arc<Process>,
@@ -302,9 +323,15 @@ pub trait ProcessManager {
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.
+    ///
+    /// # Errors
+    /// TODO
     fn kill_process(&self, process: Arc<Process>) -> Result<(), ProcessManagerError>;
 
     /// Kill a thread.
+    ///
+    /// # Errors
+    /// TODO
     fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError>;
 
     /// Get the thread associated with a thread ID.

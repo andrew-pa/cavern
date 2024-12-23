@@ -7,7 +7,7 @@ use crate::platform::cpu::{CpuIdReader, Id as CpuId};
 use alloc::sync::Arc;
 use crossbeam::queue::SegQueue;
 use hashbrown::HashMap;
-use log::{debug, trace};
+use log::trace;
 
 /// A simple round-robin thread scheduler.
 pub struct RoundRobinScheduler<C: CpuIdReader> {

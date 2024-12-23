@@ -1,4 +1,5 @@
 //! A simple free-list allocator for pages in a virtual address space.
+#![allow(clippy::redundant_else)]
 use super::{Error, PageSize, VirtualAddress};
 use alloc::vec::Vec;
 
@@ -55,6 +56,7 @@ impl FreeListAllocator {
     /// This constructor does not enforce that `start` is actually page-aligned,
     /// nor does it validate that it's in the kernel range. For a production
     /// kernel, you might add such checks if needed.
+    #[must_use]
     pub fn new(start: VirtualAddress, pages: usize, page_size: PageSize) -> Self {
         let mut free_list = Vec::new();
         if pages > 0 {
@@ -102,7 +104,6 @@ impl FreeListAllocator {
                 // The front part remains free.
                 // The overlapping portion (from `start`) will be removed.
                 let overlap_begin_pages = pages_in_range(frange.start, start, self.page_size);
-                let overlap_end_pages = frange.pages - overlap_begin_pages;
 
                 // Overlap_end_pages is how many pages remain from `frange` after `start`.
                 // We'll keep the front portion as is:
@@ -244,6 +245,7 @@ impl FreeListAllocator {
     }
 
     /// Returns the total free space in **pages** (not bytes).
+    #[must_use]
     pub fn free_pages(&self) -> usize {
         self.free_list.iter().map(|r| r.pages).sum()
     }
@@ -341,7 +343,7 @@ mod tests {
 
         // We'll reserve 1 page, starting from `start_addr + (1 * page_size)`.
         // So effectively we remove the second page in the range.
-        let reserve_start = start_addr.byte_add(1 * 0x1000);
+        let reserve_start = start_addr.byte_add(0x1000);
         alloc.reserve_range(reserve_start, 1).unwrap();
 
         // Now 3 pages remain free

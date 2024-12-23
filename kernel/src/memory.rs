@@ -88,6 +88,7 @@ bitfield! {
 
 impl TranslationTableBaseRegister {
     /// Create a new TTBR value.
+    #[must_use]
     pub fn new(asid: u16, baddr: PhysicalAddress, cnp: bool) -> Self {
         let mut v = Self(0);
         v.set_asid(asid);
@@ -96,14 +97,14 @@ impl TranslationTableBaseRegister {
         v
     }
 
-    /// Read the value of TTBR0_EL1 (D19.2.152).
+    /// Read the value of `TTBR0_EL1` (D19.2.152).
     unsafe fn read_ttbr0_el1() -> Self {
         let mut value: u64;
         asm!("mrs {v}, TTBR0_EL1", v = out(reg) value);
         TranslationTableBaseRegister(value)
     }
 
-    /// Write TTBR0_EL1 with this value.
+    /// Write `TTBR0_EL1` with this value.
     unsafe fn write_ttbr0_el1(&self) {
         asm!("msr TTBR0_EL1, {v}", v = in(reg) self.0);
     }
@@ -114,7 +115,7 @@ impl TranslationTableBaseRegister {
 /// the previous address space ID will be flushed.
 ///
 /// # Safety
-/// This function changes the TTBR0_EL1 register, which will change the mapping of virtual addreses
+/// This function changes the `TTBR0_EL1` register, which will change the mapping of virtual addreses
 /// in EL0, so the caller must ensure that this is correct in context.
 pub unsafe fn switch_el0_context(
     new_page_tables: &PageTables,

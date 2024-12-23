@@ -5,6 +5,8 @@
 #![no_std]
 #![no_main]
 #![deny(missing_docs)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::cast_possible_truncation)]
 
 extern crate alloc;
 
@@ -40,7 +42,7 @@ fn locate_init_ramdisk<'dt>(
     device_tree: &'dt DeviceTree,
 ) -> Result<(PhysicalPointer<u8>, usize), kernel_core::platform::device_tree::ParseError<'dt>> {
     use byteorder::{BigEndian, ByteOrder};
-    use kernel_core::platform::device_tree::*;
+    use kernel_core::platform::device_tree::PropertyNotFoundSnafu;
     let start = device_tree
         .find_property(b"/chosen/linux,initrd-start")
         .context(PropertyNotFoundSnafu {

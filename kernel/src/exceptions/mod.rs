@@ -27,11 +27,13 @@ bitfield! {
 #[allow(unused)]
 impl CpuExceptionMask {
     /// A mask to enable all exceptions.
+    #[must_use]
     pub fn all_enabled() -> CpuExceptionMask {
         CpuExceptionMask(0)
     }
 
     /// A mask to disable all exceptions.
+    #[must_use]
     pub fn all_disabled() -> CpuExceptionMask {
         let mut s = CpuExceptionMask(0);
         s.set_debug(true);
@@ -43,6 +45,7 @@ impl CpuExceptionMask {
 
     /// Read the CPU exception mask register (DAIF).
     #[inline]
+    #[must_use]
     pub fn read() -> CpuExceptionMask {
         let mut v: u64;
         unsafe {

@@ -72,6 +72,7 @@ pub fn init(cores: &[CoreInfo]) {
 }
 
 /// Read the current value of the `SPSR_EL1` register.
+#[must_use]
 pub fn read_saved_program_status() -> SavedProgramStatus {
     let mut v: u64;
     unsafe {
@@ -89,6 +90,7 @@ pub unsafe fn write_saved_program_status(spsr: &SavedProgramStatus) {
 }
 
 /// Read the value of the program counter when the exception occured.
+#[must_use]
 pub fn read_exception_link_reg() -> VirtualAddress {
     let mut v: usize;
     unsafe {
@@ -106,6 +108,7 @@ pub unsafe fn write_exception_link_reg(addr: VirtualAddress) {
 }
 
 /// Reads the stack pointer for exception level `el`.
+#[must_use]
 pub fn read_stack_pointer(el: u8) -> VirtualAddress {
     let mut v: usize;
     unsafe {

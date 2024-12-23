@@ -95,11 +95,11 @@ impl ProcessManager for SystemProcessManager {
         Ok(thread)
     }
 
-    fn kill_process(&self, process: Arc<Process>) -> Result<(), ProcessManagerError> {
+    fn kill_process(&self, _process: Arc<Process>) -> Result<(), ProcessManagerError> {
         todo!()
     }
 
-    fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError> {
+    fn kill_thread(&self, _thread: Arc<Thread>) -> Result<(), ProcessManagerError> {
         todo!()
     }
 

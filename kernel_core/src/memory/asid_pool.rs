@@ -42,10 +42,11 @@ impl Default for AddressSpaceIdPool {
 
 impl AddressSpaceIdPool {
     /// Creates a new ASID pool.
+    #[must_use]
     pub fn new(max_asid: u16) -> Self {
         AddressSpaceIdPool {
             generation: AtomicU32::new(0),
-            allocator: HandleAllocator::new(NonZeroU32::new(max_asid as u32).unwrap()),
+            allocator: HandleAllocator::new(NonZeroU32::new(u32::from(max_asid)).unwrap()),
         }
     }
 
@@ -102,6 +103,9 @@ impl AddressSpaceIdPool {
     ///
     /// - `Ok(())` if the ASID was successfully freed.
     /// - `Err(Error)` if the ASID was out of bounds or not allocated.
+    ///
+    /// # Errors
+    /// Returns an error if the handle could not be freed.
     ///
     /// # Notes
     ///

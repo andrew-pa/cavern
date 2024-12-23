@@ -6,7 +6,7 @@ use snafu::{ResultExt, Snafu};
 use tar_no_std::TarArchiveRef;
 
 use crate::{
-    memory::{PageSize, PhysicalPointer, VirtualAddress},
+    memory::{PageSize, PhysicalPointer},
     process::{
         Image, ImageSection, ImageSectionKind, ProcessManager, ProcessManagerError, Properties,
     },
@@ -32,7 +32,11 @@ pub enum SpawnInitError {
     },
 }
 
-/// Spawn the `init` process.
+/// Spawn the `init` process by loading it from the initial ramdisk, parsing the binary and
+/// spawning a new process with the loaded image.
+///
+/// # Errors
+/// Returns an error if the init process is invalid or missing, or if spawning the process fails.
 pub fn spawn_init_process(
     (init_ramdisk_ptr, init_ramdisk_len): (PhysicalPointer<u8>, usize),
     init_exec_name: &str,

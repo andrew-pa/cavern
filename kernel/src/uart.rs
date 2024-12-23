@@ -21,6 +21,7 @@ unsafe impl Send for PL011 {}
 impl PL011 {
     /// Configure the driver using information from a device tree node.
     /// The node must follow the spec at [].
+    #[must_use]
     pub fn from_device_tree(dt: &DeviceTree, path: &[u8]) -> Option<Self> {
         let mut base_address = None;
         for (name, value) in dt.iter_node_properties(path)? {
