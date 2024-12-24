@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 pub mod thread;
 use log::trace;
-use snafu::{ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
 
@@ -261,7 +261,8 @@ impl Process {
     }
 
     /// Free previously allocated memory in the process' virtual memory space, including the
-    /// backing physical pages.
+    /// backing physical pages. The `base_address` must have been returned by a call to
+    /// `allocate_memory` with exactly `size_in_pages`.
     ///
     /// # Errors
     /// Returns an error if the physical pages or virtual addresses cannot be freed, or if a page
@@ -272,7 +273,22 @@ impl Process {
         base_address: VirtualAddress,
         size_in_pages: usize,
     ) -> Result<(), ProcessManagerError> {
-        todo!()
+        let paddr = self
+            .page_tables
+            .read()
+            .physical_address_of(base_address)
+            .context(MissingSnafu {
+                cause: "virtual address does not map to a physical address",
+            })?;
+        page_allocator
+            .free(paddr, size_in_pages)
+            .context(MemorySnafu)?;
+        self.page_tables
+            .write()
+            .unmap(base_address, size_in_pages, MapBlockSize::Page)
+            .context(PageTablesSnafu)?;
+
+        Ok(())
     }
 }
 
@@ -294,6 +310,12 @@ pub enum ProcessManagerError {
 
     /// The kernel has run out of handles.
     OutOfHandles,
+
+    /// An `Option` was `None`.
+    Missing {
+        /// The source of the `None` option.
+        cause: &'static str,
+    },
 }
 
 /// An interface for managing processes and threads.
