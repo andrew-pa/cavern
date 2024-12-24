@@ -39,16 +39,17 @@ kernel_load_addr := "41000000"
 initrd_load_addr := "44000000"
 
 # Create U-boot image for the kernel.
-make-kernel-image kernel_elf_path=(binary_path / "kernel") mkimage_args="": build
+make-kernel-image mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
+    kernel_elf_path={{binary_path / "kernel"}}
     mkdir -p {{img_dir}}
-    if [ "{{img_dir / "kernel.img"}}" -nt "{{kernel_elf_path}}" ]; then
+    if [ "{{img_dir / "kernel.img"}}" -nt "$kernel_elf_path" ]; then
         echo "kernel image already up-to-date"
         exit 0
     fi
     flat_binary_path=$(mktemp -t kernel.XXXXXX.img)
-    {{target_prefix}}objcopy -O binary {{kernel_elf_path}} $flat_binary_path
+    {{target_prefix}}objcopy -O binary $kernel_elf_path $flat_binary_path
     {{mkimage_bin}} -A arm64 -O linux -T kernel -C none -a {{kernel_load_addr}} -e {{kernel_load_addr}} -n "cavern-kernel" -d $flat_binary_path {{mkimage_args}} {{img_dir / "kernel.img"}}
     rm $flat_binary_path
 
@@ -57,13 +58,29 @@ make-initrd-image mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
     mkdir -p {{img_dir}}
+    contents=("init")
+    output={{img_dir / "initrd.img"}}
+    newer_found=false
+    for file in "${contents[@]}"; do
+        if [[ "{{binary_path}}/$file" -nt "$output" ]]; then
+            echo "$file changed in initrd image"
+            newer_found=true
+            break
+        fi
+    done
+    if ! $newer_found; then
+        echo "initrd image already up-to-date"
+        exit 0
+    fi
     archive_path=$(mktemp -t initrd.XXXXXX.tar)
-    tar --format=ustar -cf $archive_path -C {{binary_path}} init
-    {{mkimage_bin}} -A arm64 -O linux -T ramdisk -C none -a {{kernel_load_addr}} -n "cavern-initrd" -d $archive_path {{mkimage_args}} {{img_dir / "initrd.img"}}
+    tar --format=ustar -cf $archive_path -C {{binary_path}} ${contents[@]}
+    {{mkimage_bin}} -A arm64 -O linux -T ramdisk -C none -a {{kernel_load_addr}} -n "cavern-initrd" -d $archive_path {{mkimage_args}} $output
     rm $archive_path
 
+make-images mkimage_args="": (make-kernel-image mkimage_args) (make-initrd-image mkimage_args)
+
 # Run the system in QEMU.
-run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-kernel-image
+run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
     #!/bin/sh
     set -euxo pipefail
     qemu-system-aarch64 \
