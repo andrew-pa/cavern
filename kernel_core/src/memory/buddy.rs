@@ -307,6 +307,7 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
             pages_ptr.cast() >= self.base_addr && pages_ptr.cast() < self.end_addr,
             UnknownPtrSnafu
         );
+        ensure!(pages.is_aligned_to(self.page_size.into()), UnknownPtrSnafu);
 
         let block_size = num_pages
             .checked_next_power_of_two()

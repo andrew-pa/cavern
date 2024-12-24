@@ -33,7 +33,7 @@ impl GlobalValueReader for SystemGlobalValueReader {
 static LOGGER: Once<Logger<uart::PL011, SystemGlobalValueReader>> = Once::new();
 
 /// Initialize the kernel global logger.
-pub fn init_logging(device_tree: &DeviceTree) {
+pub fn init_logging(device_tree: &DeviceTree, max_log_level: log::LevelFilter) {
     let stdout_device_path = device_tree
         .find_property(b"/chosen/stdout-path")
         .and_then(Value::into_bytes)
@@ -43,8 +43,8 @@ pub fn init_logging(device_tree: &DeviceTree) {
 
     let uart = uart::PL011::from_device_tree(device_tree, stdout_device_path).expect("init UART");
 
-    log::set_max_level(log::LevelFilter::max());
-    log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
+    log::set_max_level(max_log_level);
+    log::set_logger(LOGGER.call_once(|| Logger::new(uart, max_log_level)) as _).unwrap();
 
     info!(
         "\x1b[1mCavern 🕳️\x1b[0m v{} (git: {}@{})",

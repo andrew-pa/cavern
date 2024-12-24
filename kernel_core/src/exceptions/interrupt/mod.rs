@@ -58,4 +58,7 @@ pub trait Controller {
 
     /// Inform the interrupt controller that the system has finished processing an interrupt.
     fn finish_interrupt(&self, id: Id);
+
+    /// Broadcast a Software Generated Interrupt (SGI) to all other cores.
+    fn broadcast_sgi(&self, sgi_id: u8);
 }

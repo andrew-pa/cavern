@@ -308,8 +308,8 @@ fn pages_per_entry(level: u8, page_size: PageSize) -> usize {
 }
 
 /// Page table traversal closure (recursive).
-struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
-    parent: &'s PageTables<'pa, PA>,
+struct Walker<'a, 's, 'pa, F> {
+    parent: &'s PageTables<'pa>,
     /// Level where entries will be passed to `f`.
     end_level: u8,
     block_size_in_bytes: usize,
@@ -320,8 +320,9 @@ struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
     f: &'a mut F,
 }
 
-impl<PA: PageAllocator, F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>
-    Walker<'_, '_, '_, PA, F>
+impl<F> Walker<'_, '_, '_, F>
+where
+    F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>,
 {
     fn next_table_for_entry(
         &self,
@@ -419,8 +420,8 @@ impl<PA: PageAllocator, F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Erro
 /// A page table data structure in memory.
 ///
 /// This structure manages the entire tree of tables.
-pub struct PageTables<'pa, PA: PageAllocator> {
-    page_allocator: &'pa PA,
+pub struct PageTables<'pa> {
+    page_allocator: &'pa dyn PageAllocator,
     /// this is also the number of entries in one table (because a table takes exactly one page).
     entries_per_page: usize,
     root: *mut Entry,
@@ -430,14 +431,17 @@ pub struct PageTables<'pa, PA: PageAllocator> {
 }
 
 // SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively.
-unsafe impl<PA: PageAllocator> Send for PageTables<'_, PA> {}
+unsafe impl Send for PageTables<'_> {}
+// SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively, and
+// mutation must happen via `&mut PageTables`.
+unsafe impl Sync for PageTables<'_> {}
 
-impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
+impl<'pa> PageTables<'pa> {
     /// Create a new page tables structure that has no mappings.
     ///
     /// # Errors
     /// - Returns an error if the page allocator fails to allocate the root table.
-    pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
+    pub fn empty(page_allocator: &'pa dyn PageAllocator) -> Result<Self, super::Error> {
         let root = page_allocator.allocate_zeroed(1)?;
         unsafe { Ok(Self::from_existing(page_allocator, root, false)) }
     }
@@ -453,7 +457,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// # Panics
     /// - If the root table address is null or not aligned to the size of a page.
     pub unsafe fn from_existing(
-        page_allocator: &'pa PA,
+        page_allocator: &'pa dyn PageAllocator,
         root_table_address: PhysicalAddress,
         high_tag: bool,
     ) -> Self {
@@ -712,7 +716,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     }
 }
 
-impl<PA: PageAllocator> core::fmt::Debug for PageTables<'_, PA> {
+impl core::fmt::Debug for PageTables<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(
             f,
@@ -723,7 +727,7 @@ impl<PA: PageAllocator> core::fmt::Debug for PageTables<'_, PA> {
     }
 }
 
-impl<PA: PageAllocator> Drop for PageTables<'_, PA> {
+impl Drop for PageTables<'_> {
     fn drop(&mut self) {
         self.drop_table(0, self.root);
     }
@@ -743,8 +747,8 @@ mod tests {
 
     use MapBlockSize::*;
 
-    fn check_mapping<PA: PageAllocator>(
-        pt: &PageTables<'_, PA>,
+    fn check_mapping(
+        pt: &PageTables<'_>,
         physical_start: PhysicalAddress,
         virtual_start: VirtualAddress,
         count: usize,

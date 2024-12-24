@@ -2,6 +2,7 @@
 
 use core::{
     marker::PhantomData,
+    num::NonZeroU32,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -10,7 +11,8 @@ use alloc::{boxed::Box, sync::Arc};
 
 use super::HandleAllocator;
 
-pub type Handle = u32;
+/// A handle allocated by a [`HandleAllocator`].
+pub type Handle = NonZeroU32;
 
 struct Table<T>([AtomicUsize; 256], PhantomData<Arc<T>>);
 
@@ -162,7 +164,8 @@ impl<T> HandleMap<T> {
     }
 
     fn leaf_table_for_handle(&self, handle: Handle) -> Option<(&Table<T>, usize)> {
-        let mut handle = (handle << self.handle_zeros_prefix_bit_length).rotate_left(8);
+        let mut handle =
+            ((u32::from(handle) - 1) << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
         for _ in 0..(self.depth - 1) {
             let index = handle & 0xff;
@@ -172,50 +175,48 @@ impl<T> HandleMap<T> {
         Some((table, (handle & 0xff) as usize))
     }
 
+    /// Allocate a new handle for use with [`Self::insert_with_handle()`].
+    pub fn preallocate_handle(&self) -> Option<Handle> {
+        self.allocator.next_handle()
+    }
+
     /// Get a new handle that refers to `value`.
     /// Calling this method twice with the same value may return two different handles.
     ///
     /// # Errors
-    /// If there are no handles left, then the value is returned in `Err`.
-    pub fn insert(&self, value: Arc<T>) -> Result<Handle, Arc<T>> {
-        match self.insert_self_referential(|_| value.clone()) {
-            Some((h, _)) => Ok(h),
-            None => Err(value),
-        }
+    /// If there are no handles left, then None is returned.
+    pub fn insert(&self, value: Arc<T>) -> Option<Handle> {
+        let handle = self.allocator.next_handle()?;
+        self.insert_with_handle(handle, value);
+        Some(handle)
     }
 
-    /// Get a new handle that refers to the result of `make_value`.
-    /// Returns the handle and the value that was made.
-    ///
-    /// # Errors
-    /// If there are no handles left, then the value is returned in `Err`.
+    /// Insert a value into the map with a given pre-allocated handle.
     ///
     /// # Panics
-    /// If internal invariants are violated.
-    pub fn insert_self_referential(
-        &self,
-        make_value: impl FnOnce(Handle) -> Arc<T>,
-    ) -> Option<(Handle, Arc<T>)> {
-        let handle = self.allocator.next_handle()?;
-        let mut handle = (handle << self.handle_zeros_prefix_bit_length).rotate_left(8);
+    /// If the handle has already been inserted.
+    pub fn insert_with_handle(&self, handle: Handle, value: Arc<T>) {
+        let mut handle_ix =
+            ((u32::from(handle) - 1) << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
         for _ in 0..(self.depth - 1) {
-            let index = handle & 0xff;
+            let index = handle_ix & 0xff;
             table = unsafe {
                 match table.get_table(index as usize) {
                     Some(t) => t.as_ref(),
                     None => table.new_next_level_table(index as usize).as_ref(),
                 }
             };
-            handle = handle.rotate_left(8);
+            handle_ix = handle_ix.rotate_left(8);
         }
-        let index = (handle & 0xff) as usize;
-        let val = make_value(handle);
+        let index = (handle_ix & 0xff) as usize;
         unsafe {
-            let res = table.put_value(index, val.clone());
-            assert!(res.is_none(), "Because the allocator always returns a previously free handle, there should be nothing at this table position.");
+            let res = table.put_value(index, value);
+            assert!(
+                res.is_none(),
+                "Handle must be unused for insert_with_handle"
+            );
         }
-        Some((handle, val))
     }
 
     /// Returns a reference to the value associated with `handle`.
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         println!("created map");
         let value = Arc::new(42);
         println!("pre-insert");
@@ -273,7 +274,7 @@ mod tests {
     #[test_case(1024)]
     #[test_case(0xffff)]
     fn get_back_what_you_put_in(n: u32) {
-        let map: HandleMap<usize> = HandleMap::new(n);
+        let map: HandleMap<usize> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut handles = Vec::new();
         let mut values = HashSet::new();
         for i in 0..n {
@@ -295,7 +296,7 @@ mod tests {
     #[test_case(1024)]
     #[test_case(0xffff)]
     fn remove_back_what_you_put_in(n: u32) {
-        let map: HandleMap<usize> = HandleMap::new(n);
+        let map: HandleMap<usize> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut handles = Vec::new();
         let mut values = HashSet::new();
         for i in 0..n {
@@ -317,15 +318,15 @@ mod tests {
     #[test]
     fn test_get_unknown_handle() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
-        assert!(handle_map.get(999).is_none());
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
+        assert!(handle_map.get(NonZeroU32::new(999).unwrap()).is_none());
     }
 
     /// Test that `remove` removes the value and subsequent `get` returns `None`.
     #[test]
     fn test_remove() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let handle = handle_map.insert(value.clone()).expect("Insert failed");
         let removed_value = handle_map.remove(handle).expect("Remove failed");
@@ -337,16 +338,16 @@ mod tests {
     #[test]
     fn test_remove_unknown_handle() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
-        assert!(handle_map.remove(999).is_none());
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
+        assert!(handle_map.remove(NonZeroU32::new(999).unwrap()).is_none());
     }
 
     /// Test that inserting more than `max_handle` values returns `Err`.
     #[test_case(1)]
     #[test_case(5)]
     #[test_case(10)]
-    fn test_insert_max_handles(max_handle: Handle) {
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+    fn test_insert_max_handles(max_handle: u32) {
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let mut handles = Vec::new();
         for _ in 0..max_handle {
@@ -355,14 +356,14 @@ mod tests {
         }
         // Next insert should fail
         let result = handle_map.insert(value.clone());
-        assert!(result.is_err(), "Expected insert to fail when map is full");
+        assert!(result.is_none(), "Expected insert to fail when map is full");
     }
 
     /// Test that inserting the same value multiple times returns different handles.
     #[test]
     fn test_insert_same_value_different_handles() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let handle1 = handle_map.insert(value.clone()).expect("Insert failed");
         let handle2 = handle_map.insert(value.clone()).expect("Insert failed");
@@ -379,7 +380,7 @@ mod tests {
     )]
     fn test_concurrent_inserts(num_threads: usize, num_handles_per_thread: usize) {
         let max_handle = num_threads * num_handles_per_thread;
-        let handle_map = Arc::new(HandleMap::new(max_handle as u32));
+        let handle_map = Arc::new(HandleMap::new(NonZeroU32::new(max_handle as u32).unwrap()));
         let value = Arc::new(42);
 
         thread::scope(|s| {
@@ -396,7 +397,7 @@ mod tests {
 
         // Attempt to insert another value, which should fail if the map is full.
         let result = handle_map.insert(value.clone());
-        assert!(result.is_err(), "Expected insert to fail when map is full");
+        assert!(result.is_none(), "Expected insert to fail when map is full");
     }
 
     /// Test concurrent inserts and gets to ensure consistent behavior.
@@ -408,7 +409,7 @@ mod tests {
     #[test_case(0xffff, 32)]
     #[test_case(1234, 5)]
     fn test_concurrent_insert_and_get(n: u32, num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(n);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut test_vals = HashMap::new();
         for i in 0..(n / 3) {
             let h = map.insert(Arc::new(i * 10)).unwrap();
@@ -456,7 +457,7 @@ mod tests {
     #[test_case(0xffff, 32)]
     #[test_case(1234, 5)]
     fn test_concurrent_insert_and_remove(n: u32, num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(n);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut test_vals = HashMap::new();
         for i in 0..(n / 3) {
             let h = map.insert(Arc::new(i * 10)).unwrap();
@@ -491,7 +492,7 @@ mod tests {
 
     #[test_case(8)]
     fn concurrent_independent_insert_remove(num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(1024);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(1024).unwrap());
 
         thread::scope(|s| {
             for n in 0..num_threads {
@@ -512,7 +513,7 @@ mod tests {
     #[test]
     fn test_handle_uniqueness() {
         let max_handle = 1000;
-        let handle_map = HandleMap::new(max_handle);
+        let handle_map = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let mut handles = HashSet::new();
 

@@ -56,6 +56,9 @@ pub struct Psci {
 
 impl Psci {
     /// Create a new client using device tree information for portability.
+    ///
+    /// # Errors
+    /// Returns an error if the device tree does not contain a `/psci` node with the correct values.
     pub fn in_device_tree<'a>(dt: &'a DeviceTree) -> Result<Self, ParseError<'a>> {
         let mut calling_method = None;
         let mut func_id_cpu_on = None;

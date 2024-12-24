@@ -182,6 +182,7 @@ mod tests {
     /// Tests that `ArcSwap` properly drops the contained `Arc<T>` on drop.
     #[test]
     fn test_drop() {
+        #[allow(dead_code)]
         struct TestDrop(Arc<()>);
         let drop_flag = Arc::new(());
         let data = Arc::new(TestDrop(drop_flag.clone()));

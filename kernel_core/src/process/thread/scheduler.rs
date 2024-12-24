@@ -73,4 +73,10 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
             queue.push(last_thread);
         }
     }
+
+    fn spawn_new_thread(&self, thread: Arc<Thread>) {
+        let (id, qu) = self.queues.iter().min_by_key(|(_, q)| q.len()).unwrap();
+        trace!("spawning thread #{} on cpu #{id}", thread.id);
+        qu.push(thread);
+    }
 }

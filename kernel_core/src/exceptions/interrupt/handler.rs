@@ -1,5 +1,5 @@
 use crate::{platform::timer::SystemTimer, process::thread::Scheduler};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 
 use super::Id as InterruptId;
 
@@ -43,6 +43,13 @@ impl<'ic, 'sc, 't, T: SystemTimer, IC: super::Controller, Sched: Scheduler>
                 debug!("timer interrupt");
                 self.scheduler.next_time_slice();
                 self.timer.reset();
+            } else if int_id == 0 {
+                // another core has panicked
+                warn!("panic on other core, halting");
+                // this is somewhat inelegant (halting is an effect after all), but since panics
+                // themselves are both rare and inelegant it is fine for now.
+                #[allow(clippy::empty_loop)]
+                loop {}
             } else {
                 return Err(Error::UnknownInterrupt(int_id));
             }

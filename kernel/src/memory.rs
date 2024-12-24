@@ -5,12 +5,14 @@
 //! - the MMU and the kernel page tables
 //! - the Rust heap
 use crate::running_image;
-use core::ptr::addr_of_mut;
+use bitfield::bitfield;
+use core::{arch::asm, ptr::addr_of_mut};
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{
         page_table::{MapBlockSize, MemoryKind, MemoryProperties},
-        BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables, PhysicalAddress,
+        AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
+        PhysicalAddress, PhysicalPointer,
     },
     platform::device_tree::DeviceTree,
 };
@@ -22,26 +24,27 @@ extern "C" {
     static mut _kernel_page_table_root: u8;
 }
 
-type ChosenPageAllocator = BuddyPageAllocator;
+/// The selected platform page allocator implementation.
+pub type PlatformPageAllocator = BuddyPageAllocator;
 
 /// The global physical page allocator.
-static PAGE_ALLOCATOR: Once<ChosenPageAllocator> = Once::new();
+static PAGE_ALLOCATOR: Once<PlatformPageAllocator> = Once::new();
 
 #[global_allocator]
 /// The Rust global heap allocator.
-static ALLOCATOR: HeapAllocator<'static, ChosenPageAllocator> = HeapAllocator::new_uninit();
+static ALLOCATOR: HeapAllocator<'static, PlatformPageAllocator> = HeapAllocator::new_uninit();
 
 /// The kernel's own page tables.
 ///
 /// Map addresses in TTBR1, matching `0xffff_????_????_????`.
-static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static, ChosenPageAllocator>>> = Once::new();
+static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static>>> = Once::new();
 
 /// Flush the TLB for everything in EL1.
 ///
 /// # Safety
 /// It is up to the caller to make sure that the flush makes sense in context.
-pub unsafe fn flush_tlb_total_el1() {
-    core::arch::asm!(
+unsafe fn flush_tlb_total_el1() {
+    asm!(
         "DSB ISHST",    // ensure writes to tables have completed
         "TLBI VMALLE1", // flush entire TLB. The programming guide uses the 'ALLE1'
         // variant, which causes a fault in QEMU with EC=0, but
@@ -52,16 +55,100 @@ pub unsafe fn flush_tlb_total_el1() {
     );
 }
 
-/// Write the `MAIR_EL1` register.
-pub unsafe fn write_mair(value: u64) {
+/// Flush the TLB for a specific out-going ASID.
+///
+/// # Safety
+/// It is up to the caller to make sure that the flush makes sense in context.
+unsafe fn flush_tlb_for_asid(asid: u16) {
     core::arch::asm!(
+        "DSB ISHST", // ensure writes to tables have completed
+        "TLBI ASIDE1, {asid:x}", // flush TLB entries associated with ASID
+        "DSB ISH", // ensure that flush has completed
+        "ISB", // make sure next instruction is fetched with changes
+        asid = in(reg) asid
+    );
+}
+
+/// Write the `MAIR_EL1` register.
+unsafe fn write_mair(value: u64) {
+    asm!(
         "msr MAIR_EL1, {val}",
         val = in(reg) value
     );
 }
 
+bitfield! {
+    /// A value for a TTBR*_EL* register, holding the base address for the current page translation table.
+    pub struct TranslationTableBaseRegister(u64);
+    impl Debug;
+    u16, asid, set_asid: 63, 48;
+    u64, baddr, set_baddr: 47, 1;
+    cnp, set_cnp: 0;
+}
+
+impl TranslationTableBaseRegister {
+    /// Create a new TTBR value.
+    #[must_use]
+    pub fn new(asid: u16, baddr: PhysicalAddress, cnp: bool) -> Self {
+        let mut v = Self(0);
+        v.set_asid(asid);
+        v.set_baddr(usize::from(baddr) as u64);
+        v.set_cnp(cnp);
+        v
+    }
+
+    /// Read the value of `TTBR0_EL1` (D19.2.152).
+    unsafe fn read_ttbr0_el1() -> Self {
+        let mut value: u64;
+        asm!("mrs {v}, TTBR0_EL1", v = out(reg) value);
+        TranslationTableBaseRegister(value)
+    }
+
+    /// Write `TTBR0_EL1` with this value.
+    unsafe fn write_ttbr0_el1(&self) {
+        asm!("msr TTBR0_EL1, {v}", v = in(reg) self.0);
+    }
+}
+
+/// Switch to a new set of page tables in EL0.
+/// If `full_flush` is true, then all EL0 TLB entries will be flushed, otherwise only entries for
+/// the previous address space ID will be flushed.
+///
+/// # Safety
+/// This function changes the `TTBR0_EL1` register, which will change the mapping of virtual addreses
+/// in EL0, so the caller must ensure that this is correct in context.
+pub unsafe fn switch_el0_context(
+    new_page_tables: &PageTables,
+    new_address_space_id: AddressSpaceId,
+    full_flush: bool,
+) {
+    assert!(
+        !new_page_tables.high_tag(),
+        "page tables must map EL0 (0x0000_*) addresses!"
+    );
+    // compute new TTBR value
+    let new_ttbr = TranslationTableBaseRegister::new(
+        new_address_space_id.into(),
+        new_page_tables.physical_address(),
+        false,
+    );
+    // read TTBR0
+    let current_ttbr = TranslationTableBaseRegister::read_ttbr0_el1();
+    // if TTBR0 == new TTBR value, then do nothing
+    if new_ttbr.0 != current_ttbr.0 || full_flush {
+        // write TTBR0
+        new_ttbr.write_ttbr0_el1();
+        if full_flush {
+            flush_tlb_total_el1();
+        } else {
+            // flush cache for old ASID
+            flush_tlb_for_asid(current_ttbr.asid());
+        }
+    }
+}
+
 /// Initialize the memory subsystem.
-pub fn init(dt: &DeviceTree<'_>) {
+pub fn init(dt: &DeviceTree<'_>, initrd_slice: &(PhysicalPointer<u8>, usize)) {
     debug!("Initializing memory…");
     // create page allocator
     let page_size = PageSize::FourKiB;
@@ -82,6 +169,7 @@ pub fn init(dt: &DeviceTree<'_>) {
     let reserved_regions = [
         unsafe { running_image::memory_region() },
         dt.memory_region(),
+        (initrd_slice.0.into(), initrd_slice.1),
     ];
     let memory_start = PhysicalAddress::from(memory_range.0);
     let mut memory_regions = kernel_core::memory::subtract_ranges(

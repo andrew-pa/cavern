@@ -5,9 +5,11 @@
 //! `std` for convenience while building the kernel without it.
 //! The actual kernel entry point is in the `kernel` crate.
 #![no_std]
-#![deny(missing_docs)]
 #![feature(pointer_is_aligned_to)]
 #![feature(alloc_layout_extra)]
+#![deny(missing_docs)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::cast_possible_truncation)]
 
 #[cfg(all(test, not(target_os = "none")))]
 #[macro_use]
@@ -16,7 +18,9 @@ extern crate std;
 extern crate alloc;
 
 pub mod collections;
+pub mod config;
 pub mod exceptions;
+pub mod init;
 pub mod logger;
 pub mod memory;
 pub mod platform;

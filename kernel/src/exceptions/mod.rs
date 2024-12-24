@@ -8,6 +8,7 @@ mod interrupt;
 pub use interrupt::init as init_interrupts;
 pub use interrupt::init_for_core as init_interrupts_for_core;
 pub use interrupt::wait_for_interrupt;
+pub use interrupt::CONTROLLER as INTERRUPT_CONTROLLER;
 
 use bitfield::bitfield;
 
@@ -26,11 +27,13 @@ bitfield! {
 #[allow(unused)]
 impl CpuExceptionMask {
     /// A mask to enable all exceptions.
+    #[must_use]
     pub fn all_enabled() -> CpuExceptionMask {
         CpuExceptionMask(0)
     }
 
     /// A mask to disable all exceptions.
+    #[must_use]
     pub fn all_disabled() -> CpuExceptionMask {
         let mut s = CpuExceptionMask(0);
         s.set_debug(true);
@@ -42,6 +45,7 @@ impl CpuExceptionMask {
 
     /// Read the CPU exception mask register (DAIF).
     #[inline]
+    #[must_use]
     pub fn read() -> CpuExceptionMask {
         let mut v: u64;
         unsafe {

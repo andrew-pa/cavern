@@ -64,8 +64,8 @@ jobs:
         git submodule update --init --depth 1 vendor/u-boot
         just build_u-boot
 
-    - name: Build kernel image
-      run: just make-kernel-image
+    - name: Build kernel and initrd image
+      run: just make-images
 
     - name: Upload image artifacts
       uses: actions/upload-artifact@v4

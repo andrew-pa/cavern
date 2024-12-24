@@ -268,6 +268,24 @@ impl Controller for GenericV2 {
             self.cpu_base.add(cpu_regs::EOIR).write_volatile(id);
         }
     }
+
+    fn broadcast_sgi(&self, sgi_id: u8) {
+        // 0b01 = Forward to all but the requester.
+        let v = SoftwareGeneratedInterruptRegister::new(0b01, 0, sgi_id);
+        let dist = self.distributor_base.lock();
+        unsafe {
+            dist.add(dist_regs::SGIR).write_volatile(v.0);
+        }
+    }
+}
+
+bitfield::bitfield! {
+    struct SoftwareGeneratedInterruptRegister(u32);
+    impl Debug;
+    impl new;
+    u8, target_list_filter, set_target_list_filter: 25, 24;
+    u8, cpu_target_list, set_cpu_target_list: 23, 16;
+    u8, sgi_id, set_sgi_id: 3, 0;
 }
 
 /// Register offsets for the GIC distributor (relative to its base address, by u32s).

@@ -33,6 +33,12 @@ pub use subtract_ranges::*;
 pub mod page_table;
 pub use page_table::PageTables;
 
+mod asid_pool;
+pub use asid_pool::{AddressSpaceId, AddressSpaceIdPool};
+
+mod free_list;
+pub use free_list::FreeListAllocator;
+
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
@@ -309,6 +315,17 @@ pub enum PageSize {
     SixteenKiB,
 }
 
+impl PageSize {
+    /// Returns the page base and offset for an address.
+    /// For example, if the page size was [`Self::FourKiB`] then an address `0xaaaa_abbb` would
+    /// become `(0xaaaa_a000, 0xbbb)`
+    pub fn split(self, addr: impl Into<usize>) -> (usize, usize) {
+        let addr: usize = addr.into();
+        let mask = usize::from(self) - 1;
+        (addr & !mask, addr & mask)
+    }
+}
+
 impl From<usize> for PageSize {
     fn from(value: usize) -> Self {
         match value {
@@ -406,7 +423,7 @@ pub trait MemoryManagmentUnit {
     ///
     /// The page tables provided must be valid or else this function has undefined behavior.
     /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
-    unsafe fn activate_page_tables<PA: PageAllocator>(&self, tables: &PageTables<'_, PA>);
+    unsafe fn activate_page_tables(&self, tables: &PageTables<'_>);
 }
 
 #[cfg(test)]
