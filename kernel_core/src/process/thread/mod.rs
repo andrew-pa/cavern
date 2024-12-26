@@ -74,12 +74,12 @@ impl SavedProgramStatus {
         SavedProgramStatus(0)
     }
 
-    /// Creates a suitable SPSR value for a thread running at EL1 with its own stack using the
-    /// `SP_EL0` stack pointer.
+    /// Creates a suitable SPSR value for a thread running at EL1 on the kernel stack.
     #[must_use]
     pub fn initial_for_el1() -> SavedProgramStatus {
         let mut spsr = SavedProgramStatus(0);
         spsr.set_el(1);
+        spsr.set_sp(true);
         spsr
     }
 }
@@ -116,7 +116,7 @@ impl ProcessorState {
     #[must_use]
     pub unsafe fn new_for_idle_thread() -> Self {
         Self {
-            spsr: SavedProgramStatus(0),
+            spsr: SavedProgramStatus::initial_for_el1(),
             program_counter: VirtualAddress::from(0),
             stack_pointer: VirtualAddress::from(0),
             registers: Registers::default(),

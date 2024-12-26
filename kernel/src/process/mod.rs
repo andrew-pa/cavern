@@ -61,6 +61,12 @@ impl ProcessManager for SystemProcessManager {
         entry_point: VirtualAddress,
         stack_size: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError> {
+        let physical_entry = parent_process
+            .page_tables
+            .read()
+            .physical_address_of(entry_point);
+        debug!("physical entry point address = {physical_entry:?}");
+
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
         trace!("spawning thread #{id}");

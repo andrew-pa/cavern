@@ -155,7 +155,6 @@ impl Process {
         );
 
         for section in image {
-            trace!("mapping setion {section:?}");
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
@@ -173,20 +172,22 @@ impl Process {
                 );
                 if section.data.len() < section.total_size {
                     core::ptr::write_bytes(
-                        ptr.add(section.data.len()),
+                        ptr.byte_add(section.data_offset + section.data.len()),
                         0,
                         section.total_size - section.data.len(),
                     );
                 }
             }
             // map it into the process
+            let props = section.kind.as_properties();
+            trace!("mapping setion {section:?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
             page_tables
                 .map(
                     section.base_address,
                     memory,
                     size_in_pages,
                     crate::memory::page_table::MapBlockSize::Page,
-                    &section.kind.as_properties(),
+                    &props,
                 )
                 .context(PageTablesSnafu)?;
             // reserve the range with the allocator as well
@@ -194,6 +195,8 @@ impl Process {
                 .reserve_range(section.base_address, size_in_pages)
                 .context(MemorySnafu)?;
         }
+
+        trace!("process page tables: {page_tables:?}");
 
         Ok(Self {
             id,

@@ -1,6 +1,7 @@
 //! Page tables data structure.
 
 use bitfield::BitRange;
+use log::trace;
 use snafu::{ensure, ResultExt as _, Snafu};
 
 use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
@@ -64,6 +65,7 @@ pub enum MemoryKind {
 pub const MAIR_VALUE: u64 = 0x00_00_00_00__00_00_ff_00;
 
 impl MemoryKind {
+    /// See [`MAIR_VALUE`] for more details.
     #[inline]
     const fn encode(&self) -> u64 {
         match self {
@@ -729,6 +731,7 @@ impl core::fmt::Debug for PageTables<'_> {
 
 impl Drop for PageTables<'_> {
     fn drop(&mut self) {
+        trace!("dropping page tables @ {:x?}", self.root);
         self.drop_table(0, self.root);
     }
 }

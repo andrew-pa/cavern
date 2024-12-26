@@ -92,7 +92,9 @@ impl TranslationTableBaseRegister {
     pub fn new(asid: u16, baddr: PhysicalAddress, cnp: bool) -> Self {
         let mut v = Self(0);
         v.set_asid(asid);
-        v.set_baddr(usize::from(baddr) as u64);
+        // TODO: the shifting down by one comes from the TCR_EL1.T0SZ value and can be dynamic
+        // TODO: also we do not correct values in read for now
+        v.set_baddr(usize::from(baddr) as u64 >> 1);
         v.set_cnp(cnp);
         v
     }
@@ -134,6 +136,7 @@ pub unsafe fn switch_el0_context(
     );
     // read TTBR0
     let current_ttbr = TranslationTableBaseRegister::read_ttbr0_el1();
+    trace!("Switching EL0 context. New TTBR: {new_ttbr:x?}, Current TTBR: {current_ttbr:x?}. Full flush={full_flush}");
     // if TTBR0 == new TTBR value, then do nothing
     if new_ttbr.0 != current_ttbr.0 || full_flush {
         // write TTBR0

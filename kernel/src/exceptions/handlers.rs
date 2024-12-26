@@ -21,11 +21,17 @@ extern "C" {
 
 #[no_mangle]
 unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usize, far: usize) {
-    panic!(
-        "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
-        ExceptionSyndromeRegister(esr as u64),
-        regs.as_ref()
-    );
+    let esr = ExceptionSyndromeRegister(esr as u64);
+
+    if esr.ec().is_system_call() {
+        panic!("system call");
+    } else {
+        panic!(
+            "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
+            esr,
+            regs.as_ref()
+        );
+    }
 }
 
 #[no_mangle]

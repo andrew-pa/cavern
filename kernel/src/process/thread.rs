@@ -203,6 +203,6 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
     trace!(
         "restoring processor state to thread#{}, pc={:?}",
         current_thread.id,
-        s.program_counter
+        s.program_counter,
     );
 }
