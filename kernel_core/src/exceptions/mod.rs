@@ -14,7 +14,8 @@ bitfield::bitfield! {
     /// The class of exception that occurred.
     pub u8, into ExceptionClass, ec, _: 31, 26;
     il, _: 25, 25;
-    u32, iss, _: 24, 0;
+    /// Instruction Specific Syndrome value.
+    pub u32, iss, _: 24, 0;
 }
 
 /// An exception class, indicating what kind of synchronous exception occurred.

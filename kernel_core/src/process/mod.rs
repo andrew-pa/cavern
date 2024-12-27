@@ -1,11 +1,13 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-pub mod thread;
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
+
+pub mod system_calls;
+pub mod thread;
 
 use crate::memory::{
     page_table::{MapBlockSize, MemoryProperties},

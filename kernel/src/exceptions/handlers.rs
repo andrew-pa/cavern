@@ -1,8 +1,12 @@
 //! The exception vector and handler functions.
 
 use kernel_core::{exceptions::ExceptionSyndromeRegister, process::thread::Registers};
+use log::warn;
 
-use crate::process::thread::{restore_current_thread_state, save_current_thread_state};
+use crate::process::{
+    thread::{restore_current_thread_state, save_current_thread_state},
+    SYS_CALL_POLICY,
+};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
@@ -24,7 +28,18 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
     let esr = ExceptionSyndromeRegister(esr as u64);
 
     if esr.ec().is_system_call() {
-        panic!("system call");
+        let regs = regs
+            .as_mut()
+            .expect("asm exception vector code passes non-null ptr to registers object");
+        let result = SYS_CALL_POLICY
+            .get()
+            .expect("system call handler policy to be initialized before system calls are made")
+            .dispatch_system_call(esr.iss() as u16, regs)
+            .unwrap_or_else(|e| {
+                warn!("system call failed: {e}");
+                e.to_code()
+            });
+        regs.x[0] = result;
     } else {
         panic!(
             "synchronous exception! {}, FAR={far:x}, registers = {:x?}",

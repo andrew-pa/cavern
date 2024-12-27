@@ -5,6 +5,7 @@ use kernel_core::{
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
     platform::cpu::CoreInfo,
     process::{
+        system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
         Id, Image, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties,
         Thread, ThreadId, MAX_PROCESS_ID,
@@ -118,10 +119,14 @@ impl ProcessManager for SystemProcessManager {
     }
 }
 
+/// The global system call handler policy instance.
+pub static SYS_CALL_POLICY: Once<SystemCalls<'static, SystemProcessManager>> = Once::new();
+
 /// Initialize processes/threading.
 pub fn init(cores: &[CoreInfo]) {
     thread::init(cores);
-    PROCESS_MANAGER.call_once(|| SystemProcessManager {
+    let pm = PROCESS_MANAGER.call_once(|| SystemProcessManager {
         processes: HandleMap::new(MAX_PROCESS_ID),
     });
+    SYS_CALL_POLICY.call_once(|| SystemCalls::new(pm));
 }
