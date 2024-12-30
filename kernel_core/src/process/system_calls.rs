@@ -1,5 +1,6 @@
 //! System calls from user space.
 
+use kernel_api::ErrorCode;
 use snafu::Snafu;
 
 use super::{thread::Registers, ProcessManager};
@@ -11,7 +12,7 @@ pub enum Error {}
 impl Error {
     /// Convert the `Error` to a error code that can be returned to user space.
     #[must_use]
-    pub fn to_code(self) -> usize {
+    pub fn to_code(self) -> ErrorCode {
         match self {}
     }
 }

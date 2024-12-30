@@ -483,6 +483,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "bitfield",
+ "bytemuck",
  "byteorder",
  "itertools",
  "kernel_core",
@@ -493,6 +494,15 @@ dependencies = [
  "spin",
  "vergen",
  "vergen-git2",
+]
+
+[[package]]
+name = "kernel_api"
+version = "0.1.0"
+dependencies = [
+ "bitfield",
+ "bitflags",
+ "bytemuck",
 ]
 
 [[package]]
@@ -508,6 +518,7 @@ dependencies = [
  "env_logger",
  "hashbrown",
  "itertools",
+ "kernel_api",
  "log",
  "mockall",
  "paste",
