@@ -263,7 +263,6 @@ pub fn init(dt: &DeviceTree<'_>, initrd_slice: &(PhysicalPointer<u8>, usize)) {
 }
 
 /// Returns a reference to the current global physical page allocator.
-#[allow(unused)]
-pub fn page_allocator() -> &'static impl PageAllocator {
+pub fn page_allocator() -> &'static PlatformPageAllocator {
     PAGE_ALLOCATOR.wait()
 }

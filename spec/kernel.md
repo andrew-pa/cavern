@@ -249,7 +249,7 @@ The `transfer_from_shared_buffer` call accepts the following flags:
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
-Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
+Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error. If the discriminant passed as `value_to_read` is unknown, zero will be returned.
 
 #### Arguments
 | Name       | Type                 | Notes                            |

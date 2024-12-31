@@ -486,6 +486,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "itertools",
+ "kernel_api",
  "kernel_core",
  "log",
  "serde",

@@ -15,7 +15,7 @@ use log::{debug, trace};
 use snafu::OptionExt;
 use spin::Once;
 
-use crate::memory::page_allocator;
+use crate::memory::{page_allocator, PlatformPageAllocator};
 
 pub mod thread;
 
@@ -120,7 +120,9 @@ impl ProcessManager for SystemProcessManager {
 }
 
 /// The global system call handler policy instance.
-pub static SYS_CALL_POLICY: Once<SystemCalls<'static, SystemProcessManager>> = Once::new();
+pub static SYS_CALL_POLICY: Once<
+    SystemCalls<'static, 'static, PlatformPageAllocator, SystemProcessManager>,
+> = Once::new();
 
 /// Initialize processes/threading.
 pub fn init(cores: &[CoreInfo]) {
@@ -128,5 +130,5 @@ pub fn init(cores: &[CoreInfo]) {
     let pm = PROCESS_MANAGER.call_once(|| SystemProcessManager {
         processes: HandleMap::new(MAX_PROCESS_ID),
     });
-    SYS_CALL_POLICY.call_once(|| SystemCalls::new(pm));
+    SYS_CALL_POLICY.call_once(|| SystemCalls::new(page_allocator(), pm));
 }

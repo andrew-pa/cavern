@@ -1,7 +1,8 @@
 //! The exception vector and handler functions.
 
 use bytemuck::Contiguous;
-use log::warn;
+use kernel_api::CallNumber;
+use log::{error, warn};
 
 use crate::process::{
     thread::{restore_current_thread_state, save_current_thread_state},
@@ -32,15 +33,22 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
         let regs = regs
             .as_mut()
             .expect("asm exception vector code passes non-null ptr to registers object");
-        let result = SYS_CALL_POLICY
-            .get()
-            .expect("system call handler policy to be initialized before system calls are made")
-            .dispatch_system_call(esr.iss() as u16, regs)
-            .unwrap_or_else(|e| {
-                warn!("system call failed: {e}");
-                e.to_code().into_integer()
-            });
-        regs.x[0] = result;
+        let current_thread = save_current_thread_state(regs);
+        if let Some(call_num) = CallNumber::from_integer(esr.iss() as u16) {
+            let result = SYS_CALL_POLICY
+                .get()
+                .expect("system call handler policy to be initialized before system calls are made")
+                .dispatch_system_call(call_num, &current_thread, regs)
+                .unwrap_or_else(|e| {
+                    warn!("system call failed: {e}");
+                    e.to_code().into_integer()
+                });
+            regs.x[0] = result;
+        } else {
+            error!("invalid system call number {}", esr.iss());
+            todo!("kill offending process with a fault");
+        }
+        restore_current_thread_state(regs);
     } else {
         panic!(
             "synchronous exception! {}, FAR={far:x}, registers = {:x?}",

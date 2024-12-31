@@ -1,9 +1,12 @@
 //! System calls from user space.
-
-use kernel_api::ErrorCode;
+use alloc::sync::Arc;
+use bytemuck::Contiguous;
+use kernel_api::{CallNumber, EnvironmentValue, ErrorCode};
 use snafu::Snafu;
 
-use super::{thread::Registers, ProcessManager};
+use crate::memory::PageAllocator;
+
+use super::{thread::Registers, ProcessManager, Thread};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, Snafu)]
@@ -18,14 +21,18 @@ impl Error {
 }
 
 /// System call handler policy.
-pub struct SystemCalls<'pm, PM: ProcessManager> {
+pub struct SystemCalls<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> {
+    page_allocator: &'pa PA,
     process_manager: &'pm PM,
 }
 
-impl<'pm, PM: ProcessManager> SystemCalls<'pm, PM> {
+impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, PM> {
     /// Create a new system call handler policy.
-    pub fn new(process_manager: &'pm PM) -> Self {
-        Self { process_manager }
+    pub fn new(page_allocator: &'pa PA, process_manager: &'pm PM) -> Self {
+        Self {
+            process_manager,
+            page_allocator,
+        }
     }
 
     /// Execute a system call on behalf of a process.
@@ -34,9 +41,35 @@ impl<'pm, PM: ProcessManager> SystemCalls<'pm, PM> {
     /// Returns an error if the system call is unsuccessful.
     pub fn dispatch_system_call(
         &self,
-        syscall_number: u16,
+        syscall_number: CallNumber,
+        current_thread: &Arc<Thread>,
         registers: &Registers,
     ) -> Result<usize, Error> {
-        todo!()
+        match syscall_number {
+            CallNumber::ReadEnvValue => Ok(EnvironmentValue::from_integer(registers.x[0])
+                .map_or(0, |v| self.syscall_read_env_value(current_thread, v))),
+            _ => todo!("implement {:?}", syscall_number),
+        }
+    }
+
+    fn syscall_read_env_value(
+        &self,
+        current_thread: &Arc<Thread>,
+        value_to_read: EnvironmentValue,
+    ) -> usize {
+        match value_to_read {
+            EnvironmentValue::CurrentProcessId => current_thread
+                .parent
+                .as_ref()
+                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
+            EnvironmentValue::DesignatedReceiverThreadId => todo!(),
+            EnvironmentValue::CurrentSupervisorId => current_thread
+                .parent
+                .as_ref()
+                .and_then(|p| p.props.supervisor.as_ref())
+                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
+        }
     }
 }

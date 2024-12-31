@@ -46,5 +46,48 @@ pub enum ErrorCode {
     InUse,
 }
 
+/// System call numbers, one per call.
+/// See the specification for more details.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
+#[repr(u16)]
+#[allow(missing_docs)]
+pub enum CallNumber {
+    Send = 0x100,
+    Recieve,
+    TransferToSharedBuffer,
+    TransferFromSharedBuffer,
+    ReadEnvValue,
+    SpawnProcess,
+    SpawnThread,
+    ExitCurrentThread,
+    KillProcess,
+    SetDesignatedReciever,
+    AllocateHeapPages,
+    FreeHeapPages,
+}
+
+/// Values that can be read to determine the environment of a process.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
+#[repr(usize)]
+pub enum EnvironmentValue {
+    /// The process ID of the calling process.
+    CurrentProcessId = 1,
+    /// The thread ID of the calling process.
+    CurrentThreadId,
+    /// The thread ID of the calling process' designated receiver thread.
+    DesignatedReceiverThreadId,
+    /// The process ID of the supervisor process for the calling process.
+    CurrentSupervisorId,
+    /// The number of bytes per page of memory.
+    PageSizeInBytes,
+}
+
+pub mod flags;
+
+#[cfg(not(feature = "kernel"))]
+mod wrappers;
+#[cfg(not(feature = "kernel"))]
+pub use wrappers::*;
+
 #[cfg(test)]
 mod tests {}

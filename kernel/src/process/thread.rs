@@ -141,12 +141,13 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
 }
 
 /// Save the currently executing thread state.
+/// Returns a reference to the current thread.
 ///
 /// # Safety
 /// This function is only safe to call when the currently running thread has been suspended, i.e.
 /// in an exception handler. Also, this function assumes that the currently running thread is the
 /// one that the scheduler believes is currently running (which should always be true).
-pub unsafe fn save_current_thread_state(registers: &Registers) {
+pub unsafe fn save_current_thread_state(registers: &Registers) -> Arc<Thread> {
     // Determine the current running thread according to the scheduler.
     // We assume that this thread is the one currently executing on this processor.
     let current_thread = SCHEDULER
@@ -155,20 +156,24 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
         .current_thread();
 
     // Save the processor state into the thread object.
-    let mut s = current_thread
-        .processor_state
-        .try_lock()
-        .expect("no locks on current thread's execution state");
-    s.spsr = read_saved_program_status();
-    s.program_counter = read_exception_link_reg();
-    s.stack_pointer = read_stack_pointer(0);
-    s.registers = *registers;
+    {
+        let mut s = current_thread
+            .processor_state
+            .try_lock()
+            .expect("no locks on current thread's execution state");
+        s.spsr = read_saved_program_status();
+        s.program_counter = read_exception_link_reg();
+        s.stack_pointer = read_stack_pointer(0);
+        s.registers = *registers;
 
-    trace!(
-        "saving processor state to thread#{}, pc={:?}",
-        current_thread.id,
-        s.program_counter
-    );
+        trace!(
+            "saving processor state to thread#{}, pc={:?}",
+            current_thread.id,
+            s.program_counter
+        );
+    }
+
+    current_thread
 }
 
 /// Restore the currently scheduled thread as the currently executing one.
