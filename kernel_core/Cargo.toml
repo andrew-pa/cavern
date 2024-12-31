@@ -21,7 +21,7 @@ serde = { version = "^1", default-features = false, features = ["derive"] }
 tar-no-std = "^0.3"
 elf = { version = "^0.7", default-features = false, features = ["nightly"] }
 
-kernel_api = { path = "../kernel_api", features = ["kernel"] }
+kernel_api = { path = "../kernel_api", default-features = false, features = [] }
 
 [dev-dependencies]
 paste = "^1.0"

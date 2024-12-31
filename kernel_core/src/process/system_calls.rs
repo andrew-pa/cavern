@@ -2,6 +2,7 @@
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
 use kernel_api::{CallNumber, EnvironmentValue, ErrorCode};
+use log::{debug, trace};
 use snafu::Snafu;
 
 use crate::memory::PageAllocator;
@@ -48,6 +49,9 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         match syscall_number {
             CallNumber::ReadEnvValue => Ok(EnvironmentValue::from_integer(registers.x[0])
                 .map_or(0, |v| self.syscall_read_env_value(current_thread, v))),
+            CallNumber::ExitCurrentThread => self
+                .syscall_exit_current_thread(current_thread, registers.x[0] as u32)
+                .map(|()| 0),
             _ => todo!("implement {:?}", syscall_number),
         }
     }
@@ -57,6 +61,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         current_thread: &Arc<Thread>,
         value_to_read: EnvironmentValue,
     ) -> usize {
+        trace!(
+            "reading value {value_to_read:?} for thread {}",
+            current_thread.id
+        );
         match value_to_read {
             EnvironmentValue::CurrentProcessId => current_thread
                 .parent
@@ -71,5 +79,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
         }
+    }
+
+    fn syscall_exit_current_thread(
+        &self,
+        current_thread: &Arc<Thread>,
+        code: u32,
+    ) -> Result<(), Error> {
+        debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
+        todo!()
     }
 }

@@ -9,8 +9,6 @@
 
 use bytemuck::Contiguous;
 
-extern crate alloc;
-
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
 #[repr(usize)]
@@ -66,6 +64,14 @@ pub enum CallNumber {
     FreeHeapPages,
 }
 
+impl CallNumber {
+    /// Convert a variant into its numerical representation, but marked `const`.
+    const fn into_num(self) -> u16 {
+        // Safe because we are `Contiguous`.
+        unsafe { core::mem::transmute(self) }
+    }
+}
+
 /// Values that can be read to determine the environment of a process.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
 #[repr(usize)]
@@ -84,9 +90,9 @@ pub enum EnvironmentValue {
 
 pub mod flags;
 
-#[cfg(not(feature = "kernel"))]
+#[cfg(feature = "wrappers")]
 mod wrappers;
-#[cfg(not(feature = "kernel"))]
+#[cfg(feature = "wrappers")]
 pub use wrappers::*;
 
 #[cfg(test)]
