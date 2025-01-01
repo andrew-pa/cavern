@@ -1,8 +1,8 @@
 //! System calls from user space.
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
-use kernel_api::{CallNumber, EnvironmentValue, ErrorCode};
-use log::{debug, trace};
+use kernel_api::{CallNumber, EnvironmentValue, ErrorCode, ExitReason};
+use log::{debug, trace, warn};
 use snafu::Snafu;
 
 use crate::memory::PageAllocator;
@@ -19,6 +19,15 @@ impl Error {
     pub fn to_code(self) -> ErrorCode {
         match self {}
     }
+}
+
+/// Effects that can result from a system call.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SysCallEffect {
+    /// The system call returns normally with value `usize`.
+    Return(usize),
+    /// The system call does not return to the caller, but instead another thread is scheduled.
+    ScheduleNextThread,
 }
 
 /// System call handler policy.
@@ -42,16 +51,32 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     /// Returns an error if the system call is unsuccessful.
     pub fn dispatch_system_call(
         &self,
-        syscall_number: CallNumber,
+        syscall_number: u16,
         current_thread: &Arc<Thread>,
         registers: &Registers,
-    ) -> Result<usize, Error> {
+    ) -> Result<SysCallEffect, Error> {
+        let syscall_number = match CallNumber::from_integer(syscall_number) {
+            Some(n) => n,
+            None => {
+                warn!(
+                    "invalid system call number {} provided by thread #{}",
+                    syscall_number, current_thread.id
+                );
+                self.process_manager
+                    .exit_thread(current_thread, ExitReason::InvalidSysCall)
+                    .expect("kill thread that made invalid system call");
+                return Ok(SysCallEffect::ScheduleNextThread);
+            }
+        };
         match syscall_number {
-            CallNumber::ReadEnvValue => Ok(EnvironmentValue::from_integer(registers.x[0])
-                .map_or(0, |v| self.syscall_read_env_value(current_thread, v))),
-            CallNumber::ExitCurrentThread => self
-                .syscall_exit_current_thread(current_thread, registers.x[0] as u32)
-                .map(|()| 0),
+            CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(
+                EnvironmentValue::from_integer(registers.x[0])
+                    .map_or(0, |v| self.syscall_read_env_value(current_thread, v)),
+            )),
+            CallNumber::ExitCurrentThread => {
+                self.syscall_exit_current_thread(current_thread, registers.x[0] as u32);
+                Ok(SysCallEffect::ScheduleNextThread)
+            }
             _ => todo!("implement {:?}", syscall_number),
         }
     }
@@ -81,12 +106,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         }
     }
 
-    fn syscall_exit_current_thread(
-        &self,
-        current_thread: &Arc<Thread>,
-        code: u32,
-    ) -> Result<(), Error> {
+    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, code: u32) {
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
-        todo!()
+        self.process_manager
+            .exit_thread(current_thread, ExitReason::User(code))
+            // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
+            .expect("failed to kill thread");
     }
 }

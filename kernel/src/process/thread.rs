@@ -178,10 +178,17 @@ pub unsafe fn save_current_thread_state(registers: &Registers) -> Arc<Thread> {
 
 /// Restore the currently scheduled thread as the currently executing one.
 ///
+/// If `return_value` is `Some`, then `x0` will be set to the value, "returning" the value to the
+/// current thread.
+///
 /// # Safety
 /// This function is only safe to call at the end of an exception handler when the currently
 /// executing thread is about to be restored.
-pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
+/// Additionally, returning a value is only safe if the current thread is expecting it.
+pub unsafe fn restore_current_thread_state(
+    registers: &mut Registers,
+    return_value: impl Into<Option<usize>>,
+) {
     // Determine the current running thread according to the scheduler.
     let current_thread = SCHEDULER
         .get()
@@ -201,6 +208,11 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
         .try_lock()
         .expect("no locks on current thread's execution state");
     *registers = s.registers;
+    // write x0 after restoring the rest of the saved registers to ensure that the return value
+    // makes it back to the caller thread.
+    if let Some(rv) = return_value.into() {
+        registers.x[0] = rv;
+    }
     write_stack_pointer(0, s.stack_pointer);
     write_exception_link_reg(s.program_counter);
     write_saved_program_status(&s.spsr);

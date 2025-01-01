@@ -1,5 +1,6 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
+use kernel_api::ExitReason;
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
@@ -102,11 +103,18 @@ impl ProcessManager for SystemProcessManager {
         Ok(thread)
     }
 
-    fn kill_process(&self, _process: Arc<Process>) -> Result<(), ProcessManagerError> {
+    fn kill_process(&self, _process: &Arc<Process>) -> Result<(), ProcessManagerError> {
         todo!()
     }
 
-    fn kill_thread(&self, _thread: Arc<Thread>) -> Result<(), ProcessManagerError> {
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError> {
+        // remove current thread from scheduler, sets state to finished
+        // remove thread from parent process
+        // free thread stack
         todo!()
     }
 

@@ -23,7 +23,7 @@ A process is a collection of threads who share the same:
 Processes start with a single main thread running at their entry point.
 Processes run until they exit or encounter a fault.
 When a process exits for any reason, the parent of the process can be notified.
-Processes exit successfully when their last thread exits, and have the exit code provided by this last exit.
+Processes exit successfully when their last thread exits, and have the exit reason provided by this last exit.
 
 Process IDs start from 1.
 
@@ -52,6 +52,18 @@ A thread is a single path of execution in a process, and has its own:
 Threads are scheduled by the kernel for execution on the available CPUs in the system.
 Each thread has a unique ID. Thread IDs start from 1.
 A single thread in each process is designated as the receiver thread for the process, and will receive messages from other processes who send messages to its process without a thread ID. By default, this is the main thread.
+
+When a thread is finished, it must call the `exit_current_thread` system call.
+Threads can also exit prematurely due to faults.
+When a thread exits, a message is sent to the process' designated receiver from the kernel containing the exit reason.
+
+All possible thread exit reasons:
+| Name         | Description                    |
+|--------------|--------------------------------|
+| `User(u32)`  | The thread requested the exit with the given code. The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed. |
+| `PageFault`  | The thread accessed unmapped or protected virtual memory. |
+| `InvalidSysCall` | The thread made a system call with an invalid system call number. |
+| `Killed` | Another thread/process caused this thread to exit prematurely. |
 
 ## Memory
 Each process has its own virtual address space managed by the kernel.

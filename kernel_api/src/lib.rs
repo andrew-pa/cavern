@@ -7,7 +7,7 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::cast_possible_truncation)]
 
-use bytemuck::Contiguous;
+use bytemuck::{Contiguous, Pod};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -86,6 +86,21 @@ pub enum EnvironmentValue {
     CurrentSupervisorId,
     /// The number of bytes per page of memory.
     PageSizeInBytes,
+}
+
+/// The reason that a thread/process exited.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(C)]
+pub enum ExitReason {
+    /// The thread requested the exit with the given code.
+    /// The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed.
+    User(u32),
+    /// The thread accessed unmapped or protected virtual memory.
+    PageFault,
+    /// The thread made a system call with an invalid system call number.
+    InvalidSysCall,
+    /// Another thread/process caused this thread to exit prematurely.
+    Killed,
 }
 
 pub mod flags;

@@ -1,6 +1,7 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
+use kernel_api::ExitReason;
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
@@ -353,13 +354,17 @@ pub trait ProcessManager {
     ///
     /// # Errors
     /// TODO
-    fn kill_process(&self, process: Arc<Process>) -> Result<(), ProcessManagerError>;
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError>;
 
-    /// Kill a thread.
+    /// Cause a thread to exit, with a given `reason`.
     ///
     /// # Errors
     /// TODO
-    fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError>;
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError>;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;

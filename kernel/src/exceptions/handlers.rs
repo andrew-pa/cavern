@@ -2,13 +2,19 @@
 
 use bytemuck::Contiguous;
 use kernel_api::CallNumber;
-use log::{error, warn};
+use log::{debug, error, warn};
 
 use crate::process::{
     thread::{restore_current_thread_state, save_current_thread_state},
     SYS_CALL_POLICY,
 };
-use kernel_core::{exceptions::ExceptionSyndromeRegister, process::thread::Registers};
+use kernel_core::{
+    exceptions::ExceptionSyndromeRegister,
+    process::{
+        system_calls::SysCallEffect,
+        thread::{Registers, Scheduler},
+    },
+};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
@@ -34,21 +40,29 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             .as_mut()
             .expect("asm exception vector code passes non-null ptr to registers object");
         let current_thread = save_current_thread_state(regs);
-        if let Some(call_num) = CallNumber::from_integer(esr.iss() as u16) {
-            let result = SYS_CALL_POLICY
-                .get()
-                .expect("system call handler policy to be initialized before system calls are made")
-                .dispatch_system_call(call_num, &current_thread, regs)
-                .unwrap_or_else(|e| {
-                    warn!("system call failed: {e}");
-                    e.to_code().into_integer()
-                });
-            regs.x[0] = result;
-        } else {
-            error!("invalid system call number {}", esr.iss());
-            todo!("kill offending process with a fault");
+        let result = SYS_CALL_POLICY
+            .get()
+            .expect("system call handler policy to be initialized before system calls are made")
+            .dispatch_system_call(esr.iss() as u16, &current_thread, regs);
+        match result {
+            Ok(SysCallEffect::Return(result)) => {
+                restore_current_thread_state(regs, result);
+            }
+            Ok(SysCallEffect::ScheduleNextThread) => {
+                crate::process::thread::SCHEDULER
+                    .get()
+                    .unwrap()
+                    .next_time_slice();
+                restore_current_thread_state(regs, None);
+            }
+            Err(err) => {
+                debug!(
+                    "system call from thread #{} failed: {err}",
+                    current_thread.id
+                );
+                restore_current_thread_state(regs, err.to_code().into_integer());
+            }
         }
-        restore_current_thread_state(regs);
     } else {
         panic!(
             "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
@@ -69,7 +83,7 @@ unsafe extern "C" fn handle_interrupt(regs: *mut Registers, _esr: usize, _far: u
         .expect("interrupt handler policy to be initialized before interrupts are enabled")
         .process_interrupts()
         .expect("interrupt handlers to complete successfully");
-    restore_current_thread_state(regs);
+    restore_current_thread_state(regs, None);
 }
 
 #[no_mangle]
