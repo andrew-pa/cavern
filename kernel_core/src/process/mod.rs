@@ -325,15 +325,16 @@ pub enum ProcessManagerError {
 }
 
 /// An interface for managing processes and threads.
+#[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
     /// Spawn a new process.
     ///
     /// # Errors
     /// Returns an error if the process could not be spawned due to resource requirements or
     /// invalid inputs.
-    fn spawn_process(
+    fn spawn_process<'i>(
         &self,
-        image: &Image,
+        image: &'i Image<'i>,
         properties: Properties,
     ) -> Result<Arc<Process>, ProcessManagerError>;
 

@@ -47,8 +47,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
 
     /// Execute a system call on behalf of a process.
     ///
+    /// Returns a [`SysCallEffect`] if there is no error to return to user-space.
+    /// - [`SysCallEffect::Return`] to return a value (zero being success) to user-space.
+    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled. This
+    /// may mean that the current thread was killed by this system call, either intentionally or
+    /// due to a fault (for example, because an invalid system call number was provided).
+    ///
     /// # Errors
-    /// Returns an error if the system call is unsuccessful.
+    /// Returns an error that should be reported to user-space if the system call is unsuccessful.
     pub fn dispatch_system_call(
         &self,
         syscall_number: u16,
@@ -109,5 +115,105 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .exit_thread(current_thread, ExitReason::User(code))
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU32;
+
+    use crate::{
+        memory::{MockPageAllocator, VirtualAddress},
+        process::MockProcessManager,
+    };
+
+    use super::*;
+
+    fn fake_thread() -> Arc<Thread> {
+        Arc::new(Thread::new(
+            NonZeroU32::new(777).unwrap(),
+            None,
+            crate::process::thread::State::Running,
+            crate::process::thread::ProcessorState::new_for_user_thread(
+                VirtualAddress::null(),
+                VirtualAddress::null(),
+            ),
+            (VirtualAddress::null(), 0),
+        ))
+    }
+
+    #[test]
+    fn invalid_syscall_number() {
+        let pa = MockPageAllocator::new();
+        let mut pm = MockProcessManager::new();
+
+        let thread = fake_thread();
+
+        // invalid syscall number -> thread fault
+        let thread2 = thread.clone();
+        pm.expect_exit_thread()
+            .once()
+            .withf(move |t, r| t.id == thread2.id && matches!(r, ExitReason::InvalidSysCall))
+            .returning(|_, _| Ok(()));
+
+        let policy = SystemCalls::new(&pa, &pm);
+
+        let registers = Registers::default();
+
+        let system_call_number_that_is_invalid = 1;
+        assert!(matches!(
+            policy.dispatch_system_call(system_call_number_that_is_invalid, &thread, &registers),
+            Ok(SysCallEffect::ScheduleNextThread)
+        ));
+    }
+
+    #[test]
+    fn read_current_thread_id() {
+        let pa = MockPageAllocator::new();
+        let pm = MockProcessManager::new();
+
+        let thread = fake_thread();
+
+        let policy = SystemCalls::new(&pa, &pm);
+
+        let mut registers = Registers::default();
+        registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
+
+        assert!(matches!(
+            policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers),
+            Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
+        ));
+    }
+
+    #[test]
+    fn exit_thread() {
+        let pa = MockPageAllocator::new();
+        let mut pm = MockProcessManager::new();
+
+        let exit_code = 7;
+
+        let thread = fake_thread();
+
+        let thread2 = thread.clone();
+        pm.expect_exit_thread()
+            .once()
+            .withf(move |t, r| {
+                t.id == thread2.id && matches!(r, ExitReason::User(x) if *x == exit_code)
+            })
+            .returning(|_, _| Ok(()));
+
+        let policy = SystemCalls::new(&pa, &pm);
+
+        let mut registers = Registers::default();
+        registers.x[0] = exit_code as usize;
+
+        assert!(matches!(
+            policy.dispatch_system_call(
+                CallNumber::ExitCurrentThread.into_integer(),
+                &thread,
+                &registers
+            ),
+            Ok(SysCallEffect::ScheduleNextThread)
+        ));
     }
 }
