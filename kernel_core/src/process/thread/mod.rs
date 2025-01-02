@@ -1,5 +1,5 @@
 //! Threads
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
@@ -144,6 +144,8 @@ pub enum State {
     Running,
     /// Thread is blocked.
     Blocked,
+    /// The thread has exited.
+    Finished,
 }
 
 impl From<u8> for State {
@@ -185,6 +187,9 @@ pub struct Thread {
 
     /// The current processor state of the thread.
     pub processor_state: Mutex<ProcessorState>,
+
+    /// (Stack base address, stack size in pages).
+    pub stack: (VirtualAddress, usize),
 }
 
 impl Thread {
@@ -195,19 +200,39 @@ impl Thread {
         parent: Option<Arc<Process>>,
         initial_state: State,
         initial_processor_state: ProcessorState,
+        stack: (VirtualAddress, usize),
     ) -> Thread {
         Self {
             id,
             parent,
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
+            stack,
         }
     }
 
     /// Load current thread state.
     pub fn state(&self) -> State {
-        let props = ThreadProperties(self.properties.load(core::sync::atomic::Ordering::Acquire));
+        let props = ThreadProperties(self.properties.load(Ordering::Acquire));
         props.state()
+    }
+
+    /// Set the current thread state (atomically).
+    pub fn set_state(&self, new_state: State) {
+        let mut props = ThreadProperties(self.properties.load(Ordering::Relaxed));
+        loop {
+            let mut new_props = ThreadProperties(props.0);
+            new_props.set_state(new_state);
+            match self.properties.compare_exchange(
+                props.0,
+                new_props.0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(p) => props = ThreadProperties(p),
+            }
+        }
     }
 }
 

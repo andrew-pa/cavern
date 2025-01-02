@@ -40,8 +40,8 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     /// Create a new system call handler policy.
     pub fn new(page_allocator: &'pa PA, process_manager: &'pm PM) -> Self {
         Self {
-            process_manager,
             page_allocator,
+            process_manager,
         }
     }
 
@@ -55,18 +55,15 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         current_thread: &Arc<Thread>,
         registers: &Registers,
     ) -> Result<SysCallEffect, Error> {
-        let syscall_number = match CallNumber::from_integer(syscall_number) {
-            Some(n) => n,
-            None => {
-                warn!(
-                    "invalid system call number {} provided by thread #{}",
-                    syscall_number, current_thread.id
-                );
-                self.process_manager
-                    .exit_thread(current_thread, ExitReason::InvalidSysCall)
-                    .expect("kill thread that made invalid system call");
-                return Ok(SysCallEffect::ScheduleNextThread);
-            }
+        let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
+            warn!(
+                "invalid system call number {} provided by thread #{}",
+                syscall_number, current_thread.id
+            );
+            self.process_manager
+                .exit_thread(current_thread, ExitReason::InvalidSysCall)
+                .expect("kill thread that made invalid system call");
+            return Ok(SysCallEffect::ScheduleNextThread);
         };
         match syscall_number {
             CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(

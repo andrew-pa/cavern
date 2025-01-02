@@ -1,5 +1,6 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
+use itertools::Itertools;
 use kernel_api::ExitReason;
 use kernel_core::{
     collections::HandleMap,
@@ -90,6 +91,7 @@ impl ProcessManager for SystemProcessManager {
             Some(parent_process.clone()),
             State::Running,
             pstate,
+            (stack, stack_size),
         ));
         {
             let mut ts = parent_process.threads.write();
@@ -112,10 +114,38 @@ impl ProcessManager for SystemProcessManager {
         thread: &Arc<Thread>,
         reason: ExitReason,
     ) -> Result<(), ProcessManagerError> {
-        // remove current thread from scheduler, sets state to finished
+        debug!("thread #{} exited with reason {reason:?}", thread.id);
+
+        // remove current thread from scheduler, set state to finished
+        thread.set_state(State::Finished);
+
         // remove thread from parent process
-        // free thread stack
-        todo!()
+        if let Some(parent) = thread.parent.as_ref() {
+            let last_thread = {
+                let mut ts = parent.threads.write();
+                let (i, _) = ts
+                    .iter()
+                    .find_position(|t| t.id == thread.id)
+                    .expect("find thread in parent");
+                ts.swap_remove(i);
+                ts.is_empty()
+            };
+
+            // free thread stack
+            parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
+
+            if last_thread {
+                // TODO: if this was the last thread, the parent process is now also finished
+            }
+            // TODO: send message to parent
+        }
+        // remove thread from handle table
+        thread::THREADS
+            .get()
+            .unwrap()
+            .remove(thread.id)
+            .expect("thread is in thread handle table");
+        Ok(())
     }
 
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {

@@ -56,9 +56,13 @@ pub fn init(cores: &[CoreInfo]) {
         .iter()
         .map(|info| {
             let id = threads.preallocate_handle().unwrap();
-            let idle_thread = Arc::new(Thread::new(id, None, State::Running, unsafe {
-                ProcessorState::new_for_idle_thread()
-            }));
+            let idle_thread = Arc::new(Thread::new(
+                id,
+                None,
+                State::Running,
+                unsafe { ProcessorState::new_for_idle_thread() },
+                (VirtualAddress::null(), 0),
+            ));
             threads.insert_with_handle(id, idle_thread.clone());
             (info.id, idle_thread)
         })
@@ -194,6 +198,8 @@ pub unsafe fn restore_current_thread_state(
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
+
+    assert!(current_thread.state() == State::Running);
 
     // Switch to this thread's process' page table, if it is a user space thread.
     if let Some(process) = current_thread.parent.as_ref() {

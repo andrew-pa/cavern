@@ -1,8 +1,7 @@
 //! The exception vector and handler functions.
 
 use bytemuck::Contiguous;
-use kernel_api::CallNumber;
-use log::{debug, error, warn};
+use log::debug;
 
 use crate::process::{
     thread::{restore_current_thread_state, save_current_thread_state},
@@ -55,12 +54,9 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                     .next_time_slice();
                 restore_current_thread_state(regs, None);
             }
-            Err(err) => {
-                debug!(
-                    "system call from thread #{} failed: {err}",
-                    current_thread.id
-                );
-                restore_current_thread_state(regs, err.to_code().into_integer());
+            Err(e) => {
+                debug!("system call from thread #{} failed: {e}", current_thread.id);
+                restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }
     } else {
