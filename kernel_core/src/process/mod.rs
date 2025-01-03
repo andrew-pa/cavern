@@ -1,16 +1,19 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-pub mod thread;
+use kernel_api::ExitReason;
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
 
+pub mod system_calls;
+pub mod thread;
+
 use crate::memory::{
     page_table::{MapBlockSize, MemoryProperties},
     AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
-    VirtualAddress,
+    VirtualAddress, VirtualPointer, VirtualPointerMut,
 };
 
 /// A unique id for a process.
@@ -155,7 +158,6 @@ impl Process {
         );
 
         for section in image {
-            trace!("mapping setion {section:?}");
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
@@ -173,20 +175,22 @@ impl Process {
                 );
                 if section.data.len() < section.total_size {
                     core::ptr::write_bytes(
-                        ptr.add(section.data.len()),
+                        ptr.byte_add(section.data_offset + section.data.len()),
                         0,
                         section.total_size - section.data.len(),
                     );
                 }
             }
             // map it into the process
+            let props = section.kind.as_properties();
+            trace!("mapping setion {section:?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
             page_tables
                 .map(
                     section.base_address,
                     memory,
                     size_in_pages,
                     crate::memory::page_table::MapBlockSize::Page,
-                    &section.kind.as_properties(),
+                    &props,
                 )
                 .context(PageTablesSnafu)?;
             // reserve the range with the allocator as well
@@ -194,6 +198,8 @@ impl Process {
                 .reserve_range(section.base_address, size_in_pages)
                 .context(MemorySnafu)?;
         }
+
+        trace!("process page tables: {page_tables:?}");
 
         Ok(Self {
             id,
@@ -319,15 +325,16 @@ pub enum ProcessManagerError {
 }
 
 /// An interface for managing processes and threads.
+#[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
     /// Spawn a new process.
     ///
     /// # Errors
     /// Returns an error if the process could not be spawned due to resource requirements or
     /// invalid inputs.
-    fn spawn_process(
+    fn spawn_process<'i>(
         &self,
-        image: &Image,
+        image: &'i Image<'i>,
         properties: Properties,
     ) -> Result<Arc<Process>, ProcessManagerError>;
 
@@ -342,19 +349,24 @@ pub trait ProcessManager {
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
         stack_size: usize,
+        user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.
     ///
     /// # Errors
     /// TODO
-    fn kill_process(&self, process: Arc<Process>) -> Result<(), ProcessManagerError>;
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError>;
 
-    /// Kill a thread.
+    /// Cause a thread to exit, with a given `reason`.
     ///
     /// # Errors
-    /// TODO
-    fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError>;
+    /// Returns an error if the thread could not be cleaned up (which should be rare).
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError>;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;

@@ -23,7 +23,7 @@ A process is a collection of threads who share the same:
 Processes start with a single main thread running at their entry point.
 Processes run until they exit or encounter a fault.
 When a process exits for any reason, the parent of the process can be notified.
-Processes exit successfully when their last thread exits, and have the exit code provided by this last exit.
+Processes exit successfully when their last thread exits, and have the exit reason provided by this last exit.
 
 Process IDs start from 1.
 
@@ -52,6 +52,18 @@ A thread is a single path of execution in a process, and has its own:
 Threads are scheduled by the kernel for execution on the available CPUs in the system.
 Each thread has a unique ID. Thread IDs start from 1.
 A single thread in each process is designated as the receiver thread for the process, and will receive messages from other processes who send messages to its process without a thread ID. By default, this is the main thread.
+
+When a thread is finished, it must call the `exit_current_thread` system call.
+Threads can also exit prematurely due to faults.
+When a thread exits, a message is sent to the process' designated receiver from the kernel containing the exit reason.
+
+All possible thread exit reasons:
+| Name         | Description                    |
+|--------------|--------------------------------|
+| `User(u32)`  | The thread requested the exit with the given code. The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed. |
+| `PageFault`  | The thread accessed unmapped or protected virtual memory. |
+| `InvalidSysCall` | The thread made a system call with an invalid system call number. |
+| `Killed` | Another thread/process caused this thread to exit prematurely. |
 
 ## Memory
 Each process has its own virtual address space managed by the kernel.
@@ -249,7 +261,7 @@ The `transfer_from_shared_buffer` call accepts the following flags:
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
-Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
+Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error. If the discriminant passed as `value_to_read` is unknown, zero will be returned.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
@@ -330,12 +342,17 @@ This function also allocates new memory for the stack and inbox associated with 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `info`  | `*const ThreadCreateInfo` | Parameters for creating the new thread, see below. |
+| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
+
+The `ThreadCreateInfo` struct contains:
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
 | `entry` | function pointer | The entry point function for the thread. |
 | `stack_size` | usize | Size in pages for the new stack allocated for the thread. |
 | `inbox_size` | usize | Size in pages for the new message inbox allocated for the thread. |
-| `user_data`  | `*mut ()` | This value is passed verbatim to the entry point function. |
-| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `user_data`  | usize | This value is passed verbatim to the entry point function. |
 
 #### Flags
 The `spawn_thread` call accepts the following flags:
@@ -347,7 +364,7 @@ The `spawn_thread` call accepts the following flags:
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
-- `InvalidPointer`: the entry pointer was null or invalid.
+- `InvalidPointer`: the entry or info pointer was null or invalid.
 
 
 ### `set_designated_receiver`
@@ -529,6 +546,7 @@ This table collects all possible errors returned from system calls.
 | `InvalidPointer` | A pointer provided was null, invalid, or otherwise could not be used as expected.                    |
 | `OutOfMemory`    | The system does not have enough available memory to complete the requested operation.                |
 | `OutOfBounds`    | The specified address or memory region was outside the allowed range or otherwise invalid.           |
+| `OutOfHandles`   | The system has run out of handles for the requested resource. |
 | `WouldBlock`     | The operation would block the calling thread, but non-blocking mode was specified.                   |
 | `InUse`          | The requested resource or memory region is already in use by another process or driver.              |
 

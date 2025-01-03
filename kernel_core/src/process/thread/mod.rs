@@ -1,5 +1,5 @@
 //! Threads
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
@@ -74,12 +74,12 @@ impl SavedProgramStatus {
         SavedProgramStatus(0)
     }
 
-    /// Creates a suitable SPSR value for a thread running at EL1 with its own stack using the
-    /// `SP_EL0` stack pointer.
+    /// Creates a suitable SPSR value for a thread running at EL1 on the kernel stack.
     #[must_use]
     pub fn initial_for_el1() -> SavedProgramStatus {
         let mut spsr = SavedProgramStatus(0);
         spsr.set_el(1);
+        spsr.set_sp(true);
         spsr
     }
 }
@@ -116,7 +116,7 @@ impl ProcessorState {
     #[must_use]
     pub unsafe fn new_for_idle_thread() -> Self {
         Self {
-            spsr: SavedProgramStatus(0),
+            spsr: SavedProgramStatus::initial_for_el1(),
             program_counter: VirtualAddress::from(0),
             stack_pointer: VirtualAddress::from(0),
             registers: Registers::default(),
@@ -125,12 +125,18 @@ impl ProcessorState {
 
     /// Create a new processor state suitable for a new user-space thread running in EL0.
     #[must_use]
-    pub fn new_for_user_thread(entry_point: VirtualAddress, stack_pointer: VirtualAddress) -> Self {
+    pub fn new_for_user_thread(
+        entry_point: VirtualAddress,
+        stack_pointer: VirtualAddress,
+        user_data: usize,
+    ) -> Self {
+        let mut registers = Registers::default();
+        registers.x[0] = user_data;
         Self {
             spsr: SavedProgramStatus::initial_for_el0(),
             program_counter: entry_point,
             stack_pointer,
-            registers: Registers::default(),
+            registers,
         }
     }
 }
@@ -144,6 +150,8 @@ pub enum State {
     Running,
     /// Thread is blocked.
     Blocked,
+    /// The thread has exited.
+    Finished,
 }
 
 impl From<u8> for State {
@@ -185,6 +193,9 @@ pub struct Thread {
 
     /// The current processor state of the thread.
     pub processor_state: Mutex<ProcessorState>,
+
+    /// (Stack base address, stack size in pages).
+    pub stack: (VirtualAddress, usize),
 }
 
 impl Thread {
@@ -195,19 +206,39 @@ impl Thread {
         parent: Option<Arc<Process>>,
         initial_state: State,
         initial_processor_state: ProcessorState,
+        stack: (VirtualAddress, usize),
     ) -> Thread {
         Self {
             id,
             parent,
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
+            stack,
         }
     }
 
     /// Load current thread state.
     pub fn state(&self) -> State {
-        let props = ThreadProperties(self.properties.load(core::sync::atomic::Ordering::Acquire));
+        let props = ThreadProperties(self.properties.load(Ordering::Acquire));
         props.state()
+    }
+
+    /// Set the current thread state (atomically).
+    pub fn set_state(&self, new_state: State) {
+        let mut props = ThreadProperties(self.properties.load(Ordering::Relaxed));
+        loop {
+            let mut new_props = ThreadProperties(props.0);
+            new_props.set_state(new_state);
+            match self.properties.compare_exchange(
+                props.0,
+                new_props.0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(p) => props = ThreadProperties(p),
+            }
+        }
     }
 }
 

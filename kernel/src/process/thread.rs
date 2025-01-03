@@ -56,9 +56,13 @@ pub fn init(cores: &[CoreInfo]) {
         .iter()
         .map(|info| {
             let id = threads.preallocate_handle().unwrap();
-            let idle_thread = Arc::new(Thread::new(id, None, State::Running, unsafe {
-                ProcessorState::new_for_idle_thread()
-            }));
+            let idle_thread = Arc::new(Thread::new(
+                id,
+                None,
+                State::Running,
+                unsafe { ProcessorState::new_for_idle_thread() },
+                (VirtualAddress::null(), 0),
+            ));
             threads.insert_with_handle(id, idle_thread.clone());
             (info.id, idle_thread)
         })
@@ -141,12 +145,13 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
 }
 
 /// Save the currently executing thread state.
+/// Returns a reference to the current thread.
 ///
 /// # Safety
 /// This function is only safe to call when the currently running thread has been suspended, i.e.
 /// in an exception handler. Also, this function assumes that the currently running thread is the
 /// one that the scheduler believes is currently running (which should always be true).
-pub unsafe fn save_current_thread_state(registers: &Registers) {
+pub unsafe fn save_current_thread_state(registers: &Registers) -> Arc<Thread> {
     // Determine the current running thread according to the scheduler.
     // We assume that this thread is the one currently executing on this processor.
     let current_thread = SCHEDULER
@@ -155,33 +160,46 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
         .current_thread();
 
     // Save the processor state into the thread object.
-    let mut s = current_thread
-        .processor_state
-        .try_lock()
-        .expect("no locks on current thread's execution state");
-    s.spsr = read_saved_program_status();
-    s.program_counter = read_exception_link_reg();
-    s.stack_pointer = read_stack_pointer(0);
-    s.registers = *registers;
+    {
+        let mut s = current_thread
+            .processor_state
+            .try_lock()
+            .expect("no locks on current thread's execution state");
+        s.spsr = read_saved_program_status();
+        s.program_counter = read_exception_link_reg();
+        s.stack_pointer = read_stack_pointer(0);
+        s.registers = *registers;
 
-    trace!(
-        "saving processor state to thread#{}, pc={:?}",
-        current_thread.id,
-        s.program_counter
-    );
+        trace!(
+            "saving processor state to thread#{}, pc={:?}",
+            current_thread.id,
+            s.program_counter
+        );
+    }
+
+    current_thread
 }
 
 /// Restore the currently scheduled thread as the currently executing one.
 ///
+/// If `return_value` is `Some`, then `x0` will be set to the value, "returning" the value to the
+/// current thread.
+///
 /// # Safety
 /// This function is only safe to call at the end of an exception handler when the currently
 /// executing thread is about to be restored.
-pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
+/// Additionally, returning a value is only safe if the current thread is expecting it.
+pub unsafe fn restore_current_thread_state(
+    registers: &mut Registers,
+    return_value: impl Into<Option<usize>>,
+) {
     // Determine the current running thread according to the scheduler.
     let current_thread = SCHEDULER
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
+
+    assert!(current_thread.state() == State::Running);
 
     // Switch to this thread's process' page table, if it is a user space thread.
     if let Some(process) = current_thread.parent.as_ref() {
@@ -196,6 +214,11 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
         .try_lock()
         .expect("no locks on current thread's execution state");
     *registers = s.registers;
+    // write x0 after restoring the rest of the saved registers to ensure that the return value
+    // makes it back to the caller thread.
+    if let Some(rv) = return_value.into() {
+        registers.x[0] = rv;
+    }
     write_stack_pointer(0, s.stack_pointer);
     write_exception_link_reg(s.program_counter);
     write_saved_program_status(&s.spsr);
@@ -203,6 +226,6 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
     trace!(
         "restoring processor state to thread#{}, pc={:?}",
         current_thread.id,
-        s.program_counter
+        s.program_counter,
     );
 }

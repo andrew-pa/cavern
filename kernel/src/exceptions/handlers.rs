@@ -1,8 +1,19 @@
 //! The exception vector and handler functions.
 
-use kernel_core::{exceptions::ExceptionSyndromeRegister, process::thread::Registers};
+use bytemuck::Contiguous;
+use log::debug;
 
-use crate::process::thread::{restore_current_thread_state, save_current_thread_state};
+use crate::process::{
+    thread::{restore_current_thread_state, save_current_thread_state},
+    SYS_CALL_POLICY,
+};
+use kernel_core::{
+    exceptions::ExceptionSyndromeRegister,
+    process::{
+        system_calls::SysCallEffect,
+        thread::{Registers, Scheduler},
+    },
+};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
@@ -21,11 +32,44 @@ extern "C" {
 
 #[no_mangle]
 unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usize, far: usize) {
-    panic!(
-        "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
-        ExceptionSyndromeRegister(esr as u64),
-        regs.as_ref()
-    );
+    let esr = ExceptionSyndromeRegister(esr as u64);
+
+    if esr.ec().is_system_call() {
+        let regs = regs
+            .as_mut()
+            .expect("asm exception vector code passes non-null ptr to registers object");
+        let current_thread = save_current_thread_state(regs);
+        let result = SYS_CALL_POLICY
+            .get()
+            .expect("system call handler policy to be initialized before system calls are made")
+            .dispatch_system_call(esr.iss() as u16, &current_thread, regs);
+        match result {
+            Ok(SysCallEffect::Return(result)) => {
+                restore_current_thread_state(regs, result);
+            }
+            Ok(SysCallEffect::ScheduleNextThread) => {
+                crate::process::thread::SCHEDULER
+                    .get()
+                    .unwrap()
+                    .next_time_slice();
+                restore_current_thread_state(regs, None);
+            }
+            Err(e) => {
+                debug!(
+                    "system call 0x{:x} from thread #{} failed: {e}",
+                    esr.iss(),
+                    current_thread.id
+                );
+                restore_current_thread_state(regs, e.to_code().into_integer());
+            }
+        }
+    } else {
+        panic!(
+            "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
+            esr,
+            regs.as_ref()
+        );
+    }
 }
 
 #[no_mangle]
@@ -39,7 +83,7 @@ unsafe extern "C" fn handle_interrupt(regs: *mut Registers, _esr: usize, _far: u
         .expect("interrupt handler policy to be initialized before interrupts are enabled")
         .process_interrupts()
         .expect("interrupt handlers to complete successfully");
-    restore_current_thread_state(regs);
+    restore_current_thread_state(regs, None);
 }
 
 #[no_mangle]

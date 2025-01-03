@@ -447,6 +447,9 @@ dependencies = [
 [[package]]
 name = "init"
 version = "0.1.0"
+dependencies = [
+ "kernel_api",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -483,8 +486,10 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "bitfield",
+ "bytemuck",
  "byteorder",
  "itertools",
+ "kernel_api",
  "kernel_core",
  "log",
  "serde",
@@ -493,6 +498,15 @@ dependencies = [
  "spin",
  "vergen",
  "vergen-git2",
+]
+
+[[package]]
+name = "kernel_api"
+version = "0.1.0"
+dependencies = [
+ "bitfield",
+ "bitflags",
+ "bytemuck",
 ]
 
 [[package]]
@@ -508,6 +522,7 @@ dependencies = [
  "env_logger",
  "hashbrown",
  "itertools",
+ "kernel_api",
  "log",
  "mockall",
  "paste",

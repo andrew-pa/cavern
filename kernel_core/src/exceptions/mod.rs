@@ -11,9 +11,11 @@ bitfield::bitfield! {
     pub struct ExceptionSyndromeRegister(u64);
     u8;
     iss2, _: 36, 32;
-    u8, into ExceptionClass, ec, _: 31, 26;
+    /// The class of exception that occurred.
+    pub u8, into ExceptionClass, ec, _: 31, 26;
     il, _: 25, 25;
-    u32, iss, _: 24, 0;
+    /// Instruction Specific Syndrome value.
+    pub u32, iss, _: 24, 0;
 }
 
 /// An exception class, indicating what kind of synchronous exception occurred.
@@ -27,32 +29,41 @@ impl From<u8> for ExceptionClass {
 
 #[allow(unused)]
 impl ExceptionClass {
+    /// Determines if the exception is a system call.
     #[inline]
-    fn is_system_call(&self) -> bool {
+    #[must_use]
+    pub fn is_system_call(&self) -> bool {
         self.0 == 0b01_0101
     }
 
+    /// Checks if the exception is a user space data page fault.
     #[inline]
-    fn is_user_space_data_page_fault(&self) -> bool {
+    #[must_use]
+    pub fn is_user_space_data_page_fault(&self) -> bool {
         self.0 == 0b10_0100
     }
 
+    /// Checks if the exception is a kernel data page fault.
     #[inline]
-    fn is_kernel_data_page_fault(&self) -> bool {
+    #[must_use]
+    pub fn is_kernel_data_page_fault(&self) -> bool {
         self.0 == 0b10_0101
     }
 
+    /// Checks if the exception is a data abort in user or kernel space.
     #[inline]
-    fn is_data_abort(&self) -> bool {
+    #[must_use]
+    pub fn is_data_abort(&self) -> bool {
         self.is_user_space_data_page_fault() || self.is_kernel_data_page_fault()
     }
 
+    /// Checks if the exception is a user space code page fault.
     #[inline]
-    fn is_user_space_code_page_fault(&self) -> bool {
+    #[must_use]
+    pub fn is_user_space_code_page_fault(&self) -> bool {
         self.0 == 0b10_0000
     }
 }
-
 impl core::fmt::Debug for ExceptionClass {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "0b{:b}=", self.0)?;
