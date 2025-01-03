@@ -7,7 +7,9 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::cast_possible_truncation)]
 
-use bytemuck::{Contiguous, Pod};
+use core::num::NonZeroU32;
+
+use bytemuck::Contiguous;
 
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -36,6 +38,9 @@ pub enum ErrorCode {
 
     /// The specified address or memory region was outside the allowed range or otherwise invalid.
     OutOfBounds,
+
+    /// The system has run out of free handles for the requested resource.
+    OutOfHandles,
 
     /// The operation would block the calling thread, but non-blocking mode was specified.
     WouldBlock,
@@ -101,6 +106,23 @@ pub enum ExitReason {
     InvalidSysCall,
     /// Another thread/process caused this thread to exit prematurely.
     Killed,
+}
+
+/// The unique ID of a thread.
+pub type ThreadId = NonZeroU32;
+
+/// Parameters for creating a thread.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ThreadCreateInfo {
+    /// The entry point for the new thread.
+    pub entry: fn(usize) -> !,
+    /// The size of the new thread's stack in pages.
+    pub stack_size: usize,
+    /// The size of the new thread's inbox in pages.
+    pub inbox_size: usize,
+    /// The user paramter that will be passed to the entry point function.
+    pub user_data: usize,
 }
 
 pub mod flags;

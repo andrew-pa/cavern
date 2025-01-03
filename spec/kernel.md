@@ -342,12 +342,17 @@ This function also allocates new memory for the stack and inbox associated with 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `info`  | `*const ThreadCreateInfo` | Parameters for creating the new thread, see below. |
+| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
+
+The `ThreadCreateInfo` struct contains:
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
 | `entry` | function pointer | The entry point function for the thread. |
 | `stack_size` | usize | Size in pages for the new stack allocated for the thread. |
 | `inbox_size` | usize | Size in pages for the new message inbox allocated for the thread. |
-| `user_data`  | `*mut ()` | This value is passed verbatim to the entry point function. |
-| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `user_data`  | usize | This value is passed verbatim to the entry point function. |
 
 #### Flags
 The `spawn_thread` call accepts the following flags:
@@ -359,7 +364,7 @@ The `spawn_thread` call accepts the following flags:
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
-- `InvalidPointer`: the entry pointer was null or invalid.
+- `InvalidPointer`: the entry or info pointer was null or invalid.
 
 
 ### `set_designated_receiver`
@@ -541,6 +546,7 @@ This table collects all possible errors returned from system calls.
 | `InvalidPointer` | A pointer provided was null, invalid, or otherwise could not be used as expected.                    |
 | `OutOfMemory`    | The system does not have enough available memory to complete the requested operation.                |
 | `OutOfBounds`    | The specified address or memory region was outside the allowed range or otherwise invalid.           |
+| `OutOfHandles`   | The system has run out of handles for the requested resource. |
 | `WouldBlock`     | The operation would block the calling thread, but non-blocking mode was specified.                   |
 | `InUse`          | The requested resource or memory region is already in use by another process or driver.              |
 

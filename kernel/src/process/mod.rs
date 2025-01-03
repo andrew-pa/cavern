@@ -53,6 +53,7 @@ impl ProcessManager for SystemProcessManager {
             proc.clone(),
             image.entry_point,
             8 * 1024 * 1024 / page_allocator().page_size(),
+            0,
         )?;
 
         Ok(proc)
@@ -63,12 +64,12 @@ impl ProcessManager for SystemProcessManager {
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
         stack_size: usize,
+        user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError> {
         let physical_entry = parent_process
             .page_tables
             .read()
             .physical_address_of(entry_point);
-        debug!("physical entry point address = {physical_entry:?}");
 
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
@@ -84,7 +85,7 @@ impl ProcessManager for SystemProcessManager {
             },
         )?;
         let stack_ptr = stack.byte_add(stack_size * page_allocator().page_size());
-        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr);
+        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr, user_data);
         debug!("creating thread #{id} in process #{}, entry point @ {entry_point:?}, stack @ {stack_ptr:?}", parent_process.id);
         let thread = Arc::new(Thread::new(
             id,
@@ -136,6 +137,7 @@ impl ProcessManager for SystemProcessManager {
 
             if last_thread {
                 // TODO: if this was the last thread, the parent process is now also finished
+                debug!("last thread in process exited");
             }
             // TODO: send message to parent
         }

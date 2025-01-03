@@ -217,6 +217,13 @@ macro_rules! virtual_pointer_impl {
             pub const fn null() -> Self {
                 Self(0, PhantomData)
             }
+
+            /// Returns whether the pointer is null.
+            #[inline]
+            #[must_use]
+            pub const fn is_null(self) -> bool {
+                self.0 == 0
+            }
         }
 
         impl<T> core::fmt::Debug for $vpt<T> {

@@ -125,12 +125,18 @@ impl ProcessorState {
 
     /// Create a new processor state suitable for a new user-space thread running in EL0.
     #[must_use]
-    pub fn new_for_user_thread(entry_point: VirtualAddress, stack_pointer: VirtualAddress) -> Self {
+    pub fn new_for_user_thread(
+        entry_point: VirtualAddress,
+        stack_pointer: VirtualAddress,
+        user_data: usize,
+    ) -> Self {
+        let mut registers = Registers::default();
+        registers.x[0] = user_data;
         Self {
             spsr: SavedProgramStatus::initial_for_el0(),
             program_counter: entry_point,
             stack_pointer,
-            registers: Registers::default(),
+            registers,
         }
     }
 }

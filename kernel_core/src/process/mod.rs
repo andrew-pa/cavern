@@ -13,7 +13,7 @@ pub mod thread;
 use crate::memory::{
     page_table::{MapBlockSize, MemoryProperties},
     AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
-    VirtualAddress,
+    VirtualAddress, VirtualPointer, VirtualPointerMut,
 };
 
 /// A unique id for a process.
@@ -349,6 +349,7 @@ pub trait ProcessManager {
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
         stack_size: usize,
+        user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.
@@ -360,7 +361,7 @@ pub trait ProcessManager {
     /// Cause a thread to exit, with a given `reason`.
     ///
     /// # Errors
-    /// TODO
+    /// Returns an error if the thread could not be cleaned up (which should be rare).
     fn exit_thread(
         &self,
         thread: &Arc<Thread>,

@@ -55,7 +55,11 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                 restore_current_thread_state(regs, None);
             }
             Err(e) => {
-                debug!("system call from thread #{} failed: {e}", current_thread.id);
+                debug!(
+                    "system call 0x{:x} from thread #{} failed: {e}",
+                    esr.iss(),
+                    current_thread.id
+                );
                 restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }

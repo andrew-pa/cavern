@@ -136,7 +136,7 @@ pub unsafe fn switch_el0_context(
     );
     // read TTBR0
     let current_ttbr = TranslationTableBaseRegister::read_ttbr0_el1();
-    trace!("Switching EL0 context. New TTBR: {new_ttbr:x?}, Current TTBR: {current_ttbr:x?}. Full flush={full_flush}");
+    // trace!("Switching EL0 context. New TTBR: {new_ttbr:x?}, Current TTBR: {current_ttbr:x?}. Full flush={full_flush}");
     // if TTBR0 == new TTBR value, then do nothing
     if new_ttbr.0 != current_ttbr.0 || full_flush {
         // write TTBR0

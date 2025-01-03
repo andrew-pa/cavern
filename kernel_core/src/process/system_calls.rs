@@ -1,23 +1,71 @@
 //! System calls from user space.
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
-use kernel_api::{CallNumber, EnvironmentValue, ErrorCode, ExitReason};
+use kernel_api::{
+    flags::SpawnThreadFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ThreadCreateInfo,
+    ThreadId,
+};
 use log::{debug, trace, warn};
-use snafu::Snafu;
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::PageAllocator;
+use crate::memory::{PageAllocator, VirtualAddress};
 
-use super::{thread::Registers, ProcessManager, Thread};
+use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, Snafu)]
-pub enum Error {}
+pub enum Error {
+    /// The specified length was invalid, out of bounds, or not in the acceptable range.
+    #[snafu(display("Invalid length {reason}: {length}"))]
+    InvalidLength {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid length value.
+        length: usize,
+    },
+    /// An unknown, unsupported, or invalid combination of flags was passed.
+    #[snafu(display("Invalid flags {reason}: 0b{bits:b}"))]
+    InvalidFlags {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid flag bits (may contain valid bits as well).
+        bits: usize,
+    },
+    /// A pointer provided was null, invalid, or otherwise could not be used as expected.
+    #[snafu(display("Invalid pointer {reason}: 0x{ptr:x}"))]
+    InvalidPointer {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid pointer value.
+        ptr: usize,
+    },
+    /// Error occurred in the process manager mechanism.
+    ProcessManager {
+        /// Underlying error.
+        source: ProcessManagerError,
+    },
+}
 
 impl Error {
     /// Convert the `Error` to a error code that can be returned to user space.
     #[must_use]
     pub fn to_code(self) -> ErrorCode {
-        match self {}
+        match self {
+            Error::InvalidLength { .. } => ErrorCode::InvalidLength,
+            Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
+            Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
+            Error::ProcessManager { source } => match source {
+                ProcessManagerError::Memory { source } => match source {
+                    crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
+                    crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
+                    crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
+                },
+                ProcessManagerError::Missing { .. } | ProcessManagerError::PageTables { .. } => {
+                    ErrorCode::InvalidPointer
+                }
+                ProcessManagerError::OutOfHandles => ErrorCode::OutOfHandles,
+            },
+        }
     }
 }
 
@@ -50,8 +98,8 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     /// Returns a [`SysCallEffect`] if there is no error to return to user-space.
     /// - [`SysCallEffect::Return`] to return a value (zero being success) to user-space.
     /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled. This
-    /// may mean that the current thread was killed by this system call, either intentionally or
-    /// due to a fault (for example, because an invalid system call number was provided).
+    ///     may mean that the current thread was killed by this system call, either intentionally or
+    ///     due to a fault (for example, because an invalid system call number was provided).
     ///
     /// # Errors
     /// Returns an error that should be reported to user-space if the system call is unsuccessful.
@@ -76,6 +124,34 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 EnvironmentValue::from_integer(registers.x[0])
                     .map_or(0, |v| self.syscall_read_env_value(current_thread, v)),
             )),
+            CallNumber::SpawnThread => {
+                let flags =
+                    SpawnThreadFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
+                        reason: "spawn thread flags",
+                        bits: registers.x[0],
+                    })?;
+                // TODO: we probably also need to validate these to ensure that they will deref
+                // correctly given the page tables? seems expensive.
+                let info = unsafe {
+                    (registers.x[1] as *const ThreadCreateInfo)
+                        .as_ref()
+                        .context(InvalidPointerSnafu {
+                            reason: "thread create info ptr",
+                            ptr: registers.x[1],
+                        })?
+                };
+                let out_thread_id = unsafe {
+                    (registers.x[2] as *mut ThreadId)
+                        .as_mut()
+                        .context(InvalidPointerSnafu {
+                            reason: "thread ID output ptr",
+                            ptr: registers.x[2],
+                        })?
+                };
+                *out_thread_id =
+                    self.syscall_spawn_thread(current_thread.parent.clone().unwrap(), flags, info)?;
+                Ok(SysCallEffect::Return(0))
+            }
             CallNumber::ExitCurrentThread => {
                 self.syscall_exit_current_thread(current_thread, registers.x[0] as u32);
                 Ok(SysCallEffect::ScheduleNextThread)
@@ -116,6 +192,35 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
     }
+
+    fn syscall_spawn_thread(
+        &self,
+        parent: Arc<Process>,
+        _flags: SpawnThreadFlags,
+        info: &ThreadCreateInfo,
+    ) -> Result<ThreadId, Error> {
+        let entry_ptr = VirtualAddress::from(info.entry as *mut ());
+        ensure!(
+            !entry_ptr.is_null() && entry_ptr.is_aligned_to(8),
+            InvalidPointerSnafu {
+                reason: "thread entry point ptr",
+                ptr: entry_ptr
+            }
+        );
+        ensure!(
+            info.stack_size > 0,
+            InvalidLengthSnafu {
+                reason: "stack size <= 0",
+                length: info.stack_size
+            }
+        );
+        debug!("spawning thread {info:?} in process #{}", parent.id);
+        let thread = self
+            .process_manager
+            .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
+            .context(ProcessManagerSnafu)?;
+        Ok(thread.id)
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +242,7 @@ mod tests {
             crate::process::thread::ProcessorState::new_for_user_thread(
                 VirtualAddress::null(),
                 VirtualAddress::null(),
+                0,
             ),
             (VirtualAddress::null(), 0),
         ))
