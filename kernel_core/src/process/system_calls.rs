@@ -2,8 +2,8 @@
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    flags::SpawnThreadFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ThreadCreateInfo,
-    ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
+    ThreadCreateInfo, ThreadId,
 };
 use log::{debug, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -125,31 +125,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                     .map_or(0, |v| self.syscall_read_env_value(current_thread, v)),
             )),
             CallNumber::SpawnThread => {
-                let flags =
-                    SpawnThreadFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
-                        reason: "spawn thread flags",
-                        bits: registers.x[0],
-                    })?;
-                // TODO: we probably also need to validate these to ensure that they will deref
-                // correctly given the page tables? seems expensive.
-                let info = unsafe {
-                    (registers.x[1] as *const ThreadCreateInfo)
-                        .as_ref()
-                        .context(InvalidPointerSnafu {
-                            reason: "thread create info ptr",
-                            ptr: registers.x[1],
-                        })?
-                };
-                let out_thread_id = unsafe {
-                    (registers.x[2] as *mut ThreadId)
-                        .as_mut()
-                        .context(InvalidPointerSnafu {
-                            reason: "thread ID output ptr",
-                            ptr: registers.x[2],
-                        })?
-                };
-                *out_thread_id =
-                    self.syscall_spawn_thread(current_thread.parent.clone().unwrap(), flags, info)?;
+                self.syscall_spawn_thread(current_thread.parent.clone().unwrap(), registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::SpawnProcess => {
+                self.syscall_spawn_process(current_thread.parent.clone().unwrap(), registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitCurrentThread => {
@@ -196,9 +176,26 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_spawn_thread(
         &self,
         parent: Arc<Process>,
-        _flags: SpawnThreadFlags,
-        info: &ThreadCreateInfo,
-    ) -> Result<ThreadId, Error> {
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        // TODO: we probably also need to validate these to ensure that they will deref
+        // correctly given the page tables? seems expensive.
+        let info = unsafe {
+            (registers.x[0] as *const ThreadCreateInfo)
+                .as_ref()
+                .context(InvalidPointerSnafu {
+                    reason: "thread create info ptr",
+                    ptr: registers.x[1],
+                })?
+        };
+        let out_thread_id = unsafe {
+            (registers.x[1] as *mut ThreadId)
+                .as_mut()
+                .context(InvalidPointerSnafu {
+                    reason: "thread ID output ptr",
+                    ptr: registers.x[2],
+                })?
+        };
         let entry_ptr = VirtualAddress::from(info.entry as *mut ());
         ensure!(
             !entry_ptr.is_null() && entry_ptr.is_aligned_to(8),
@@ -219,7 +216,40 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .process_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
             .context(ProcessManagerSnafu)?;
-        Ok(thread.id)
+        *out_thread_id = thread.id;
+        Ok(())
+    }
+
+    fn syscall_spawn_process(
+        &self,
+        parent: Arc<Process>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        // TODO: we probably also need to validate these to ensure that they will deref
+        // correctly given the page tables? seems expensive.
+        let info = unsafe {
+            (registers.x[0] as *const ProcessCreateInfo)
+                .as_ref()
+                .context(InvalidPointerSnafu {
+                    reason: "process create info ptr",
+                    ptr: registers.x[1],
+                })?
+        };
+        let out_process_id = unsafe {
+            (registers.x[1] as *mut ProcessId)
+                .as_mut()
+                .context(InvalidPointerSnafu {
+                    reason: "process ID output ptr",
+                    ptr: registers.x[2],
+                })?
+        };
+        debug!("spawning process {info:?}, parent #{}", parent.id);
+        let proc = self
+            .process_manager
+            .spawn_process(Some(parent), info)
+            .context(ProcessManagerSnafu)?;
+        *out_process_id = proc.id;
+        Ok(())
     }
 }
 

@@ -1,10 +1,5 @@
 //! System call wrapper functions.
-use core::{
-    arch::asm,
-    mem::{MaybeUninit, transmute},
-};
-
-use flags::{SpawnProcessFlags, SpawnThreadFlags};
+use core::{arch::asm, mem::MaybeUninit};
 
 use super::*;
 
@@ -49,22 +44,17 @@ pub fn exit_current_thread(code: u32) -> ! {
 /// - `InvalidLength`: the stack or inbox size is too small.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the entry pointer was null or invalid.
-pub fn spawn_thread(
-    flags: SpawnThreadFlags,
-    info: &ThreadCreateInfo,
-) -> Result<ThreadId, ErrorCode> {
+pub fn spawn_thread(info: &ThreadCreateInfo) -> Result<ThreadId, ErrorCode> {
     let result: usize;
     let mut out_thread_id = MaybeUninit::uninit();
     let oti_p: *mut u32 = out_thread_id.as_mut_ptr();
     assert!(!oti_p.is_null());
     unsafe {
         asm!(
-            "mov x0, {f:x}",
-            "mov x1, {i:x}",
-            "mov x2, {p:x}",
+            "mov x0, {i:x}",
+            "mov x1, {p:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            f = in(reg) flags.bits(),
             i = in(reg) info as *const ThreadCreateInfo,
             p = in(reg) oti_p,
             res = out(reg) result,
@@ -85,22 +75,17 @@ pub fn spawn_thread(
 /// - `BadFormat`: the process image is invalid.
 /// - `InvalidPointer`: a pointer was invalid or unexpectedly null.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
-pub fn spawn_process(
-    flags: SpawnProcessFlags,
-    info: &ProcessCreateInfo,
-) -> Result<ProcessId, ErrorCode> {
+pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
     let result: usize;
     let mut out_proc_id = MaybeUninit::uninit();
     let oti_p: *mut u32 = out_proc_id.as_mut_ptr();
     assert!(!oti_p.is_null());
     unsafe {
         asm!(
-            "mov x0, {f:x}",
-            "mov x1, {i:x}",
-            "mov x2, {p:x}",
+            "mov x0, {i:x}",
+            "mov x1, {p:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            f = in(reg) flags.bits(),
             i = in(reg) info as *const ProcessCreateInfo,
             p = in(reg) oti_p,
             res = out(reg) result,

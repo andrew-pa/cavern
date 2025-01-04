@@ -5,7 +5,7 @@
 #![no_main]
 #![deny(missing_docs)]
 
-use kernel_api::{ThreadCreateInfo, exit_current_thread, flags::SpawnThreadFlags, spawn_thread};
+use kernel_api::{ThreadCreateInfo, exit_current_thread, spawn_thread};
 
 fn thread2(arg: usize) -> ! {
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
@@ -17,7 +17,7 @@ fn thread2(arg: usize) -> ! {
 pub extern "C" fn _start() {
     let process_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentProcessId);
 
-    spawn_thread(SpawnThreadFlags::empty(), &ThreadCreateInfo {
+    spawn_thread(&ThreadCreateInfo {
         entry: thread2,
         stack_size: 1,
         inbox_size: 0,

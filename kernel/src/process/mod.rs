@@ -51,6 +51,7 @@ impl ProcessManager for SystemProcessManager {
                 parent,
                 is_driver: info.privilege_level == PrivilegeLevel::Driver,
                 is_privileged: info.privilege_level >= PrivilegeLevel::Privileged,
+                notify_parent_on_exit: info.notify_on_exit,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
         )?);

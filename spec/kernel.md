@@ -281,7 +281,6 @@ Creates a new process. The calling process will become the parent process.
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `info`  | `*const ProcessCreateInfo` | Parameters for spawining a new process, described below. |
 | `child_pid`| `*mut Process ID`    | If non-null, this pointer is the destination for the new process' ID. |
 
@@ -301,17 +300,12 @@ Creates a new process. The calling process will become the parent process.
 
     + New privilege level for the child, which must be equal to or below that of the caller
     + The supervisor PID for the child
-
-#### Flags
-| Name           | Description                              |
-|----------------|------------------------------------------|
-| IgnoreExit     | Skips sending the parent a message when the newly spawned process exits. |
+    + Whether to notify the parent via a message when the process exits.
 
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new process.
 - `BadFormat`: the process image is invalid.
 - `InvalidPointer`: a pointer was invalid or unexpectedly null.
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
 
 ### `kill_process`
 Kills a process, causing it to exit with a fault.
@@ -339,7 +333,6 @@ This function also allocates new memory for the stack and inbox associated with 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `info`  | `*const ThreadCreateInfo` | Parameters for creating the new thread, see below. |
 | `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
 
@@ -351,16 +344,9 @@ The `ThreadCreateInfo` struct contains:
 | `inbox_size` | usize | Size in pages for the new message inbox allocated for the thread. |
 | `user_data`  | usize | This value is passed verbatim to the entry point function. |
 
-#### Flags
-The `spawn_thread` call accepts the following flags:
-
-| Name           | Description                              |
-|----------------|------------------------------------------|
-
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the entry or info pointer was null or invalid.
 
 

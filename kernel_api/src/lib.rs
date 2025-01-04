@@ -190,6 +190,8 @@ pub struct ProcessCreateInfo {
     pub supervisor: Option<ProcessId>,
     /// The new process' privilege level (must be less than or equal to the current privilege level).
     pub privilege_level: PrivilegeLevel,
+    /// Whether to notify this process via a message when the spawned process exits.
+    pub notify_on_exit: bool,
 }
 
 pub mod flags;

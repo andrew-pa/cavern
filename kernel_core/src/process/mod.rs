@@ -57,6 +57,8 @@ pub struct Properties {
     pub is_driver: bool,
     /// True if this process is privileged (can send messages outside of its supervisor).
     pub is_privileged: bool,
+    /// Enable parent notification when this process exits.
+    pub notify_parent_on_exit: bool,
 }
 
 /// A user-space process.
