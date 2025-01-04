@@ -281,13 +281,12 @@ Creates a new process. The calling process will become the parent process.
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `image`    | `*const ProcessImage` | Describes the image that will be loaded as the process' initial memory. |
-| `options`  | `*const ProcessSpawnOptions` | Optional parameters for spawining a process. If null, defaults are applied for all options. |
-| `child_pid`| `*mut Process ID`    | If non-null, this pointer is the destination for the new process' ID. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `info`  | `*const ProcessCreateInfo` | Parameters for spawining a new process, described below. |
+| `child_pid`| `*mut Process ID`    | If non-null, this pointer is the destination for the new process' ID. |
 
 #### Types
-- `ProcessImage`
+- `ProcessCreateInfo`
 
     Describes the image for the process as an array of segments.
     A segment consists of a slice of memory (in the calling process), page mapping attributes, and a base address and length in the new process' address space.
@@ -298,9 +297,7 @@ Creates a new process. The calling process will become the parent process.
     It is an error to provide an image with overlapping segments or segments that are not page aligned.
     Segment lengths will be rounded to the next nearest page.
 
-- `ProcessSpawnOptions`
-
-    Describes the following additional options for creating processes:
+    Also describes the following additional options for creating processes:
 
     + New privilege level for the child, which must be equal to or below that of the caller
     + The supervisor PID for the child

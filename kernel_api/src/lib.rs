@@ -111,7 +111,7 @@ pub enum ExitReason {
 /// The unique ID of a thread.
 pub type ThreadId = NonZeroU32;
 
-/// Parameters for creating a thread.
+/// Parameters for creating a new thread.
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct ThreadCreateInfo {
@@ -123,6 +123,73 @@ pub struct ThreadCreateInfo {
     pub inbox_size: usize,
     /// The user paramter that will be passed to the entry point function.
     pub user_data: usize,
+}
+
+/// The unique ID of a process.
+pub type ProcessId = NonZeroU32;
+
+/// Level of privilege granted to a process.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Contiguous, Default)]
+#[repr(u8)]
+pub enum PrivilegeLevel {
+    /// Unprivileged processes cannot send messages to other processes outside their supervisor's children.
+    /// This is the lowest level of privilege.
+    #[default]
+    Unprivileged,
+    /// Privileged processes can send messages to other processes outside their supervisor's children, but not outside their supervisor's supervisor's children.
+    Privileged,
+    /// A driver process can send messages to any process in the system.
+    /// Driver processes can also call the `driver_*` system calls.
+    /// This is the highest level of privilege.
+    Driver,
+}
+
+/// The type of a image section.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
+#[repr(u8)]
+pub enum ImageSectionKind {
+    /// Immutable data.
+    ReadOnly,
+    /// Mutable data.
+    ReadWrite,
+    /// Executable program code.
+    Executable,
+}
+
+/// A section of memory in a process image.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ImageSection {
+    /// The base address in the process' address space. This must be page aligned.
+    pub base_address: usize,
+    /// Offset from the base address where the `data` will be copied to. Any bytes between the
+    /// start and the offset will be zeroed.
+    pub data_offset: usize,
+    /// The total size of the section in bytes (including the `data_offset` bytes).
+    /// Any bytes past the size of `data` will be zeroed.
+    pub total_size: usize,
+    /// Number of bytes that `data` points to.
+    pub data_size: usize,
+    /// The data that will be copied into the section.
+    pub data: *const u8,
+    /// The type of section this is.
+    pub kind: ImageSectionKind,
+}
+
+/// Parameters for creating a new process.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct ProcessCreateInfo {
+    /// The main entry point in the process image.
+    pub entry_point: usize,
+    /// The number of process image sections.
+    pub num_sections: usize,
+    /// The process image sections that will be loaded into the new process.
+    pub sections: *const ImageSection,
+    /// The new process' supervisor, or None to inherit.
+    pub supervisor: Option<ProcessId>,
+    /// The new process' privilege level (must be less than or equal to the current privilege level).
+    pub privilege_level: PrivilegeLevel,
 }
 
 pub mod flags;

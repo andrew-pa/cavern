@@ -1,7 +1,7 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
 use itertools::Itertools;
-use kernel_api::ExitReason;
+use kernel_api::{ExitReason, PrivilegeLevel, ProcessCreateInfo};
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
@@ -9,8 +9,8 @@ use kernel_core::{
     process::{
         system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
-        Id, Image, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties,
-        Thread, ThreadId, MAX_PROCESS_ID,
+        Id, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties, Thread,
+        ThreadId, MAX_PROCESS_ID,
     },
 };
 use log::{debug, trace};
@@ -32,8 +32,8 @@ pub struct SystemProcessManager {
 impl ProcessManager for SystemProcessManager {
     fn spawn_process(
         &self,
-        image: &Image,
-        properties: Properties,
+        parent: Option<Arc<Process>>,
+        info: &ProcessCreateInfo,
     ) -> Result<Arc<Process>, ProcessManagerError> {
         let id = self
             .processes
@@ -43,15 +43,23 @@ impl ProcessManager for SystemProcessManager {
         let proc = Arc::new(Process::new(
             page_allocator(),
             id,
-            properties,
-            image.sections,
+            Properties {
+                supervisor: info
+                    .supervisor
+                    .and_then(|sid| self.process_for_id(sid))
+                    .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
+                parent,
+                is_driver: info.privilege_level == PrivilegeLevel::Driver,
+                is_privileged: info.privilege_level >= PrivilegeLevel::Privileged,
+            },
+            unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
         )?);
         self.processes.insert_with_handle(id, proc.clone());
 
         // spawn the main thread with an 8 MiB stack
         self.spawn_thread(
             proc.clone(),
-            image.entry_point,
+            info.entry_point.into(),
             8 * 1024 * 1024 / page_allocator().page_size(),
             0,
         )?;
@@ -66,11 +74,6 @@ impl ProcessManager for SystemProcessManager {
         stack_size: usize,
         user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError> {
-        let physical_entry = parent_process
-            .page_tables
-            .read()
-            .physical_address_of(entry_point);
-
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
         trace!("spawning thread #{id}");
