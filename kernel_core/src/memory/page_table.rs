@@ -87,6 +87,8 @@ impl From<u64> for MemoryKind {
 
 /// The properties given to a particular memory mapping.
 #[derive(Clone, Default)]
+// We just have a lot of legit boolean options here, and they are all independent.
+#[allow(clippy::struct_excessive_bools)]
 pub struct MemoryProperties {
     /// Determines cachability and load/store requirements.
     pub kind: MemoryKind,
@@ -108,7 +110,7 @@ pub struct MemoryProperties {
 
 impl MemoryProperties {
     fn encode(&self) -> u64 {
-        u64::from(self.owned) << 55
+        (u64::from(self.owned) << 55)
             | (u64::from(!self.executable) << 54)
             | (u64::from(!self.executable) << 53)
             | (self.shareability.encode() << 8)
@@ -701,10 +703,10 @@ impl<'pa> PageTables<'pa> {
                         self.write_table(f, level + 1, physical_pointer.cast().into())?;
                     }
                     DecodedEntry::Block(physical_pointer) => {
-                        writeln!(f, "block@{physical_pointer:?} {:?}", entry.properties())?
+                        writeln!(f, "block@{physical_pointer:?} {:?}", entry.properties())?;
                     }
                     DecodedEntry::Page(physical_pointer) => {
-                        writeln!(f, "page@{physical_pointer:?} {:?}", entry.properties())?
+                        writeln!(f, "page@{physical_pointer:?} {:?}", entry.properties())?;
                     }
                 }
             }

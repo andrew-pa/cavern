@@ -4,6 +4,7 @@
 #![no_std]
 #![no_main]
 #![deny(missing_docs)]
+#![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
     ThreadCreateInfo, allocate_heap_pages, exit_current_thread, free_heap_pages, spawn_thread,
@@ -15,6 +16,9 @@ fn thread2(arg: usize) -> ! {
 }
 
 /// The main entry point.
+///
+/// # Panics
+/// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() {
     let process_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentProcessId);

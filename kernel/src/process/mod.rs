@@ -1,7 +1,7 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
 use itertools::Itertools;
-use kernel_api::{ExitReason, PrivilegeLevel, ProcessCreateInfo};
+use kernel_api::{ExitReason, ProcessCreateInfo};
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},

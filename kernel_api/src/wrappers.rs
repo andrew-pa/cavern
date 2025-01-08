@@ -1,7 +1,10 @@
 //! System call wrapper functions.
-use core::{arch::asm, mem::MaybeUninit};
+use core::{arch::asm, mem::MaybeUninit, ptr};
 
-use super::*;
+use super::{
+    CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
+    ThreadCreateInfo, ThreadId,
+};
 
 /// Reads a value from the kernel about the current process environment.
 /// Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
@@ -55,7 +58,7 @@ pub fn spawn_thread(info: &ThreadCreateInfo) -> Result<ThreadId, ErrorCode> {
             "mov x1, {p:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            i = in(reg) info as *const ThreadCreateInfo,
+            i = in(reg) ptr::from_ref(info),
             p = in(reg) oti_p,
             res = out(reg) result,
             call_number = const CallNumber::SpawnThread.into_num()
@@ -86,7 +89,7 @@ pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
             "mov x1, {p:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            i = in(reg) info as *const ProcessCreateInfo,
+            i = in(reg) ptr::from_ref(info),
             p = in(reg) oti_p,
             res = out(reg) result,
             call_number = const CallNumber::SpawnProcess.into_num()
