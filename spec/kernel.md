@@ -23,7 +23,7 @@ A process is a collection of threads who share the same:
 Processes start with a single main thread running at their entry point.
 Processes run until they exit or encounter a fault.
 When a process exits for any reason, the parent of the process can be notified.
-Processes exit successfully when their last thread exits, and have the exit code provided by this last exit.
+Processes exit successfully when their last thread exits, and have the exit reason provided by this last exit.
 
 Process IDs start from 1.
 
@@ -38,6 +38,7 @@ Privileged processes can send messages to other processes outside their supervis
 A driver process can send messages to any process in the system.
 Processes inherit the privilege level of their parent, unless their parent gives them a lower privilege level when spawned.
 
+TODO: "Supervisor" is a bit of a misnomer?
 Supervisor processes and the privilege level system enable the creation of new resource scopes, where access to the rest of the system is totally mediated via the supervisor.
 This is similar to containers, although technically much more flexible.
 
@@ -52,6 +53,18 @@ A thread is a single path of execution in a process, and has its own:
 Threads are scheduled by the kernel for execution on the available CPUs in the system.
 Each thread has a unique ID. Thread IDs start from 1.
 A single thread in each process is designated as the receiver thread for the process, and will receive messages from other processes who send messages to its process without a thread ID. By default, this is the main thread.
+
+When a thread is finished, it must call the `exit_current_thread` system call.
+Threads can also exit prematurely due to faults.
+When a thread exits, a message is sent to the process' designated receiver from the kernel containing the exit reason.
+
+All possible thread exit reasons:
+| Name         | Description                    |
+|--------------|--------------------------------|
+| `User(u32)`  | The thread requested the exit with the given code. The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed. |
+| `PageFault`  | The thread accessed unmapped or protected virtual memory. |
+| `InvalidSysCall` | The thread made a system call with an invalid system call number. |
+| `Killed` | Another thread/process caused this thread to exit prematurely. |
 
 ## Memory
 Each process has its own virtual address space managed by the kernel.
@@ -249,7 +262,7 @@ The `transfer_from_shared_buffer` call accepts the following flags:
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
-Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
+Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error. If the discriminant passed as `value_to_read` is unknown, zero will be returned.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
@@ -269,13 +282,11 @@ Creates a new process. The calling process will become the parent process.
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `image`    | `*const ProcessImage` | Describes the image that will be loaded as the process' initial memory. |
-| `options`  | `*const ProcessSpawnOptions` | Optional parameters for spawining a process. If null, defaults are applied for all options. |
+| `info`  | `*const ProcessCreateInfo` | Parameters for spawining a new process, described below. |
 | `child_pid`| `*mut Process ID`    | If non-null, this pointer is the destination for the new process' ID. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Types
-- `ProcessImage`
+- `ProcessCreateInfo`
 
     Describes the image for the process as an array of segments.
     A segment consists of a slice of memory (in the calling process), page mapping attributes, and a base address and length in the new process' address space.
@@ -286,23 +297,16 @@ Creates a new process. The calling process will become the parent process.
     It is an error to provide an image with overlapping segments or segments that are not page aligned.
     Segment lengths will be rounded to the next nearest page.
 
-- `ProcessSpawnOptions`
-
-    Describes the following additional options for creating processes:
+    Also describes the following additional options for creating processes:
 
     + New privilege level for the child, which must be equal to or below that of the caller
     + The supervisor PID for the child
-
-#### Flags
-| Name           | Description                              |
-|----------------|------------------------------------------|
-| IgnoreExit     | Skips sending the parent a message when the newly spawned process exits. |
+    + Whether to notify the parent via a message when the process exits.
 
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new process.
 - `BadFormat`: the process image is invalid.
 - `InvalidPointer`: a pointer was invalid or unexpectedly null.
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
 
 ### `kill_process`
 Kills a process, causing it to exit with a fault.
@@ -330,24 +334,21 @@ This function also allocates new memory for the stack and inbox associated with 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `info`  | `*const ThreadCreateInfo` | Parameters for creating the new thread, see below. |
+| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
+
+The `ThreadCreateInfo` struct contains:
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
 | `entry` | function pointer | The entry point function for the thread. |
 | `stack_size` | usize | Size in pages for the new stack allocated for the thread. |
 | `inbox_size` | usize | Size in pages for the new message inbox allocated for the thread. |
-| `user_data`  | `*mut ()` | This value is passed verbatim to the entry point function. |
-| `thread_id`  | `*mut Thread ID` | Output for the thread ID assigned to the newly created thread. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-
-#### Flags
-The `spawn_thread` call accepts the following flags:
-
-| Name           | Description                              |
-|----------------|------------------------------------------|
+| `user_data`  | usize | This value is passed verbatim to the entry point function. |
 
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
-- `InvalidPointer`: the entry pointer was null or invalid.
+- `InvalidPointer`: the entry or info pointer was null or invalid.
 
 
 ### `set_designated_receiver`
@@ -362,7 +363,7 @@ Designates a thread in the current process as the thread which will receive mess
 - `NotFound`: the thread ID was unknown to the system.
 
 ### `allocate_heap_pages`
-Allocates new system memory, mapping it into the current process' address space.
+Allocates new system memory, mapping it into the current process' address space as a continuous region.
 The contents of the memory are undefined.
 
 #### Arguments
@@ -392,6 +393,7 @@ The base address pointer is invalid to access after calling this function.
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `ptr` | `*mut ()` | Pointer to the base address of the allocation. |
+| `size` | usize | The number of pages to free. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
@@ -402,6 +404,7 @@ The `free_heap_pages` call accepts the following flags:
 
 #### Errors
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidLength`: the size of the allocation is invalid.
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 
@@ -529,6 +532,7 @@ This table collects all possible errors returned from system calls.
 | `InvalidPointer` | A pointer provided was null, invalid, or otherwise could not be used as expected.                    |
 | `OutOfMemory`    | The system does not have enough available memory to complete the requested operation.                |
 | `OutOfBounds`    | The specified address or memory region was outside the allowed range or otherwise invalid.           |
+| `OutOfHandles`   | The system has run out of handles for the requested resource. |
 | `WouldBlock`     | The operation would block the calling thread, but non-blocking mode was specified.                   |
 | `InUse`          | The requested resource or memory region is already in use by another process or driver.              |
 

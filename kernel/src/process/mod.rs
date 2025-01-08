@@ -1,20 +1,23 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
+use itertools::Itertools;
+use kernel_api::{ExitReason, ProcessCreateInfo};
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
     platform::cpu::CoreInfo,
     process::{
+        system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
-        Id, Image, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties,
-        Thread, ThreadId, MAX_PROCESS_ID,
+        Id, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties, Thread,
+        ThreadId, MAX_PROCESS_ID,
     },
 };
 use log::{debug, trace};
 use snafu::OptionExt;
 use spin::Once;
 
-use crate::memory::page_allocator;
+use crate::memory::{page_allocator, PlatformPageAllocator};
 
 pub mod thread;
 
@@ -29,8 +32,8 @@ pub struct SystemProcessManager {
 impl ProcessManager for SystemProcessManager {
     fn spawn_process(
         &self,
-        image: &Image,
-        properties: Properties,
+        parent: Option<Arc<Process>>,
+        info: &ProcessCreateInfo,
     ) -> Result<Arc<Process>, ProcessManagerError> {
         let id = self
             .processes
@@ -40,16 +43,25 @@ impl ProcessManager for SystemProcessManager {
         let proc = Arc::new(Process::new(
             page_allocator(),
             id,
-            properties,
-            image.sections,
+            Properties {
+                supervisor: info
+                    .supervisor
+                    .and_then(|sid| self.process_for_id(sid))
+                    .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
+                parent,
+                privilage: info.privilege_level,
+                notify_parent_on_exit: info.notify_on_exit,
+            },
+            unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
         )?);
         self.processes.insert_with_handle(id, proc.clone());
 
         // spawn the main thread with an 8 MiB stack
         self.spawn_thread(
             proc.clone(),
-            image.entry_point,
+            info.entry_point.into(),
             8 * 1024 * 1024 / page_allocator().page_size(),
+            0,
         )?;
 
         Ok(proc)
@@ -60,6 +72,7 @@ impl ProcessManager for SystemProcessManager {
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
         stack_size: usize,
+        user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError> {
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
@@ -67,7 +80,7 @@ impl ProcessManager for SystemProcessManager {
         let stack = parent_process.allocate_memory(
             page_allocator(),
             stack_size,
-            &MemoryProperties {
+            MemoryProperties {
                 writable: true,
                 executable: false,
                 user_space_access: true,
@@ -75,13 +88,14 @@ impl ProcessManager for SystemProcessManager {
             },
         )?;
         let stack_ptr = stack.byte_add(stack_size * page_allocator().page_size());
-        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr);
+        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr, user_data);
         debug!("creating thread #{id} in process #{}, entry point @ {entry_point:?}, stack @ {stack_ptr:?}", parent_process.id);
         let thread = Arc::new(Thread::new(
             id,
             Some(parent_process.clone()),
             State::Running,
             pstate,
+            (stack, stack_size),
         ));
         {
             let mut ts = parent_process.threads.write();
@@ -95,12 +109,62 @@ impl ProcessManager for SystemProcessManager {
         Ok(thread)
     }
 
-    fn kill_process(&self, _process: Arc<Process>) -> Result<(), ProcessManagerError> {
-        todo!()
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError> {
+        for t in process.threads.write().drain(..) {
+            t.set_state(State::Finished);
+            thread::THREADS
+                .get()
+                .unwrap()
+                .remove(t.id)
+                .expect("thread is in thread handle table");
+        }
+        self.processes.remove(process.id);
+        // TODO: send message to parent
+        // the process will free all owned memory (including thread stacks) when dropped
+        Ok(())
     }
 
-    fn kill_thread(&self, _thread: Arc<Thread>) -> Result<(), ProcessManagerError> {
-        todo!()
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError> {
+        debug!("thread #{} exited with reason {reason:?}", thread.id);
+
+        // remove current thread from scheduler, set state to finished
+        thread.set_state(State::Finished);
+
+        // remove thread from parent process
+        if let Some(parent) = thread.parent.as_ref() {
+            let last_thread = {
+                let mut ts = parent.threads.write();
+                let (i, _) = ts
+                    .iter()
+                    .find_position(|t| t.id == thread.id)
+                    .expect("find thread in parent");
+                ts.swap_remove(i);
+                ts.is_empty()
+            };
+
+            // free thread stack
+            parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
+
+            if last_thread {
+                // if this was the last thread, the parent process is now also finished
+                // the "parent" will then be the process that spawned this process.
+                debug!("last thread in process exited");
+                self.processes.remove(parent.id);
+                // the process will be cleaned up when it is dropped.
+            }
+            // TODO: send message to parent
+        }
+        // remove thread from handle table
+        thread::THREADS
+            .get()
+            .unwrap()
+            .remove(thread.id)
+            .expect("thread is in thread handle table");
+        Ok(())
     }
 
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {
@@ -112,10 +176,16 @@ impl ProcessManager for SystemProcessManager {
     }
 }
 
+/// The global system call handler policy instance.
+pub static SYS_CALL_POLICY: Once<
+    SystemCalls<'static, 'static, PlatformPageAllocator, SystemProcessManager>,
+> = Once::new();
+
 /// Initialize processes/threading.
 pub fn init(cores: &[CoreInfo]) {
     thread::init(cores);
-    PROCESS_MANAGER.call_once(|| SystemProcessManager {
+    let pm = PROCESS_MANAGER.call_once(|| SystemProcessManager {
         processes: HandleMap::new(MAX_PROCESS_ID),
     });
+    SYS_CALL_POLICY.call_once(|| SystemCalls::new(page_allocator(), pm));
 }

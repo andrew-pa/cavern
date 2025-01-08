@@ -1,6 +1,7 @@
 //! Page tables data structure.
 
 use bitfield::BitRange;
+use log::trace;
 use snafu::{ensure, ResultExt as _, Snafu};
 
 use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
@@ -64,6 +65,7 @@ pub enum MemoryKind {
 pub const MAIR_VALUE: u64 = 0x00_00_00_00__00_00_ff_00;
 
 impl MemoryKind {
+    /// See [`MAIR_VALUE`] for more details.
     #[inline]
     const fn encode(&self) -> u64 {
         match self {
@@ -85,6 +87,8 @@ impl From<u64> for MemoryKind {
 
 /// The properties given to a particular memory mapping.
 #[derive(Clone, Default)]
+// We just have a lot of legit boolean options here, and they are all independent.
+#[allow(clippy::struct_excessive_bools)]
 pub struct MemoryProperties {
     /// Determines cachability and load/store requirements.
     pub kind: MemoryKind,
@@ -96,11 +100,18 @@ pub struct MemoryProperties {
     pub executable: bool,
     /// Required cache coherence across cores for this memory.
     pub shareability: Shareability,
+    /// The pages are owned by the page table and should be deallocated when the page table is dropped.
+    /// The pages mapped must have been allocated with the same page allocator as the page tables
+    /// themselves.
+    ///
+    /// Encoded using bit `55` in the entry, which is "reserved for software use".
+    pub owned: bool,
 }
 
 impl MemoryProperties {
     fn encode(&self) -> u64 {
-        (u64::from(!self.executable) << 54)
+        (u64::from(self.owned) << 55)
+            | (u64::from(!self.executable) << 54)
             | (u64::from(!self.executable) << 53)
             | (self.shareability.encode() << 8)
             | (u64::from(!self.writable) << 7)
@@ -115,6 +126,7 @@ impl MemoryProperties {
             writable: ((raw_entry >> 7) & 0x1) == 0,
             user_space_access: ((raw_entry >> 6) & 0x1) == 1,
             kind: MemoryKind::from((raw_entry >> 2) & 0b111),
+            owned: ((raw_entry >> 55) & 0x1) == 1,
         }
     }
 }
@@ -123,11 +135,12 @@ impl core::fmt::Debug for MemoryProperties {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "MemProps<{:?} {:?} {}{} {}>",
+            "MemProps<{:?} {:?} {}{} {}{}>",
             self.shareability,
             self.kind,
             if self.writable { "RW" } else { "R" },
             if self.executable { "X" } else { "" },
+            if self.owned { "O" } else { "B" },
             if self.user_space_access { "*" } else { "K" }
         )
     }
@@ -207,6 +220,7 @@ pub enum Error {
         value: VirtualAddress,
     },
     /// Address is improperally aligned for the requested block size.
+    #[snafu(display("Value is improperally aligned: {value:x}"))]
     InvalidAlignment {
         /// Address that was unaligned (physical or virtual).
         value: usize,
@@ -262,6 +276,10 @@ impl Entry {
                 panic!("invalid page table entry type/valid: level={lvl}, entry={bits:b}")
             }
         }
+    }
+
+    fn properties(self) -> MemoryProperties {
+        MemoryProperties::decode(self.0)
     }
 }
 
@@ -684,16 +702,12 @@ impl<'pa> PageTables<'pa> {
                     DecodedEntry::Table(physical_pointer) => {
                         self.write_table(f, level + 1, physical_pointer.cast().into())?;
                     }
-                    DecodedEntry::Block(physical_pointer) => writeln!(
-                        f,
-                        "block@{physical_pointer:?} {:?}",
-                        MemoryProperties::decode(entry.0)
-                    )?,
-                    DecodedEntry::Page(physical_pointer) => writeln!(
-                        f,
-                        "page@{physical_pointer:?} {:?}",
-                        MemoryProperties::decode(entry.0)
-                    )?,
+                    DecodedEntry::Block(physical_pointer) => {
+                        writeln!(f, "block@{physical_pointer:?} {:?}", entry.properties())?;
+                    }
+                    DecodedEntry::Page(physical_pointer) => {
+                        writeln!(f, "page@{physical_pointer:?} {:?}", entry.properties())?;
+                    }
                 }
             }
         }
@@ -706,8 +720,19 @@ impl<'pa> PageTables<'pa> {
     fn drop_table(&mut self, level: u8, table: *mut Entry) {
         for i in 0..self.entries_per_page {
             let entry = unsafe { table.add(i).read() };
-            if let DecodedEntry::Table(next_table) = entry.decode(level) {
-                self.drop_table(level + 1, next_table.cast().into());
+            match entry.decode(level) {
+                DecodedEntry::Table(next_table) => {
+                    self.drop_table(level + 1, next_table.cast().into());
+                }
+                DecodedEntry::Page(ptr) | DecodedEntry::Block(ptr) => {
+                    if entry.properties().owned {
+                        let num_pages = pages_per_entry(level, self.page_size);
+                        #[cfg(test)]
+                        std::println!("dropping pages {ptr:?}, {num_pages} pages");
+                        self.page_allocator.free(ptr, num_pages).unwrap();
+                    }
+                }
+                DecodedEntry::Empty => {}
             }
         }
         self.page_allocator
@@ -729,6 +754,7 @@ impl core::fmt::Debug for PageTables<'_> {
 
 impl Drop for PageTables<'_> {
     fn drop(&mut self) {
+        trace!("dropping page tables @ {:x?}", self.root);
         self.drop_table(0, self.root);
     }
 }
@@ -845,6 +871,49 @@ mod tests {
             pt.unmap(start_address, count, block_size)
                 .expect("unmap range");
             check_mapping(&pt, 0.into(), start_address, count, block_size, false);
+            drop(pt);
+        }
+        pa.end_check();
+    }
+
+    #[test_matrix(
+        FourKiB,
+        Page,
+        [1, 2, 8],
+        [0x0]
+    )]
+    #[test_matrix(
+        SixteenKiB,
+        Page,
+        [1, 2, 8],
+        [0x0]
+    )]
+    fn basic_owned_map_gets_dropped(
+        page_size: PageSize,
+        block_size: MapBlockSize,
+        count: usize,
+        start_address: usize,
+    ) {
+        let pa = MockPageAllocator::new(page_size, 8192);
+        {
+            let mut pt = PageTables::empty(&pa).unwrap();
+            let start_address = VirtualAddress::from(start_address);
+            let pages = pa
+                .allocate(count * block_size.length_in_pages(page_size).unwrap())
+                .expect("allocate memory");
+            pt.map(
+                start_address,
+                pages,
+                count,
+                block_size,
+                &MemoryProperties {
+                    owned: true,
+                    ..Default::default()
+                },
+            )
+            .expect("map range");
+            check_mapping(&pt, pages, start_address, count, block_size, true);
+            // this should also free `pages`.
             drop(pt);
         }
         pa.end_check();

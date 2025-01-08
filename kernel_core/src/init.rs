@@ -1,15 +1,14 @@
 //! Policy for spawning the `init` process at boot.
 
 use alloc::vec::Vec;
+use kernel_api::{ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
 use log::{debug, trace};
 use snafu::{ResultExt, Snafu};
 use tar_no_std::TarArchiveRef;
 
 use crate::{
     memory::{PageSize, PhysicalPointer},
-    process::{
-        Image, ImageSection, ImageSectionKind, ProcessManager, ProcessManagerError, Properties,
-    },
+    process::{ProcessManager, ProcessManagerError},
 };
 
 /// Errors that can occur while spawning the `init` process.
@@ -66,6 +65,7 @@ pub fn spawn_init_process(
                 .filter(|segment| segment.p_type == 1)
                 .map(|segment| {
                     let (base_address, data_offset) = page_size.split(segment.p_vaddr as usize);
+                    let data = bin.segment_data(&segment).context(BinarySnafu)?;
                     Ok(ImageSection {
                         kind: match segment.p_flags {
                             0b100 => ImageSectionKind::ReadOnly,
@@ -73,28 +73,24 @@ pub fn spawn_init_process(
                             0b101 | 0b001 => ImageSectionKind::Executable,
                             x => panic!("unexpected flags for program header: {x}"),
                         },
-                        base_address: base_address.into(),
+                        base_address,
                         data_offset,
                         total_size: data_offset + segment.p_memsz as usize,
-                        data: bin.segment_data(&segment).context(BinarySnafu)?,
+                        data: data.as_ptr(),
+                        data_size: data.len(),
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let image = Image {
-                entry_point: (bin.ehdr.e_entry as usize).into(),
-                sections: &sections,
-            };
-            debug!("init image = {image:?}");
-            let init_props = Properties {
+            let info = ProcessCreateInfo {
+                entry_point: bin.ehdr.e_entry as usize,
+                num_sections: sections.len(),
+                sections: sections.as_ptr(),
                 supervisor: None,
-                parent: None,
-                is_driver: true,
-                is_privileged: true,
-                is_supervisor: true,
+                privilege_level: PrivilegeLevel::Driver,
+                notify_on_exit: false,
             };
-            let init_process = proc_man
-                .spawn_process(&image, init_props)
-                .context(ProcessSnafu)?;
+            debug!("init image = {info:?}");
+            let init_process = proc_man.spawn_process(None, &info).context(ProcessSnafu)?;
             debug!("spawned init process #{}", init_process.id);
             Ok(())
         }

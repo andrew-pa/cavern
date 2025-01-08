@@ -1,11 +1,14 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-pub mod thread;
+use kernel_api::{ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
+
+pub mod system_calls;
+pub mod thread;
 
 use crate::memory::{
     page_table::{MapBlockSize, MemoryProperties},
@@ -19,94 +22,45 @@ pub type Id = crate::collections::Handle;
 /// The largest possible process ID in the system.
 pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
 
-/// The type of a image section.
-#[derive(Debug)]
-pub enum ImageSectionKind {
-    /// Immutable data.
-    ReadOnly,
-    /// Mutable data.
-    ReadWrite,
-    /// Executable program code.
-    Executable,
-}
-
-impl ImageSectionKind {
-    /// Convert an image section kind into the necessary memory properties to map the pages of that section.
-    #[must_use]
-    pub fn as_properties(&self) -> MemoryProperties {
-        match self {
-            ImageSectionKind::ReadOnly => MemoryProperties {
-                user_space_access: true,
-                writable: false,
-                executable: false,
-                ..MemoryProperties::default()
-            },
-            ImageSectionKind::ReadWrite => MemoryProperties {
-                user_space_access: true,
-                writable: true,
-                executable: false,
-                ..MemoryProperties::default()
-            },
-            ImageSectionKind::Executable => MemoryProperties {
-                user_space_access: true,
-                writable: false,
-                executable: true,
-                ..MemoryProperties::default()
-            },
-        }
+/// Convert an image section kind into the necessary memory properties to map the pages of that section.
+#[must_use]
+pub fn image_section_kind_as_properties(this: &ImageSectionKind) -> MemoryProperties {
+    match this {
+        ImageSectionKind::ReadOnly => MemoryProperties {
+            user_space_access: true,
+            writable: false,
+            executable: false,
+            ..MemoryProperties::default()
+        },
+        ImageSectionKind::ReadWrite => MemoryProperties {
+            user_space_access: true,
+            writable: true,
+            executable: false,
+            ..MemoryProperties::default()
+        },
+        ImageSectionKind::Executable => MemoryProperties {
+            user_space_access: true,
+            writable: false,
+            executable: true,
+            ..MemoryProperties::default()
+        },
     }
-}
-
-/// A section of memory in a process image.
-pub struct ImageSection<'d> {
-    /// The base address in the process' address space. This must be page aligned.
-    pub base_address: VirtualAddress,
-    /// Offset from the base address where the `data` will be copied to. Any bytes between the
-    /// start and the offset will be zeroed.
-    pub data_offset: usize,
-    /// The total size of the section in bytes (including the `data_offset` bytes).
-    /// Any bytes past the size of `data` will be zeroed.
-    pub total_size: usize,
-    /// The data that will be copied into the beginning of this section.
-    pub data: &'d [u8],
-    /// The type of section this is.
-    pub kind: ImageSectionKind,
-}
-
-impl core::fmt::Debug for ImageSection<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ImageSection")
-            .field("base_address", &self.base_address)
-            .field("total_size", &self.total_size)
-            .field("data.len()", &self.data.len())
-            .field("data_offset", &self.data_offset)
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-/// A description of a process executable image.
-#[derive(Debug)]
-pub struct Image<'d> {
-    /// The main entry point of the executable.
-    pub entry_point: VirtualAddress,
-    /// The memory sections in this executable.
-    pub sections: &'d [ImageSection<'d>],
 }
 
 /// Properties describing a process
 pub struct Properties {
     /// The supervisor process for this process.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
     pub supervisor: Option<Arc<Process>>,
     /// The parent process that spawned this process.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
     pub parent: Option<Arc<Process>>,
-    /// True if this process has driver-level access to the kernel.
-    pub is_driver: bool,
-    /// True if this process is privileged (can send messages outside of its supervisor).
-    pub is_privileged: bool,
-    /// True if this process is a supervisor.
-    /// Child processes spawned by this process will have it as their supervisor, rather than inheriting this process' supervisor.
-    pub is_supervisor: bool,
+    /// Level of privilage this process has.
+    pub privilage: PrivilegeLevel,
+    /// Enable parent notification when this process exits.
+    pub notify_parent_on_exit: bool,
 }
 
 /// A user-space process.
@@ -155,7 +109,6 @@ impl Process {
         );
 
         for section in image {
-            trace!("mapping setion {section:?}");
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
@@ -167,33 +120,37 @@ impl Process {
                     core::ptr::write_bytes(ptr, 0, section.data_offset);
                 }
                 core::ptr::copy_nonoverlapping(
-                    section.data.as_ptr(),
+                    section.data,
                     ptr.byte_add(section.data_offset),
-                    section.data.len(),
+                    section.data_size,
                 );
-                if section.data.len() < section.total_size {
+                if section.data_size < section.total_size {
                     core::ptr::write_bytes(
-                        ptr.add(section.data.len()),
+                        ptr.byte_add(section.data_offset + section.data_size),
                         0,
-                        section.total_size - section.data.len(),
+                        section.total_size - section.data_size,
                     );
                 }
             }
             // map it into the process
+            let props = image_section_kind_as_properties(&section.kind);
+            trace!("mapping setion {section:?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
             page_tables
                 .map(
-                    section.base_address,
+                    section.base_address.into(),
                     memory,
                     size_in_pages,
                     crate::memory::page_table::MapBlockSize::Page,
-                    &section.kind.as_properties(),
+                    &props,
                 )
                 .context(PageTablesSnafu)?;
             // reserve the range with the allocator as well
             virt_alloc
-                .reserve_range(section.base_address, size_in_pages)
+                .reserve_range(section.base_address.into(), size_in_pages)
                 .context(MemorySnafu)?;
         }
+
+        trace!("process page tables: {page_tables:?}");
 
         Ok(Self {
             id,
@@ -229,14 +186,17 @@ impl Process {
 
     /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
     ///
+    /// Warning! The `page_allocator` must be the same as the one used to create the process, but
+    /// this is currently not enforced!
+    ///
     /// # Errors
     /// Returns an error if the physical memory cannot be allocated, the virtual addresses in the
     /// process' address space cannot be allocated, or if a page mapping operation fails.
     pub fn allocate_memory(
         &self,
-        page_allocator: &'static impl PageAllocator,
+        page_allocator: &impl PageAllocator,
         size_in_pages: usize,
-        properties: &MemoryProperties,
+        mut properties: MemoryProperties,
     ) -> Result<VirtualAddress, ProcessManagerError> {
         let phys_addr = page_allocator
             .allocate(size_in_pages)
@@ -247,6 +207,8 @@ impl Process {
             .alloc(size_in_pages)
             .context(MemorySnafu)?
             .start;
+        // let the page tables own this memory so that it is freed when the process is dropped.
+        properties.owned = true;
         self.page_tables
             .write()
             .map(
@@ -254,7 +216,7 @@ impl Process {
                 phys_addr,
                 size_in_pages,
                 MapBlockSize::Page,
-                properties,
+                &properties,
             )
             .context(PageTablesSnafu)?;
         Ok(virt_addr)
@@ -264,12 +226,15 @@ impl Process {
     /// backing physical pages. The `base_address` must have been returned by a call to
     /// `allocate_memory` with exactly `size_in_pages`.
     ///
+    /// Warning! The `page_allocator` must be the same as the one used to create the process, but
+    /// this is currently not enforced!
+    ///
     /// # Errors
     /// Returns an error if the physical pages or virtual addresses cannot be freed, or if a page
     /// mapping operation fails.
     pub fn free_memory(
         &self,
-        page_allocator: &'static impl PageAllocator,
+        page_allocator: &impl PageAllocator,
         base_address: VirtualAddress,
         size_in_pages: usize,
     ) -> Result<(), ProcessManagerError> {
@@ -319,6 +284,7 @@ pub enum ProcessManagerError {
 }
 
 /// An interface for managing processes and threads.
+#[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
     /// Spawn a new process.
     ///
@@ -327,8 +293,8 @@ pub trait ProcessManager {
     /// invalid inputs.
     fn spawn_process(
         &self,
-        image: &Image,
-        properties: Properties,
+        parent: Option<Arc<Process>>,
+        info: &ProcessCreateInfo,
     ) -> Result<Arc<Process>, ProcessManagerError>;
 
     /// Spawn a new thread with the given parent process.
@@ -342,19 +308,24 @@ pub trait ProcessManager {
         parent_process: Arc<Process>,
         entry_point: VirtualAddress,
         stack_size: usize,
+        user_data: usize,
     ) -> Result<Arc<Thread>, ProcessManagerError>;
 
     /// Kill a process.
     ///
     /// # Errors
     /// TODO
-    fn kill_process(&self, process: Arc<Process>) -> Result<(), ProcessManagerError>;
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError>;
 
-    /// Kill a thread.
+    /// Cause a thread to exit, with a given `reason`.
     ///
     /// # Errors
-    /// TODO
-    fn kill_thread(&self, thread: Arc<Thread>) -> Result<(), ProcessManagerError>;
+    /// Returns an error if the thread could not be cleaned up (which should be rare).
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError>;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;

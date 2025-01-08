@@ -1,5 +1,5 @@
 use crate::{platform::timer::SystemTimer, process::thread::Scheduler};
-use log::{debug, trace, warn};
+use log::{trace, warn};
 
 use super::Id as InterruptId;
 
@@ -37,10 +37,10 @@ impl<'ic, 'sc, 't, T: SystemTimer, IC: super::Controller, Sched: Scheduler>
     /// - [`Error::UnknownInterrupt`]: If an interrupt happens that is unknown to the handler.
     pub fn process_interrupts(&self) -> Result<(), Error> {
         while let Some(int_id) = self.controller.ack_interrupt() {
-            trace!("handling interrupt {int_id}");
+            // trace!("handling interrupt {int_id}");
 
             if int_id == self.timer.interrupt_id() {
-                debug!("timer interrupt");
+                trace!("timer interrupt");
                 self.scheduler.next_time_slice();
                 self.timer.reset();
             } else if int_id == 0 {
@@ -54,7 +54,7 @@ impl<'ic, 'sc, 't, T: SystemTimer, IC: super::Controller, Sched: Scheduler>
                 return Err(Error::UnknownInterrupt(int_id));
             }
 
-            trace!("finished interrupt {int_id}");
+            // trace!("finished interrupt {int_id}");
             self.controller.finish_interrupt(int_id);
         }
         Ok(())
