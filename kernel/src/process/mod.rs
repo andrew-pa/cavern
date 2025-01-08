@@ -49,8 +49,7 @@ impl ProcessManager for SystemProcessManager {
                     .and_then(|sid| self.process_for_id(sid))
                     .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
                 parent,
-                is_driver: info.privilege_level == PrivilegeLevel::Driver,
-                is_privileged: info.privilege_level >= PrivilegeLevel::Privileged,
+                privilage: info.privilege_level,
                 notify_parent_on_exit: info.notify_on_exit,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
@@ -81,7 +80,7 @@ impl ProcessManager for SystemProcessManager {
         let stack = parent_process.allocate_memory(
             page_allocator(),
             stack_size,
-            &MemoryProperties {
+            MemoryProperties {
                 writable: true,
                 executable: false,
                 user_space_access: true,
@@ -110,8 +109,19 @@ impl ProcessManager for SystemProcessManager {
         Ok(thread)
     }
 
-    fn kill_process(&self, _process: &Arc<Process>) -> Result<(), ProcessManagerError> {
-        todo!()
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError> {
+        for t in process.threads.write().drain(..) {
+            t.set_state(State::Finished);
+            thread::THREADS
+                .get()
+                .unwrap()
+                .remove(t.id)
+                .expect("thread is in thread handle table");
+        }
+        self.processes.remove(process.id);
+        // TODO: send message to parent
+        // the process will free all owned memory (including thread stacks) when dropped
+        Ok(())
     }
 
     fn exit_thread(
@@ -140,8 +150,11 @@ impl ProcessManager for SystemProcessManager {
             parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
 
             if last_thread {
-                // TODO: if this was the last thread, the parent process is now also finished
+                // if this was the last thread, the parent process is now also finished
+                // the "parent" will then be the process that spawned this process.
                 debug!("last thread in process exited");
+                self.processes.remove(parent.id);
+                // the process will be cleaned up when it is dropped.
             }
             // TODO: send message to parent
         }

@@ -38,6 +38,7 @@ Privileged processes can send messages to other processes outside their supervis
 A driver process can send messages to any process in the system.
 Processes inherit the privilege level of their parent, unless their parent gives them a lower privilege level when spawned.
 
+TODO: "Supervisor" is a bit of a misnomer?
 Supervisor processes and the privilege level system enable the creation of new resource scopes, where access to the rest of the system is totally mediated via the supervisor.
 This is similar to containers, although technically much more flexible.
 

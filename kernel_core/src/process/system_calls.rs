@@ -2,8 +2,8 @@
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
-    ThreadCreateInfo, ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, PrivilegeLevel, ProcessCreateInfo,
+    ProcessId, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -39,6 +39,14 @@ pub enum Error {
         /// The invalid pointer value.
         ptr: usize,
     },
+    /// The specified process, thread, or handler ID was unknown or not found in the system.
+    #[snafu(display("Id {id} not found: {reason}"))]
+    NotFound {
+        /// The value that was missing or other information about what the source of the error was.
+        reason: String,
+        /// The missing id value.
+        id: usize,
+    },
     /// Error occurred in the process manager mechanism.
     ProcessManager {
         /// Underlying error.
@@ -54,6 +62,7 @@ impl Error {
             Error::InvalidLength { .. } => ErrorCode::InvalidLength,
             Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
             Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
+            Error::NotFound { .. } => ErrorCode::NotFound,
             Error::ProcessManager { source } => match source {
                 ProcessManagerError::Memory { source } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
@@ -130,6 +139,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             }
             CallNumber::SpawnProcess => {
                 self.syscall_spawn_process(current_thread.parent.clone().unwrap(), registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::KillProcess => {
+                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers.x[0])?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitCurrentThread => {
@@ -249,6 +262,33 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .spawn_process(Some(parent), info)
             .context(ProcessManagerSnafu)?;
         *out_process_id = proc.id;
+        Ok(())
+    }
+
+    fn syscall_kill_process(
+        &self,
+        current_process: &Arc<Process>,
+        pid: usize,
+    ) -> Result<(), Error> {
+        let pid = ProcessId::new(pid as u32).context(NotFoundSnafu {
+            reason: "process id is zero",
+            id: 0usize,
+        })?;
+
+        let proc = self
+            .process_manager
+            .process_for_id(pid)
+            .context(NotFoundSnafu {
+                reason: "process id",
+                id: pid.get() as usize,
+            })?;
+
+        // TODO: access control?
+
+        self.process_manager
+            .kill_process(&proc)
+            .context(ProcessManagerSnafu)?;
+
         Ok(())
     }
 }

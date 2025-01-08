@@ -1,7 +1,7 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-use kernel_api::{ExitReason, ImageSection, ImageSectionKind, ProcessCreateInfo};
+use kernel_api::{ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
@@ -50,13 +50,15 @@ pub fn image_section_kind_as_properties(this: &ImageSectionKind) -> MemoryProper
 /// Properties describing a process
 pub struct Properties {
     /// The supervisor process for this process.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
     pub supervisor: Option<Arc<Process>>,
     /// The parent process that spawned this process.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
     pub parent: Option<Arc<Process>>,
-    /// True if this process has driver-level access to the kernel.
-    pub is_driver: bool,
-    /// True if this process is privileged (can send messages outside of its supervisor).
-    pub is_privileged: bool,
+    /// Level of privilage this process has.
+    pub privilage: PrivilegeLevel,
     /// Enable parent notification when this process exits.
     pub notify_parent_on_exit: bool,
 }
@@ -191,7 +193,7 @@ impl Process {
         &self,
         page_allocator: &'static impl PageAllocator,
         size_in_pages: usize,
-        properties: &MemoryProperties,
+        mut properties: MemoryProperties,
     ) -> Result<VirtualAddress, ProcessManagerError> {
         let phys_addr = page_allocator
             .allocate(size_in_pages)
@@ -202,6 +204,8 @@ impl Process {
             .alloc(size_in_pages)
             .context(MemorySnafu)?
             .start;
+        // let the page tables own this memory so that it is freed when the process is dropped.
+        properties.owned = true;
         self.page_tables
             .write()
             .map(
@@ -209,7 +213,7 @@ impl Process {
                 phys_addr,
                 size_in_pages,
                 MapBlockSize::Page,
-                properties,
+                &properties,
             )
             .context(PageTablesSnafu)?;
         Ok(virt_addr)
