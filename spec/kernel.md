@@ -363,7 +363,7 @@ Designates a thread in the current process as the thread which will receive mess
 - `NotFound`: the thread ID was unknown to the system.
 
 ### `allocate_heap_pages`
-Allocates new system memory, mapping it into the current process' address space.
+Allocates new system memory, mapping it into the current process' address space as a continuous region.
 The contents of the memory are undefined.
 
 #### Arguments
@@ -393,6 +393,7 @@ The base address pointer is invalid to access after calling this function.
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `ptr` | `*mut ()` | Pointer to the base address of the allocation. |
+| `size` | usize | The number of pages to free. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
@@ -403,6 +404,7 @@ The `free_heap_pages` call accepts the following flags:
 
 #### Errors
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidLength`: the size of the allocation is invalid.
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 

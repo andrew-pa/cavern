@@ -98,3 +98,84 @@ pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
 }
+
+/// Kill a process by process id.
+///
+/// # Errors
+/// - `NotFound`: the process id was not found.
+pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
+    let result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {i:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            i = in(reg) pid.get(),
+            res = out(reg) result,
+            call_number = const CallNumber::KillProcess.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// Allocates new system memory, mapping it into the current process' address space as a continuous region.
+/// The contents of the memory are undefined.
+///
+/// # Errors
+/// - `OutOfMemory`: the system does not have enough memory to make the allocation.
+/// - `InvalidLength`: the size of the allocation is invalid.
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `InvalidPointer`: the destination pointer was null or invalid.
+pub fn allocate_heap_pages(size: usize) -> Result<*mut u8, ErrorCode> {
+    let result: usize;
+    let mut out = MaybeUninit::uninit();
+    unsafe {
+        asm!(
+            "mov x0, {s:x}",
+            "mov x1, {p:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            s = in(reg) size,
+            p = in(reg) out.as_mut_ptr(),
+            res = out(reg) result,
+            call_number = const CallNumber::AllocateHeapPages.into_num()
+        );
+    }
+    if result == 0 {
+        unsafe { Ok(out.assume_init()) }
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// Frees memory previously allocated by `allocate_heap_pages` from the process' address space, allowing another process to use it.
+/// The base address pointer is invalid to access after calling this function.
+///
+/// # Errors
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `InvalidLength`: the size of the allocation is invalid.
+/// - `InvalidPointer`: the base address pointer was null or invalid.
+pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
+    let result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {p:x}",
+            "mov x1, {s:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            s = in(reg) size,
+            p = in(reg) ptr,
+            res = out(reg) result,
+            call_number = const CallNumber::FreeHeapPages.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}

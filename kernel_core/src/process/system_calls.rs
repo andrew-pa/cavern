@@ -2,13 +2,13 @@
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, PrivilegeLevel, ProcessCreateInfo,
-    ProcessId, ThreadCreateInfo, ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
+    ThreadCreateInfo, ThreadId,
 };
 use log::{debug, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::{PageAllocator, VirtualAddress};
+use crate::memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress};
 
 use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
 
@@ -143,6 +143,22 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             }
             CallNumber::KillProcess => {
                 self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers.x[0])?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::AllocateHeapPages => {
+                self.syscall_allocate_heap_pages(
+                    current_thread.parent.as_ref().unwrap(),
+                    registers.x[0],
+                    registers.x[1] as *mut _,
+                )?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeHeapPages => {
+                self.syscall_free_heap_pages(
+                    current_thread.parent.as_ref().unwrap(),
+                    registers.x[0].into(),
+                    registers.x[1],
+                )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitCurrentThread => {
@@ -284,12 +300,64 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             })?;
 
         // TODO: access control?
+        debug!("process #{} killing process #{pid}", current_process.id);
 
         self.process_manager
             .kill_process(&proc)
             .context(ProcessManagerSnafu)?;
 
         Ok(())
+    }
+
+    fn syscall_allocate_heap_pages(
+        &self,
+        current_process: &Arc<Process>,
+        size: usize,
+        dst_ptr: *mut usize,
+    ) -> Result<(), Error> {
+        let dst = unsafe {
+            dst_ptr.as_mut().context(InvalidPointerSnafu {
+                reason: "memory address output ptr",
+                ptr: dst_ptr as usize,
+            })?
+        };
+
+        debug!(
+            "allocating {size} pages for process #{}",
+            current_process.id
+        );
+
+        let addr = current_process
+            .allocate_memory(
+                self.page_allocator,
+                size,
+                MemoryProperties {
+                    user_space_access: true,
+                    writable: true,
+                    executable: true,
+                    ..Default::default()
+                },
+            )
+            .context(ProcessManagerSnafu)?;
+
+        *dst = addr.into();
+
+        Ok(())
+    }
+
+    fn syscall_free_heap_pages(
+        &self,
+        current_process: &Arc<Process>,
+        ptr: VirtualAddress,
+        size: usize,
+    ) -> Result<(), Error> {
+        debug!(
+            "freeing {size} pages @ {ptr:?} for process #{}",
+            current_process.id
+        );
+        current_process
+            .free_memory(self.page_allocator, ptr, size)
+            .context(ProcessManagerSnafu)
     }
 }
 

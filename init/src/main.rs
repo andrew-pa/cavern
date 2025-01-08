@@ -5,7 +5,9 @@
 #![no_main]
 #![deny(missing_docs)]
 
-use kernel_api::{ThreadCreateInfo, exit_current_thread, spawn_thread};
+use kernel_api::{
+    ThreadCreateInfo, allocate_heap_pages, exit_current_thread, free_heap_pages, spawn_thread,
+};
 
 fn thread2(arg: usize) -> ! {
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
@@ -24,6 +26,12 @@ pub extern "C" fn _start() {
         user_data: 7000,
     })
     .expect("spawn thread");
+
+    let p = allocate_heap_pages(1).expect("allocate");
+    unsafe {
+        p.write(0xab);
+    }
+    free_heap_pages(p, 1).expect("free");
 
     exit_current_thread((process_id + 1) as u32);
 }

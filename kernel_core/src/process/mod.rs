@@ -186,12 +186,15 @@ impl Process {
 
     /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
     ///
+    /// Warning! The `page_allocator` must be the same as the one used to create the process, but
+    /// this is currently not enforced!
+    ///
     /// # Errors
     /// Returns an error if the physical memory cannot be allocated, the virtual addresses in the
     /// process' address space cannot be allocated, or if a page mapping operation fails.
     pub fn allocate_memory(
         &self,
-        page_allocator: &'static impl PageAllocator,
+        page_allocator: &impl PageAllocator,
         size_in_pages: usize,
         mut properties: MemoryProperties,
     ) -> Result<VirtualAddress, ProcessManagerError> {
@@ -223,12 +226,15 @@ impl Process {
     /// backing physical pages. The `base_address` must have been returned by a call to
     /// `allocate_memory` with exactly `size_in_pages`.
     ///
+    /// Warning! The `page_allocator` must be the same as the one used to create the process, but
+    /// this is currently not enforced!
+    ///
     /// # Errors
     /// Returns an error if the physical pages or virtual addresses cannot be freed, or if a page
     /// mapping operation fails.
     pub fn free_memory(
         &self,
-        page_allocator: &'static impl PageAllocator,
+        page_allocator: &impl PageAllocator,
         base_address: VirtualAddress,
         size_in_pages: usize,
     ) -> Result<(), ProcessManagerError> {
