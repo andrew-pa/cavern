@@ -752,8 +752,8 @@ pub mod tests {
     pub struct MockPageAllocator {
         page_size: PageSize,
         max_pages: usize,
-        allocated_pages: Arc<Mutex<HashMap<*mut u8, usize>>>, // Map from pointer to number of pages
-        total_allocated: Arc<Mutex<usize>>,                   // Tracks total allocated pages
+        allocated_pages: Arc<Mutex<HashMap<*mut u8, (usize, usize)>>>, // Map from pointer to number of pages total and number of pages still allocated
+        total_allocated: Arc<Mutex<usize>>, // Tracks total allocated pages
     }
 
     unsafe impl Sync for MockPageAllocator {}
@@ -788,6 +788,11 @@ pub mod tests {
 
             let mut total_allocated = self.total_allocated.lock().unwrap();
 
+            std::println!(
+                "allocate check for space: total:{total_allocated} + query:{num_pages} <= max:{}",
+                self.max_pages
+            );
+
             // Check if there's enough space to allocate the requested number of pages
             ensure!(
                 *total_allocated + num_pages <= self.max_pages,
@@ -807,7 +812,7 @@ pub mod tests {
 
                 // Add the pointer and its allocated size to the map of allocated pages
                 let mut allocated_pages = self.allocated_pages.lock().unwrap();
-                allocated_pages.insert(ptr, num_pages);
+                allocated_pages.insert(ptr, (num_pages, num_pages));
 
                 // Update the total allocated pages count
                 *total_allocated += num_pages;
@@ -820,28 +825,54 @@ pub mod tests {
             let pages_ptr: *mut u8 = pages.cast().into();
             ensure!(!pages_ptr.is_null(), UnknownPtrSnafu);
 
-            let num_pages_recorded = {
-                let mut allocated_pages = self.allocated_pages.lock().unwrap();
+            let mut allocated_pages = self.allocated_pages.lock().unwrap();
 
-                // Ensure the pointer was allocated by this allocator and get the number of pages allocated
+            // find the actual allocation these pages are in
+            let (actual_ptr, (actual_num_pages, current_allocated_pages)) = allocated_pages
+                .iter_mut()
+                .find(|(addr, (size, _))| unsafe {
+                    **addr <= pages_ptr && pages_ptr < addr.byte_add(*size * self.page_size)
+                })
+                .context(UnknownPtrSnafu)?;
+
+            #[cfg(test)]
+            std::println!("freeing {pages:?}/{num_pages}, actually in {actual_ptr:x?}/{actual_num_pages} ({current_allocated_pages} currently allocated)");
+
+            ensure!(*current_allocated_pages > 0, UnknownPtrSnafu);
+            ensure!(num_pages <= *actual_num_pages, InvalidSizeSnafu);
+            ensure!(num_pages <= *current_allocated_pages, InvalidSizeSnafu);
+            ensure!(
+                unsafe {
+                    pages_ptr.byte_add(num_pages * self.page_size)
+                        <= actual_ptr.byte_add(*actual_num_pages * self.page_size)
+                },
+                InvalidSizeSnafu
+            );
+            *current_allocated_pages -= num_pages;
+
+            if *current_allocated_pages == 0 {
+                let actual_ptr = *actual_ptr;
+                let actual_num_pages = *actual_num_pages;
+
                 allocated_pages
-                    .remove(&pages_ptr)
-                    .context(UnknownPtrSnafu)?
-            };
+                    .remove(&actual_ptr)
+                    .context(UnknownPtrSnafu)?;
+                drop(allocated_pages);
 
-            assert_eq!(num_pages, num_pages_recorded);
+                // Deallocate the memory
+                let total_size = usize::from(self.page_size) * actual_num_pages;
+                let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
 
-            // Deallocate the memory
-            let total_size = usize::from(self.page_size) * num_pages_recorded;
-            let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
-
-            unsafe {
-                std::alloc::dealloc(pages_ptr, layout);
+                unsafe {
+                    std::alloc::dealloc(actual_ptr, layout);
+                }
+            } else {
+                drop(allocated_pages);
             }
 
             // Update the total allocated pages count
             let mut total_allocated = self.total_allocated.lock().unwrap();
-            *total_allocated -= num_pages_recorded;
+            *total_allocated -= num_pages;
 
             Ok(())
         }
