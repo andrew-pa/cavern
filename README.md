@@ -7,4 +7,4 @@ This project builds on my previous efforts in the [k project](https://github.com
 Cavern follows a microkernel architecture, using message passing and kernel-managed direct memory transfers to communicate between processes. Check out the specification [for the system](./spec/README.md) and [for the kernel](./spec/kernel.md) for more details.
 
 Here's what it currently looks like to boot (slowed down significantly for readability, click for original):
-[![Video of Cavern Booting Up](./boot-video.gif)](https://asciinema.org/a/MJps4yqqqs6nFuCV63oMiP8Wy)
+[![Video of Cavern Booting Up](./boot-video.gif)](https://asciinema.org/a/eJNT7R5vkbvUNxQVC0i6kgUiY)
