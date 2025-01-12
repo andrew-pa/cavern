@@ -105,7 +105,7 @@ impl Process {
         let mut virt_alloc = FreeListAllocator::new(
             VirtualAddress::null(),
             0x0000_ffff_ffff_ffff / page_size,
-            page_size,
+            page_size.into(),
         );
 
         for section in image {
