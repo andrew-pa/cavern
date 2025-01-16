@@ -680,6 +680,24 @@ impl<'pa> PageTables<'pa> {
         None
     }
 
+    /// Copy bytes from currently mapped memory into the physical pages mapped by this page table
+    /// without activating it with the MMU. The destination does not need to be page aligned.
+    ///
+    /// # Errors
+    /// Returns an error if the destination is not completely mapped to physical pages.
+    pub unsafe fn copy_to_while_unmapped(&self, dst: VirtualAddress, src: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Copy bytes from the physical pages mapped by this page table into currently mapped memory 
+    /// without activating the tables with the MMU. The source does not need to be page aligned.
+    ///
+    /// # Errors
+    /// Returns an error if the source is not completely mapped to physical pages.
+    pub unsafe fn copy_from_while_unmapped(&self, src: VirtualAddress, dst: &mut [u8]) -> Result<(), Error> {
+        todo!()
+    }
+
     fn write_table(
         &self,
         f: &mut core::fmt::Formatter<'_>,
