@@ -2,7 +2,7 @@
 
 use bitfield::BitRange;
 use log::trace;
-use snafu::{ensure, ResultExt as _, Snafu};
+use snafu::{ensure, OptionExt, ResultExt as _, Snafu};
 
 use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
 use PageSize::{FourKiB, SixteenKiB};
@@ -690,13 +690,10 @@ impl<'pa> PageTables<'pa> {
         dst: VirtualAddress,
         src: &[u8],
     ) -> Result<(), Error> {
-        /// We'll rely on the fact that the kernel identity-maps all memory,
-        /// so the `PhysicalAddress` can be treated as a direct pointer once we mask it.
-        ///
-        /// Implementation approach:
-        /// - We walk through `src` in chunks that fit into each page of `dst`.
-        /// - For each chunk, we look up the corresponding physical page.
-        /// - Then we copy that slice from `src` to the physical address (identity-mapped).
+        // Implementation approach:
+        // - We walk through `src` in chunks that fit into each page of `dst`.
+        // - For each chunk, we look up the corresponding physical page.
+        // - Then we copy that slice from `src` to the physical address (identity-mapped).
 
         let mut offset = 0;
         let page_size = usize::from(self.page_size);
@@ -705,24 +702,18 @@ impl<'pa> PageTables<'pa> {
         while offset < src.len() {
             let cur_va = dst.byte_add(offset);
             // Find which physical address corresponds to `cur_va`.
-            let Some(pa) = self.physical_address_of(cur_va) else {
-                return Err(Error::NotMapped { address: cur_va });
-            };
+            let pa = self
+                .physical_address_of(cur_va)
+                .context(NotMappedSnafu { address: cur_va })?;
             // Calculate how many bytes remain until we hit the end of this physical page.
             let page_offset = usize::from(pa) & page_mask;
             let chunk_size = core::cmp::min(src.len() - offset, page_size - page_offset);
 
             // Identity-mapped pointer to the destination memory (physical -> kernel VA).
-            let dest_ptr = (usize::from(pa) | 0xffff_0000_0000_0000)
-                .wrapping_add(page_offset)
-                as *mut u8;
+            let dest_ptr: *mut u8 = pa.cast().into();
 
             // Perform the actual copy.
-            core::ptr::copy_nonoverlapping(
-                src.as_ptr().add(offset),
-                dest_ptr,
-                chunk_size,
-            );
+            core::ptr::copy_nonoverlapping(src.as_ptr().add(offset), dest_ptr, chunk_size);
 
             offset += chunk_size;
         }
@@ -730,7 +721,7 @@ impl<'pa> PageTables<'pa> {
         Ok(())
     }
 
-    /// Copy bytes from the physical pages mapped by this page table into currently mapped memory 
+    /// Copy bytes from the physical pages mapped by this page table into currently mapped memory
     /// without activating the tables with the MMU. The source does not need to be page aligned.
     ///
     /// # Errors
@@ -740,8 +731,8 @@ impl<'pa> PageTables<'pa> {
         src: VirtualAddress,
         dst: &mut [u8],
     ) -> Result<(), Error> {
-        /// Similar to `copy_to_while_unmapped`, but we read from the page-table-mapped memory
-        /// into our caller-provided buffer in normal (already-mapped) memory.
+        // Similar to `copy_to_while_unmapped`, but we read from the page-table-mapped memory
+        // into our caller-provided buffer in normal (already-mapped) memory.
 
         let mut offset = 0;
         let page_size = usize::from(self.page_size);
@@ -749,21 +740,15 @@ impl<'pa> PageTables<'pa> {
 
         while offset < dst.len() {
             let cur_va = src.byte_add(offset);
-            let Some(pa) = self.physical_address_of(cur_va) else {
-                return Err(Error::NotMapped { address: cur_va });
-            };
+            let pa = self
+                .physical_address_of(cur_va)
+                .context(NotMappedSnafu { address: cur_va })?;
             let page_offset = usize::from(pa) & page_mask;
             let chunk_size = core::cmp::min(dst.len() - offset, page_size - page_offset);
 
-            let src_ptr = (usize::from(pa) | 0xffff_0000_0000_0000)
-                .wrapping_add(page_offset)
-                as *const u8;
+            let src_ptr = pa.cast().into();
 
-            core::ptr::copy_nonoverlapping(
-                src_ptr,
-                dst.as_mut_ptr().add(offset),
-                chunk_size,
-            );
+            core::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr().add(offset), chunk_size);
 
             offset += chunk_size;
         }
