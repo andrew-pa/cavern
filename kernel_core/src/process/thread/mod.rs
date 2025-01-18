@@ -3,11 +3,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
+use crossbeam::queue::SegQueue;
 use spin::Mutex;
 
-use crate::memory::VirtualAddress;
+use crate::memory::{FreeListAllocator, VirtualAddress};
 
-use super::Process;
+use super::{PendingMessage, Process};
 
 pub mod scheduler;
 
@@ -196,6 +197,9 @@ pub struct Thread {
 
     /// (Stack base address, stack size in pages).
     pub stack: (VirtualAddress, usize),
+
+    /// The queue of pointers to unreceived messages for this thread.
+    pub inbox_queue: SegQueue<PendingMessage>,
 }
 
 impl Thread {
@@ -214,6 +218,7 @@ impl Thread {
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
             stack,
+            inbox_queue: SegQueue::new(),
         }
     }
 

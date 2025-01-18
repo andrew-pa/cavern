@@ -119,8 +119,6 @@ pub struct ThreadCreateInfo {
     pub entry: fn(usize) -> !,
     /// The size of the new thread's stack in pages.
     pub stack_size: usize,
-    /// The size of the new thread's inbox in pages.
-    pub inbox_size: usize,
     /// The user paramter that will be passed to the entry point function.
     pub user_data: usize,
 }
@@ -192,7 +190,12 @@ pub struct ProcessCreateInfo {
     pub privilege_level: PrivilegeLevel,
     /// Whether to notify this process via a message when the spawned process exits.
     pub notify_on_exit: bool,
+    /// The size of this process' message inbox, in message blocks.
+    pub inbox_size: usize,
 }
+
+/// The size of a message block in bytes.
+pub const MESSAGE_BLOCK_SIZE: usize = 64;
 
 pub mod flags;
 

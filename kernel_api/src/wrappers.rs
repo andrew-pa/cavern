@@ -182,3 +182,31 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
 }
+
+/// The `send` system call allows a process to send a message to another process.
+/// The kernel will inspect the message header and automatically process any associated memory operations while it generates the header on the receiver side.
+/// The message body will be copied to the receiver.
+///
+/// #### Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `dest_pid` | Process ID           | The ID of the process that will receive the message. |
+/// | `dest_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
+/// | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
+/// | `msg_len`  | `usize` | Length of the message payload in bytes. |
+/// | `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
+///
+/// #### Errors
+/// - `NotFound`: the process/thread ID was unknown to the system.
+/// - `InboxFull`: the receiving process has too many queued messages and cannot receive the message.
+/// - `InvalidLength`: the length of the message is invalid.
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `InvalidPointer`: the message pointer was null or invalid.
+pub fn send(
+    destination_pid: ProcessId,
+    destination_tid: Option<ThreadId>,
+    message: *mut u8,
+    message_length: usize,
+) -> Result<(), ErrorCode> {
+    todo!()
+}

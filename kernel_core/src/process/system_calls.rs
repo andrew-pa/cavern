@@ -5,7 +5,7 @@ use kernel_api::{
     CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
     ThreadCreateInfo, ThreadId,
 };
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress};
@@ -69,10 +69,13 @@ impl Error {
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
                     crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
                 },
-                ProcessManagerError::Missing { .. } | ProcessManagerError::PageTables { .. } => {
-                    ErrorCode::InvalidPointer
+                ProcessManagerError::PageTables { .. } => ErrorCode::InvalidPointer,
+                ProcessManagerError::Missing { cause } => {
+                    error!("Missing value in process manager: {cause}");
+                    ErrorCode::NotFound
                 }
                 ProcessManagerError::OutOfHandles => ErrorCode::OutOfHandles,
+                ProcessManagerError::InboxFull => ErrorCode::InboxFull,
             },
         }
     }
@@ -164,6 +167,16 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             CallNumber::ExitCurrentThread => {
                 self.syscall_exit_current_thread(current_thread, registers.x[0] as u32);
                 Ok(SysCallEffect::ScheduleNextThread)
+            }
+            CallNumber::Send => {
+                self.syscall_send(
+                    current_thread,
+                    ProcessId::new(registers.x[0] as u32),
+                    ThreadId::new(registers.x[1] as u32),
+                    registers.x[2] as *const u8,
+                    registers.x[3],
+                )?;
+                Ok(SysCallEffect::Return(0))
             }
             _ => todo!("implement {:?}", syscall_number),
         }
@@ -358,6 +371,34 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         current_process
             .free_memory(self.page_allocator, ptr, size)
             .context(ProcessManagerSnafu)
+    }
+
+    fn syscall_send(
+        &self,
+        current_thread: &Arc<Thread>,
+        dst_pid: Option<ProcessId>,
+        dst_tid: Option<ThreadId>,
+        msg: *const u8,
+        msg_len: usize,
+    ) -> Result<(), Error> {
+        // TODO: like everywhere else we need to check to make sure the pointer is valid *before* deref
+        let dst = dst_pid
+            .and_then(|pid| self.process_manager.process_for_id(pid))
+            .context(NotFoundSnafu {
+                reason: "destination process id",
+                id: dst_pid.map_or(0, ProcessId::get) as usize,
+            })?;
+        let dst_thread = dst_tid.and_then(|tid| self.process_manager.thread_for_id(tid));
+        let message = unsafe { core::slice::from_raw_parts(msg, msg_len) };
+        dst.send_message(
+            (
+                current_thread.parent.as_ref().unwrap().id,
+                current_thread.id,
+            ),
+            dst_thread,
+            message,
+        )
+        .context(ProcessManagerSnafu)
     }
 }
 

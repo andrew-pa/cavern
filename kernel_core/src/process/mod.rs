@@ -1,7 +1,10 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-use kernel_api::{ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
+use kernel_api::{
+    ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo,
+    MESSAGE_BLOCK_SIZE,
+};
 use log::trace;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
@@ -21,6 +24,16 @@ pub type Id = crate::collections::Handle;
 
 /// The largest possible process ID in the system.
 pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
+
+/// A message that is waiting in a thread's inbox queue to be received.
+pub struct PendingMessage {
+    /// The address of the message in the process' virtual address space.
+    data_address: VirtualAddress,
+    /// The process id of the sender.
+    sender_process_id: Id,
+    /// The thread id of the sender.
+    sender_thread_id: ThreadId,
+}
 
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
 #[must_use]
@@ -82,10 +95,15 @@ pub struct Process {
 
     /// The current address space ID and its generation.
     pub address_space_id: RwLock<(Option<AddressSpaceId>, u32)>,
+
+    /// Allocator for message blocks in this process' inbox.
+    pub inbox_allocator: Mutex<FreeListAllocator>,
 }
 
 impl Process {
     /// Create a new process object and sets up the process' virtual memory space using the `image`.
+    ///
+    /// The inbox_size is in units of message blocks.
     ///
     /// # Errors
     /// Returns an error if allocating physical memory for the process fails, or if a page table
@@ -95,10 +113,10 @@ impl Process {
         id: Id,
         props: Properties,
         image: &[ImageSection],
+        inbox_size: usize,
     ) -> Result<Self, ProcessManagerError> {
         trace!("creating new process object #{id}");
 
-        // setup the process' memory space
         let mut page_tables = PageTables::empty(allocator).context(MemorySnafu)?;
         let page_size = allocator.page_size();
         // Allocate memory for the process from the entire virtual memory address space.
@@ -108,6 +126,7 @@ impl Process {
             page_size.into(),
         );
 
+        // setup the process' memory space using the image
         for section in image {
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
@@ -140,7 +159,7 @@ impl Process {
                     section.base_address.into(),
                     memory,
                     size_in_pages,
-                    crate::memory::page_table::MapBlockSize::Page,
+                    MapBlockSize::Page,
                     &props,
                 )
                 .context(PageTablesSnafu)?;
@@ -149,6 +168,29 @@ impl Process {
                 .reserve_range(section.base_address.into(), size_in_pages)
                 .context(MemorySnafu)?;
         }
+
+        // allocate and map the message inbox
+        let inbox_size_in_pages = inbox_size * MESSAGE_BLOCK_SIZE / page_size;
+        let inbox_start = virt_alloc
+            .alloc(inbox_size_in_pages)
+            .context(MemorySnafu)?
+            .start;
+        let inbox_memory = allocator
+            .allocate(inbox_size_in_pages)
+            .context(MemorySnafu)?;
+        page_tables
+            .map(
+                inbox_start,
+                inbox_memory,
+                inbox_size_in_pages,
+                MapBlockSize::Page,
+                &MemoryProperties {
+                    user_space_access: true,
+                    writable: true,
+                    ..Default::default()
+                },
+            )
+            .context(PageTablesSnafu)?;
 
         trace!("process page tables: {page_tables:?}");
 
@@ -159,6 +201,11 @@ impl Process {
             page_tables: RwLock::new(page_tables),
             address_space_allocator: Mutex::new(virt_alloc),
             address_space_id: RwLock::default(),
+            inbox_allocator: Mutex::new(FreeListAllocator::new(
+                inbox_start,
+                inbox_size_in_pages,
+                MESSAGE_BLOCK_SIZE,
+            )),
         })
     }
 
@@ -242,9 +289,10 @@ impl Process {
             .page_tables
             .read()
             .physical_address_of(base_address)
-            .context(MissingSnafu {
-                cause: "virtual address does not map to a physical address",
-            })?;
+            .ok_or(crate::memory::page_table::Error::NotMapped {
+                address: base_address,
+            })
+            .context(PageTablesSnafu)?;
         page_allocator
             .free(paddr, size_in_pages)
             .context(MemorySnafu)?;
@@ -253,6 +301,54 @@ impl Process {
             .unmap(base_address, size_in_pages, MapBlockSize::Page)
             .context(PageTablesSnafu)?;
 
+        Ok(())
+    }
+
+    /// Send a message to this process, and optionally to a specific thread within this process.
+    /// If no thread is specified, the designated receiver thread will receive the message.
+    pub fn send_message(
+        &self,
+        sender: (Id, ThreadId),
+        receiver_thread: Option<Arc<Thread>>,
+        message: &[u8],
+    ) -> Result<(), ProcessManagerError> {
+        // TODO: check message length against max?
+        let thread = if let Some(th) = receiver_thread {
+            assert!(th.parent.as_ref().is_some_and(|p| p.id == self.id));
+            th
+        } else {
+            let ths = self.threads.read();
+            ths.first()
+                .context(MissingSnafu {
+                    cause: "process has no threads",
+                })?
+                .clone()
+        };
+        let ptr = {
+            match self
+                .inbox_allocator
+                .lock()
+                .alloc(message.len() / MESSAGE_BLOCK_SIZE)
+            {
+                Ok(r) => r.start,
+                Err(crate::memory::Error::OutOfMemory) => {
+                    return Err(ProcessManagerError::InboxFull)
+                }
+                Err(e) => return Err(ProcessManagerError::Memory { source: e }),
+            }
+        };
+        unsafe {
+            // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
+            self.page_tables
+                .read()
+                .copy_to_while_unmapped(ptr, message)
+                .context(PageTablesSnafu)?;
+        }
+        thread.inbox_queue.push(PendingMessage {
+            data_address: ptr,
+            sender_process_id: sender.0,
+            sender_thread_id: sender.1,
+        });
         Ok(())
     }
 }
@@ -275,6 +371,9 @@ pub enum ProcessManagerError {
 
     /// The kernel has run out of handles.
     OutOfHandles,
+
+    /// The process' inbox is full.
+    InboxFull,
 
     /// An `Option` was `None`.
     Missing {
