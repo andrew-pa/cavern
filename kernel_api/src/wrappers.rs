@@ -1,6 +1,8 @@
 //! System call wrapper functions.
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
+use crate::{Message, flags::ReceiveFlags};
+
 use super::{
     CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
     ThreadCreateInfo, ThreadId,
@@ -10,7 +12,7 @@ use super::{
 /// Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
 #[must_use]
 pub fn read_env_value(value_to_read: EnvironmentValue) -> usize {
-    let result: usize;
+    let mut result: usize;
     unsafe {
         asm!(
             "mov x0, {val_to_read:x}",
@@ -48,7 +50,7 @@ pub fn exit_current_thread(code: u32) -> ! {
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the entry pointer was null or invalid.
 pub fn spawn_thread(info: &ThreadCreateInfo) -> Result<ThreadId, ErrorCode> {
-    let result: usize;
+    let mut result: usize;
     let mut out_thread_id = MaybeUninit::uninit();
     let oti_p: *mut u32 = out_thread_id.as_mut_ptr();
     assert!(!oti_p.is_null());
@@ -79,7 +81,7 @@ pub fn spawn_thread(info: &ThreadCreateInfo) -> Result<ThreadId, ErrorCode> {
 /// - `InvalidPointer`: a pointer was invalid or unexpectedly null.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
-    let result: usize;
+    let mut result: usize;
     let mut out_proc_id = MaybeUninit::uninit();
     let oti_p: *mut u32 = out_proc_id.as_mut_ptr();
     assert!(!oti_p.is_null());
@@ -107,7 +109,7 @@ pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
 /// # Errors
 /// - `NotFound`: the process id was not found.
 pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
-    let result: usize;
+    let mut result: usize;
     unsafe {
         asm!(
             "mov x0, {i:x}",
@@ -134,7 +136,7 @@ pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the destination pointer was null or invalid.
 pub fn allocate_heap_pages(size: usize) -> Result<*mut u8, ErrorCode> {
-    let result: usize;
+    let mut result: usize;
     let mut out = MaybeUninit::uninit();
     unsafe {
         asm!(
@@ -163,7 +165,7 @@ pub fn allocate_heap_pages(size: usize) -> Result<*mut u8, ErrorCode> {
 /// - `InvalidLength`: the size of the allocation is invalid.
 /// - `InvalidPointer`: the base address pointer was null or invalid.
 pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
-    let result: usize;
+    let mut result: usize;
     unsafe {
         asm!(
             "mov x0, {p:x}",
@@ -187,7 +189,7 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// The kernel will inspect the message header and automatically process any associated memory operations while it generates the header on the receiver side.
 /// The message body will be copied to the receiver.
 ///
-/// #### Arguments
+/// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
 /// | `dest_pid` | Process ID           | The ID of the process that will receive the message. |
@@ -196,7 +198,7 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// | `msg_len`  | `usize` | Length of the message payload in bytes. |
 /// | `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
 ///
-/// #### Errors
+/// # Errors
 /// - `NotFound`: the process/thread ID was unknown to the system.
 /// - `InboxFull`: the receiving process has too many queued messages and cannot receive the message.
 /// - `InvalidLength`: the length of the message is invalid.
@@ -208,5 +210,78 @@ pub fn send(
     message: *mut u8,
     message_length: usize,
 ) -> Result<(), ErrorCode> {
-    todo!()
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {pid:x}",
+            "mov x1, {tid:x}",
+            "mov x2, {msg:x}",
+            "mov x3, {len:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            pid = in(reg) destination_pid.get(),
+            tid = in(reg) destination_tid.map_or(0, ThreadId::get),
+            msg = in(reg) message,
+            len = in(reg) message_length,
+            res = out(reg) result,
+            call_number = const CallNumber::Send.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// The `receive` system call allows a process to receive a message from another process.
+/// By default, shared buffers are automatically given handles if attached, and their details relative to the receiver will be present in the received message header.
+/// The pointer returned by `receive` is valid until the message is marked for deletion.
+///
+/// This call will by default set the thread to a waiting state if there are no messages.
+/// The thread will resume its running state when it receives a message.
+/// This can be disabled with the `Nonblocking` flag, which will return `WouldBlock` as an error instead if there are no messages.
+///
+/// #### Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+/// | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
+/// | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
+///
+/// #### Flags
+/// The `receive` call accepts the following flags:
+///
+/// | Name           | Description                              |
+/// |----------------|------------------------------------------|
+/// | `Nonblocking`  | Causes the kernel to return the `WouldBlock` error if there are no messages instead of pausing the thread. |
+/// | `IgnoreShared` | Causes the kernel to ignore any shared buffers contained in the received message. |
+///
+/// # Errors
+/// - `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
+    let mut result: usize;
+    let mut out_len = MaybeUninit::uninit();
+    let mut out_msg = MaybeUninit::uninit();
+    unsafe {
+        asm!(
+            "mov x1, {f:x}",
+            "mov x1, {m:x}",
+            "mov x2, {l:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            f = in(reg) flags.bits(),
+            m = in(reg) out_msg.as_mut_ptr(),
+            l = in(reg) out_len.as_mut_ptr(),
+            res = out(reg) result,
+            call_number = const CallNumber::Receive.into_num()
+        );
+    }
+    if result == 0 {
+        unsafe { Ok(Message::new(out_msg.assume_init(), out_len.assume_init())) }
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
 }

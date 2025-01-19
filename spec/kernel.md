@@ -180,9 +180,9 @@ This can be disabled with the `Nonblocking` flag, which will return `WouldBlock`
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
 | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
 The `receive` call accepts the following flags:

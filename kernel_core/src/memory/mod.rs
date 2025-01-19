@@ -282,6 +282,16 @@ macro_rules! virtual_pointer_impl {
 virtual_pointer_impl!(VirtualPointer);
 virtual_pointer_impl!(VirtualPointerMut);
 
+impl<T> VirtualPointerMut<T> {
+    /// Convert this virtual address directly to a Rust pointer.
+    ///
+    /// # Safety
+    /// It is up to the caller to ensure that this pointer is valid for the lifetime of the value.
+    pub unsafe fn as_ptr(self) -> *mut T {
+        self.0 as _
+    }
+}
+
 impl<T> From<*mut T> for VirtualPointerMut<T> {
     fn from(value: *mut T) -> Self {
         VirtualPointerMut(value as usize, PhantomData)

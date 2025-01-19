@@ -2,8 +2,8 @@
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
-    ThreadCreateInfo, ThreadId,
+    flags::ReceiveFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo,
+    ProcessId, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -52,6 +52,8 @@ pub enum Error {
         /// Underlying error.
         source: ProcessManagerError,
     },
+    /// Receiving a message would otherwise block the thread.
+    WouldBlock,
 }
 
 impl Error {
@@ -63,6 +65,7 @@ impl Error {
             Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
             Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
             Error::NotFound { .. } => ErrorCode::NotFound,
+            Error::WouldBlock { .. } => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
                 ProcessManagerError::Memory { source } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
@@ -178,6 +181,12 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 )?;
                 Ok(SysCallEffect::Return(0))
             }
+            CallNumber::Receive => self.syscall_receive(
+                current_thread,
+                registers.x[0],
+                registers.x[1] as *mut VirtualAddress,
+                registers.x[2] as *mut usize,
+            ),
             _ => todo!("implement {:?}", syscall_number),
         }
     }
@@ -399,6 +408,34 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             message,
         )
         .context(ProcessManagerSnafu)
+    }
+
+    fn syscall_receive(
+        &self,
+        current_thread: &Arc<Thread>,
+        flag_bits: usize,
+        out_msg: *mut VirtualAddress,
+        out_len: *mut usize,
+    ) -> Result<SysCallEffect, Error> {
+        let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
+            reason: "invalid bits",
+            bits: flag_bits,
+        })?;
+        if let Some((msg_ptr, msg_len)) = unsafe {
+            // SAFETY: it is safe to call this for the current thread, because the its page tables are current.
+            current_thread.receive_message()
+        } {
+            unsafe {
+                out_msg.write(msg_ptr);
+                out_len.write(msg_len);
+            }
+            Ok(SysCallEffect::Return(0))
+        } else if flags.contains(ReceiveFlags::NONBLOCKING) {
+            Err(Error::WouldBlock)
+        } else {
+            current_thread.set_state(super::thread::State::Blocked);
+            Ok(SysCallEffect::ScheduleNextThread)
+        }
     }
 }
 

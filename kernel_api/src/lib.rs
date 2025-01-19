@@ -9,7 +9,7 @@
 
 use core::num::NonZeroU32;
 
-use bytemuck::Contiguous;
+use bytemuck::{Contiguous, Pod};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -56,7 +56,7 @@ pub enum ErrorCode {
 #[allow(missing_docs)]
 pub enum CallNumber {
     Send = 0x100,
-    Recieve,
+    Receive,
     TransferToSharedBuffer,
     TransferFromSharedBuffer,
     ReadEnvValue,
@@ -196,6 +196,59 @@ pub struct ProcessCreateInfo {
 
 /// The size of a message block in bytes.
 pub const MESSAGE_BLOCK_SIZE: usize = 64;
+
+/// The header containing information about a received message.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessageHeader {
+    /// The process id of the process that send this message.
+    pub sender_pid: ProcessId,
+    /// The thread id of the thread that send this message.
+    pub sender_tid: ThreadId,
+}
+
+/// A received message from another process.
+#[repr(C, align(8))]
+pub struct Message([u8]);
+
+impl Message {
+    /// Create a new message from a raw slice in the inbox.
+    ///
+    /// # Safety
+    /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
+    unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
+        debug_assert!(
+            len >= core::mem::size_of::<MessageHeader>(),
+            "message must be at least large enough for a message header"
+        );
+        unsafe {
+            let slice = core::slice::from_raw_parts(ptr, len);
+            core::mem::transmute(slice)
+        }
+    }
+
+    /// The message header written by the kernel.
+    pub fn header(&self) -> &MessageHeader {
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to start with a header.
+            self.0
+                .as_ptr()
+                .cast::<MessageHeader>()
+                .as_ref()
+                .unwrap_unchecked()
+        }
+    }
+
+    /// The message payload from the sender.
+    pub fn payload(&self) -> &[u8] {
+        let msg_hdr_size = core::mem::size_of::<MessageHeader>();
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
+            let ptr = self.0.as_ptr().cast::<u8>().add(msg_hdr_size);
+            core::slice::from_raw_parts(ptr, self.0.len() - msg_hdr_size)
+        }
+    }
+}
 
 pub mod flags;
 

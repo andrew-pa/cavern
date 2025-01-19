@@ -2,11 +2,11 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use kernel_api::{
-    ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo,
+    ExitReason, ImageSection, ImageSectionKind, MessageHeader, PrivilegeLevel, ProcessCreateInfo,
     MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
-use snafu::{OptionExt, ResultExt, Snafu};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
 
@@ -29,6 +29,8 @@ pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
 pub struct PendingMessage {
     /// The address of the message in the process' virtual address space.
     data_address: VirtualAddress,
+    /// The length of the message in bytes.
+    data_length: usize,
     /// The process id of the sender.
     sender_process_id: Id,
     /// The thread id of the sender.
@@ -306,6 +308,11 @@ impl Process {
 
     /// Send a message to this process, and optionally to a specific thread within this process.
     /// If no thread is specified, the designated receiver thread will receive the message.
+    /// This method **assumes** that the sender ids are valid!
+    ///
+    /// # Errors
+    /// Returns an error if the message could not be delivered, or something goes wrong with memory
+    /// or page tables.
     pub fn send_message(
         &self,
         sender: (Id, ThreadId),
@@ -314,7 +321,12 @@ impl Process {
     ) -> Result<(), ProcessManagerError> {
         // TODO: check message length against max?
         let thread = if let Some(th) = receiver_thread {
-            assert!(th.parent.as_ref().is_some_and(|p| p.id == self.id));
+            ensure!(
+                th.parent.as_ref().is_some_and(|p| p.id == self.id),
+                MissingSnafu {
+                    cause: "provided thread not in process"
+                }
+            );
             th
         } else {
             let ths = self.threads.read();
@@ -324,11 +336,12 @@ impl Process {
                 })?
                 .clone()
         };
+        let actual_message_size_in_bytes = message.len() + size_of::<MessageHeader>();
         let ptr = {
             match self
                 .inbox_allocator
                 .lock()
-                .alloc(message.len() / MESSAGE_BLOCK_SIZE)
+                .alloc(actual_message_size_in_bytes / MESSAGE_BLOCK_SIZE)
             {
                 Ok(r) => r.start,
                 Err(crate::memory::Error::OutOfMemory) => {
@@ -341,11 +354,12 @@ impl Process {
             // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
             self.page_tables
                 .read()
-                .copy_to_while_unmapped(ptr, message)
+                .copy_to_while_unmapped(ptr.byte_add(size_of::<MessageHeader>()), message)
                 .context(PageTablesSnafu)?;
         }
         thread.inbox_queue.push(PendingMessage {
             data_address: ptr,
+            data_length: actual_message_size_in_bytes,
             sender_process_id: sender.0,
             sender_thread_id: sender.1,
         });
