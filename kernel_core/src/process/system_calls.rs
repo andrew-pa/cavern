@@ -8,7 +8,7 @@ use kernel_api::{
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress};
+use crate::memory::{page_table::{ActiveUserSpaceTable, MemoryProperties}, PageAllocator, VirtualAddress};
 
 use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
 
@@ -123,6 +123,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         syscall_number: u16,
         current_thread: &Arc<Thread>,
         registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTable
     ) -> Result<SysCallEffect, Error> {
         let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
             warn!(
