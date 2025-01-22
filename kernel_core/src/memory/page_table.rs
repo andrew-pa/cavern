@@ -4,7 +4,9 @@ use bitfield::BitRange;
 use log::trace;
 use snafu::{ensure, OptionExt, ResultExt as _, Snafu};
 
-use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
+use super::{
+    PageAllocator, PageSize, PhysicalAddress, VirtualAddress, VirtualPointer, VirtualPointerMut,
+};
 use PageSize::{FourKiB, SixteenKiB};
 
 /// Defines required cache coherence for memory shared across different cores.
@@ -225,6 +227,7 @@ pub enum Error {
         /// Address that was unaligned (physical or virtual).
         value: usize,
     },
+    WouldFault
 }
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
@@ -841,6 +844,55 @@ impl Drop for PageTables<'_> {
         trace!("dropping page tables @ {:x?}", self.root);
         self.drop_table(0, self.root);
     }
+}
+
+/// Mechanisms for interacting with the currently active EL0 page tables.
+/// The lifetime of this object must be tied to the lifetime in which a single set of tables is
+/// mapped for EL0.
+pub trait ActiveUserSpaceTable {
+    /// Translate a virtual address into a physical one using the current EL0 page tables
+    /// and also look up the memory properties for the mapping.
+    ///
+    /// # Errors
+    /// Returns an error if the address is not actually mapped.
+    fn translate(&self, addr: VirtualAddress) -> Result<(PhysicalAddress, MemoryProperties), Error>;
+
+    /// Convert an EL0 pointer to a `T` to a borrow of a `T`, checking to make sure the reference
+    /// is valid.
+    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
+    /// should keep track of.
+    fn check_ref<T>(&self, ptr: VirtualPointer<T>) -> Result<&T, Error> {
+        let (_, props) = self.translate(ptr.0.into())?;
+        ensure!(props.user_space_access, WouldFaultSnafu);
+        unsafe {
+            (ptr.0 as *const T).as_ref().ok_or(Error::WouldFault)
+        }
+    }
+
+    /// Convert an EL0 pointer to a `T` to a mutable borrow of a `T`, checking to make sure the reference
+    /// is valid.
+    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
+    /// should keep track of.
+    /// The memory must be mapped read/write in EL0.
+    fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&mut T, Error> {
+        let (_, props) = self.translate(ptr.0.into())?;
+        ensure!(props.user_space_access && props.writable, WouldFaultSnafu);
+        unsafe {
+            (ptr.0 as *mut T).as_mut().ok_or(Error::WouldFault)
+        }
+    }
+
+    /// Convert an EL0 pointer to an array of `T` to a borrow of a slice of `T`, checking to make sure the whole region
+    /// is valid.
+    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
+    /// should keep track of.
+    fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error>;
+
+    /// Convert an EL0 pointer to an array of `T` to a mutable borrow of a slice of `T`, checking to make sure the whole region
+    /// is valid.
+    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
+    /// should keep track of.
+    fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error>;
 }
 
 #[cfg(test)]
