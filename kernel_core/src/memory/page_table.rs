@@ -857,42 +857,87 @@ pub trait ActiveUserSpaceTable {
     /// Returns an error if the address is not actually mapped.
     fn translate(&self, addr: VirtualAddress) -> Result<(PhysicalAddress, MemoryProperties), Error>;
 
-    /// Convert an EL0 pointer to a `T` to a borrow of a `T`, checking to make sure the reference
-    /// is valid.
-    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
-    /// should keep track of.
+    /// Helper to check that every page in `[start, start + length_in_bytes - 1]`
+    /// is mapped in EL0 space, and (if `must_write` is true) that it is writable.
+    fn check_user_pages_in_range(
+        &self,
+        start: VirtualAddress,
+        length_in_bytes: usize,
+        must_write: bool,
+    ) -> Result<(), Error> {
+        use snafu::OptionExt;
+
+        // If zero bytes, just check that the base address is user-accessible (and writable if needed).
+        if length_in_bytes == 0 {
+            let (_, props) = self.translate(start)?;
+            ensure!(props.user_space_access, WouldFaultSnafu);
+            if must_write {
+                ensure!(props.writable, WouldFaultSnafu);
+            }
+            return Ok(());
+        }
+
+        let page_sz = usize::from(self.page_size());
+        let start_usize = usize::from(start);
+        let end_usize = start_usize
+            .checked_add(length_in_bytes - 1)
+            .context(WouldFaultSnafu)?;
+
+        // Round each address down to its page base
+        let first_page_base = start_usize & !(page_sz - 1);
+        let last_page_base = end_usize & !(page_sz - 1);
+
+        let mut cur_page = first_page_base;
+        while cur_page <= last_page_base {
+            let va = VirtualAddress::from(cur_page);
+            let (_, props) = self.translate(va)?;
+            ensure!(props.user_space_access, WouldFaultSnafu);
+            if must_write {
+                ensure!(props.writable, WouldFaultSnafu);
+            }
+            cur_page = cur_page.checked_add(page_sz).context(WouldFaultSnafu)?;
+        }
+        Ok(())
+    }
+
     fn check_ref<T>(&self, ptr: VirtualPointer<T>) -> Result<&T, Error> {
-        let (_, props) = self.translate(ptr.0.into())?;
-        ensure!(props.user_space_access, WouldFaultSnafu);
+        let size = core::mem::size_of::<T>();
+        // If T is zero-sized, still force checking at least 1 byte of coverage
+        self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
+        // Now that we've validated all pages, do the actual pointer cast
         unsafe {
-            (ptr.0 as *const T).as_ref().ok_or(Error::WouldFault)
+            (ptr.0 as *const T)
+                .as_ref()
+                .ok_or(Error::WouldFault)
         }
-    }
 
-    /// Convert an EL0 pointer to a `T` to a mutable borrow of a `T`, checking to make sure the reference
-    /// is valid.
-    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
-    /// should keep track of.
-    /// The memory must be mapped read/write in EL0.
     fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&mut T, Error> {
-        let (_, props) = self.translate(ptr.0.into())?;
-        ensure!(props.user_space_access && props.writable, WouldFaultSnafu);
+        let size = core::mem::size_of::<T>();
+        self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
         unsafe {
-            (ptr.0 as *mut T).as_mut().ok_or(Error::WouldFault)
+            (ptr.0 as *mut T)
+                .as_mut()
+                .ok_or(Error::WouldFault)
         }
     }
 
-    /// Convert an EL0 pointer to an array of `T` to a borrow of a slice of `T`, checking to make sure the whole region
-    /// is valid.
-    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
-    /// should keep track of.
-    fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error>;
+    fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error> {
+        use core::slice;
+        let size = core::mem::size_of::<T>().checked_mul(len).ok_or(Error::WouldFault)?;
+        self.check_user_pages_in_range(ptr.0.into(), size, false)?;
+        Ok(unsafe {
+            slice::from_raw_parts(ptr.0 as *const T, len)
+        })
+    }
 
-    /// Convert an EL0 pointer to an array of `T` to a mutable borrow of a slice of `T`, checking to make sure the whole region
-    /// is valid.
-    /// The borrow is only valid while the EL0 page tables remain the same, which lifetime rules
-    /// should keep track of.
-    fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error>;
+    fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error> {
+        use core::slice;
+        let size = core::mem::size_of::<T>().checked_mul(len).ok_or(Error::WouldFault)?;
+        self.check_user_pages_in_range(ptr.0.into(), size, true)?;
+        Ok(unsafe {
+            slice::from_raw_parts_mut(ptr.0 as *mut T, len)
+        })
+    }
 }
 
 #[cfg(test)]
