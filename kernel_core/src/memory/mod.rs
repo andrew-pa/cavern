@@ -159,13 +159,13 @@ impl<T> From<PhysicalPointer<T>> for *mut T {
 /// Analogous to a `*const T`.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct VirtualPointer<T>(usize, PhantomData<T>);
+pub struct VirtualPointer<T>(usize, PhantomData<*const T>);
 
 /// A 48-bit virtual address space pointer to a mutable `T` in some address space.
 /// Analogous to a `*mut T`.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct VirtualPointerMut<T>(usize, PhantomData<T>);
+pub struct VirtualPointerMut<T>(usize, PhantomData<*mut T>);
 
 /// A virtual 48-bit address that does not dereference to any particular type of value.
 pub type VirtualAddress = VirtualPointerMut<()>;
@@ -430,17 +430,6 @@ pub trait PageAllocator {
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
     fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error>;
-}
-
-/// Abstract operations provided by the Memory Managment Unit (MMU).
-pub trait MemoryManagmentUnit {
-    /// Make a page table data structure current in the MMU so it is used for lookups.
-    ///
-    /// # Safety
-    ///
-    /// The page tables provided must be valid or else this function has undefined behavior.
-    /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
-    unsafe fn activate_page_tables(&self, tables: &PageTables<'_>);
 }
 
 #[cfg(test)]

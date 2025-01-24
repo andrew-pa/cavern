@@ -8,7 +8,10 @@ use kernel_api::{
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::{page_table::{ActiveUserSpaceTable, MemoryProperties}, PageAllocator, VirtualAddress};
+use crate::memory::{
+    page_table::{ActiveUserSpaceTables, MemoryProperties},
+    PageAllocator, VirtualAddress,
+};
 
 use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
 
@@ -39,6 +42,14 @@ pub enum Error {
         /// The invalid pointer value.
         ptr: usize,
     },
+    /// A pointer provided was to an address that was not mapped correctly.
+    #[snafu(display("Invalid address for {cause}"))]
+    InvalidAddress {
+        /// The information about what the source of the error was.
+        source: crate::memory::page_table::Error,
+        /// The specific value that was invalid.
+        cause: String,
+    },
     /// The specified process, thread, or handler ID was unknown or not found in the system.
     #[snafu(display("Id {id} not found: {reason}"))]
     NotFound {
@@ -64,6 +75,7 @@ impl Error {
             Error::InvalidLength { .. } => ErrorCode::InvalidLength,
             Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
             Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
+            Error::InvalidAddress { .. } => ErrorCode::InvalidPointer,
             Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock { .. } => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
@@ -123,7 +135,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         syscall_number: u16,
         current_thread: &Arc<Thread>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTable
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<SysCallEffect, Error> {
         let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
             warn!(
@@ -137,66 +149,59 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         };
         match syscall_number {
             CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(
-                EnvironmentValue::from_integer(registers.x[0])
-                    .map_or(0, |v| self.syscall_read_env_value(current_thread, v)),
+                self.syscall_read_env_value(current_thread, registers),
             )),
             CallNumber::SpawnThread => {
-                self.syscall_spawn_thread(current_thread.parent.clone().unwrap(), registers)?;
+                self.syscall_spawn_thread(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::SpawnProcess => {
-                self.syscall_spawn_process(current_thread.parent.clone().unwrap(), registers)?;
+                self.syscall_spawn_process(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::KillProcess => {
-                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers.x[0])?;
+                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::AllocateHeapPages => {
                 self.syscall_allocate_heap_pages(
                     current_thread.parent.as_ref().unwrap(),
-                    registers.x[0],
-                    registers.x[1] as *mut _,
+                    registers,
+                    user_space_memory,
                 )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::FreeHeapPages => {
-                self.syscall_free_heap_pages(
-                    current_thread.parent.as_ref().unwrap(),
-                    registers.x[0].into(),
-                    registers.x[1],
-                )?;
+                self.syscall_free_heap_pages(current_thread.parent.as_ref().unwrap(), registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitCurrentThread => {
-                self.syscall_exit_current_thread(current_thread, registers.x[0] as u32);
+                self.syscall_exit_current_thread(current_thread, registers);
                 Ok(SysCallEffect::ScheduleNextThread)
             }
             CallNumber::Send => {
-                self.syscall_send(
-                    current_thread,
-                    ProcessId::new(registers.x[0] as u32),
-                    ThreadId::new(registers.x[1] as u32),
-                    registers.x[2] as *const u8,
-                    registers.x[3],
-                )?;
+                self.syscall_send(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
             }
-            CallNumber::Receive => self.syscall_receive(
-                current_thread,
-                registers.x[0],
-                registers.x[1] as *mut VirtualAddress,
-                registers.x[2] as *mut usize,
-            ),
+            CallNumber::Receive => {
+                self.syscall_receive(current_thread, registers, user_space_memory)
+            }
             _ => todo!("implement {:?}", syscall_number),
         }
     }
 
-    fn syscall_read_env_value(
-        &self,
-        current_thread: &Arc<Thread>,
-        value_to_read: EnvironmentValue,
-    ) -> usize {
+    fn syscall_read_env_value(&self, current_thread: &Arc<Thread>, registers: &Registers) -> usize {
+        let Some(value_to_read) = EnvironmentValue::from_integer(registers.x[0]) else {
+            return 0;
+        };
         trace!(
             "reading value {value_to_read:?} for thread {}",
             current_thread.id
@@ -217,7 +222,8 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         }
     }
 
-    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, code: u32) {
+    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
+        let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
         self.process_manager
             .exit_thread(current_thread, ExitReason::User(code))
@@ -229,25 +235,20 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         &self,
         parent: Arc<Process>,
         registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<(), Error> {
-        // TODO: we probably also need to validate these to ensure that they will deref
-        // correctly given the page tables? seems expensive.
-        let info = unsafe {
-            (registers.x[0] as *const ThreadCreateInfo)
-                .as_ref()
-                .context(InvalidPointerSnafu {
-                    reason: "thread create info ptr",
-                    ptr: registers.x[1],
-                })?
-        };
-        let out_thread_id = unsafe {
-            (registers.x[1] as *mut ThreadId)
-                .as_mut()
-                .context(InvalidPointerSnafu {
-                    reason: "thread ID output ptr",
-                    ptr: registers.x[2],
-                })?
-        };
+        let info: &ThreadCreateInfo =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "thread info",
+                })?;
+        let out_thread_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output thread id",
+            })?;
+
         let entry_ptr = VirtualAddress::from(info.entry as *mut ());
         ensure!(
             !entry_ptr.is_null() && entry_ptr.is_aligned_to(8),
@@ -263,12 +264,16 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 length: info.stack_size
             }
         );
+
         debug!("spawning thread {info:?} in process #{}", parent.id);
+
         let thread = self
             .process_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
             .context(ProcessManagerSnafu)?;
+
         *out_thread_id = thread.id;
+
         Ok(())
     }
 
@@ -276,25 +281,21 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         &self,
         parent: Arc<Process>,
         registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<(), Error> {
         // TODO: we probably also need to validate these to ensure that they will deref
         // correctly given the page tables? seems expensive.
-        let info = unsafe {
-            (registers.x[0] as *const ProcessCreateInfo)
-                .as_ref()
-                .context(InvalidPointerSnafu {
-                    reason: "process create info ptr",
-                    ptr: registers.x[1],
-                })?
-        };
-        let out_process_id = unsafe {
-            (registers.x[1] as *mut ProcessId)
-                .as_mut()
-                .context(InvalidPointerSnafu {
-                    reason: "process ID output ptr",
-                    ptr: registers.x[2],
-                })?
-        };
+        let info =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "process info",
+                })?;
+        let out_process_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output process id",
+            })?;
         debug!("spawning process {info:?}, parent #{}", parent.id);
         let proc = self
             .process_manager
@@ -307,9 +308,9 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_kill_process(
         &self,
         current_process: &Arc<Process>,
-        pid: usize,
+        registers: &Registers,
     ) -> Result<(), Error> {
-        let pid = ProcessId::new(pid as u32).context(NotFoundSnafu {
+        let pid = ProcessId::new(registers.x[0] as u32).context(NotFoundSnafu {
             reason: "process id is zero",
             id: 0usize,
         })?;
@@ -335,15 +336,15 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_allocate_heap_pages(
         &self,
         current_process: &Arc<Process>,
-        size: usize,
-        dst_ptr: *mut usize,
+        registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<(), Error> {
-        let dst = unsafe {
-            dst_ptr.as_mut().context(InvalidPointerSnafu {
-                reason: "memory address output ptr",
-                ptr: dst_ptr as usize,
-            })?
-        };
+        let size: usize = registers.x[0];
+        let dst: &mut usize = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output pointer",
+            })?;
 
         debug!(
             "allocating {size} pages for process #{}",
@@ -371,9 +372,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_free_heap_pages(
         &self,
         current_process: &Arc<Process>,
-        ptr: VirtualAddress,
-        size: usize,
+        registers: &Registers,
     ) -> Result<(), Error> {
+        let ptr: VirtualAddress = registers.x[0].into();
+        let size: usize = registers.x[1];
         debug!(
             "freeing {size} pages @ {ptr:?} for process #{}",
             current_process.id
@@ -386,12 +388,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_send(
         &self,
         current_thread: &Arc<Thread>,
-        dst_pid: Option<ProcessId>,
-        dst_tid: Option<ThreadId>,
-        msg: *const u8,
-        msg_len: usize,
+        registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<(), Error> {
-        // TODO: like everywhere else we need to check to make sure the pointer is valid *before* deref
+        let dst_pid: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
+        let dst_tid: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
+        let message = user_space_memory
+            .check_slice(registers.x[2].into(), registers.x[3].into())
+            .context(InvalidAddressSnafu { cause: "message" })?;
         let dst = dst_pid
             .and_then(|pid| self.process_manager.process_for_id(pid))
             .context(NotFoundSnafu {
@@ -399,7 +403,6 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 id: dst_pid.map_or(0, ProcessId::get) as usize,
             })?;
         let dst_thread = dst_tid.and_then(|tid| self.process_manager.thread_for_id(tid));
-        let message = unsafe { core::slice::from_raw_parts(msg, msg_len) };
         dst.send_message(
             (
                 current_thread.parent.as_ref().unwrap().id,
@@ -414,10 +417,20 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_receive(
         &self,
         current_thread: &Arc<Thread>,
-        flag_bits: usize,
-        out_msg: *mut VirtualAddress,
-        out_len: *mut usize,
+        registers: &Registers,
+        user_space_memory: &impl ActiveUserSpaceTables,
     ) -> Result<SysCallEffect, Error> {
+        let flag_bits: usize = registers.x[0];
+        let out_msg: &mut VirtualAddress = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+            cause: "output message ptr",
+        })?;
+        let out_len: &mut usize = user_space_memory
+            .check_mut_ref(registers.x[2].into())
+            .context(InvalidAddressSnafu {
+                cause: "output message len",
+            })?;
         let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
             reason: "invalid bits",
             bits: flag_bits,
@@ -426,10 +439,8 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             // SAFETY: it is safe to call this for the current thread, because the its page tables are current.
             current_thread.receive_message()
         } {
-            unsafe {
-                out_msg.write(msg_ptr);
-                out_len.write(msg_len);
-            }
+            *out_msg = msg_ptr;
+            *out_len = msg_len;
             Ok(SysCallEffect::Return(0))
         } else if flags.contains(ReceiveFlags::NONBLOCKING) {
             Err(Error::WouldBlock)

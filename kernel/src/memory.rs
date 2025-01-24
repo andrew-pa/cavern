@@ -10,7 +10,7 @@ use core::{arch::asm, ptr::addr_of_mut};
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{
-        page_table::{MapBlockSize, MemoryKind, MemoryProperties},
+        page_table::{ActiveUserSpaceTables, MapBlockSize, MemoryKind, MemoryProperties},
         AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
         PhysicalAddress, PhysicalPointer,
     },
@@ -265,4 +265,22 @@ pub fn init(dt: &DeviceTree<'_>, initrd_slice: &(PhysicalPointer<u8>, usize)) {
 /// Returns a reference to the current global physical page allocator.
 pub fn page_allocator() -> &'static PlatformPageAllocator {
     PAGE_ALLOCATOR.wait()
+}
+
+pub struct SystemActiveUserSpaceTables {
+    page_size: PageSize,
+}
+
+impl ActiveUserSpaceTables for SystemActiveUserSpaceTables {
+    fn page_size(&self) -> PageSize {
+        self.page_size
+    }
+
+    fn translate(
+        &self,
+        addr: VirtualAddress,
+        for_write: bool,
+    ) -> Result<(PhysicalAddress, MemoryProperties), kernel_core::memory::page_table::Error> {
+        todo!()
+    }
 }

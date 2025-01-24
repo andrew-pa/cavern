@@ -227,7 +227,7 @@ pub enum Error {
         /// Address that was unaligned (physical or virtual).
         value: usize,
     },
-    WouldFault
+    WouldFault,
 }
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
@@ -849,13 +849,22 @@ impl Drop for PageTables<'_> {
 /// Mechanisms for interacting with the currently active EL0 page tables.
 /// The lifetime of this object must be tied to the lifetime in which a single set of tables is
 /// mapped for EL0.
-pub trait ActiveUserSpaceTable {
+pub trait ActiveUserSpaceTables {
+    /// Get the size of pages.
+    fn page_size(&self) -> PageSize;
+
     /// Translate a virtual address into a physical one using the current EL0 page tables
     /// and also look up the memory properties for the mapping.
+    /// If `for_write` is true, the translation will occur as if it was a write to the address,
+    /// and if it is false, then the translation will occur as if it was a read.
     ///
     /// # Errors
     /// Returns an error if the address is not actually mapped.
-    fn translate(&self, addr: VirtualAddress) -> Result<(PhysicalAddress, MemoryProperties), Error>;
+    fn translate(
+        &self,
+        addr: VirtualAddress,
+        for_write: bool,
+    ) -> Result<(PhysicalAddress, MemoryProperties), Error>;
 
     /// Helper to check that every page in `[start, start + length_in_bytes - 1]`
     /// is mapped in EL0 space, and (if `must_write` is true) that it is writable.
@@ -863,19 +872,10 @@ pub trait ActiveUserSpaceTable {
         &self,
         start: VirtualAddress,
         length_in_bytes: usize,
-        must_write: bool,
+        for_write: bool,
     ) -> Result<(), Error> {
         use snafu::OptionExt;
-
-        // If zero bytes, just check that the base address is user-accessible (and writable if needed).
-        if length_in_bytes == 0 {
-            let (_, props) = self.translate(start)?;
-            ensure!(props.user_space_access, WouldFaultSnafu);
-            if must_write {
-                ensure!(props.writable, WouldFaultSnafu);
-            }
-            return Ok(());
-        }
+        assert!(length_in_bytes > 0);
 
         let page_sz = usize::from(self.page_size());
         let start_usize = usize::from(start);
@@ -890,11 +890,7 @@ pub trait ActiveUserSpaceTable {
         let mut cur_page = first_page_base;
         while cur_page <= last_page_base {
             let va = VirtualAddress::from(cur_page);
-            let (_, props) = self.translate(va)?;
-            ensure!(props.user_space_access, WouldFaultSnafu);
-            if must_write {
-                ensure!(props.writable, WouldFaultSnafu);
-            }
+            self.translate(va, for_write)?;
             cur_page = cur_page.checked_add(page_sz).context(WouldFaultSnafu)?;
         }
         Ok(())
@@ -905,38 +901,31 @@ pub trait ActiveUserSpaceTable {
         // If T is zero-sized, still force checking at least 1 byte of coverage
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
         // Now that we've validated all pages, do the actual pointer cast
-        unsafe {
-            (ptr.0 as *const T)
-                .as_ref()
-                .ok_or(Error::WouldFault)
-        }
+        unsafe { (ptr.0 as *const T).as_ref().ok_or(Error::WouldFault) }
+    }
 
     fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&mut T, Error> {
         let size = core::mem::size_of::<T>();
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
-        unsafe {
-            (ptr.0 as *mut T)
-                .as_mut()
-                .ok_or(Error::WouldFault)
-        }
+        unsafe { (ptr.0 as *mut T).as_mut().ok_or(Error::WouldFault) }
     }
 
     fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error> {
         use core::slice;
-        let size = core::mem::size_of::<T>().checked_mul(len).ok_or(Error::WouldFault)?;
-        self.check_user_pages_in_range(ptr.0.into(), size, false)?;
-        Ok(unsafe {
-            slice::from_raw_parts(ptr.0 as *const T, len)
-        })
+        let size = core::mem::size_of::<T>()
+            .checked_mul(len)
+            .ok_or(Error::WouldFault)?;
+        self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
+        Ok(unsafe { slice::from_raw_parts(ptr.0 as *const T, len) })
     }
 
     fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error> {
         use core::slice;
-        let size = core::mem::size_of::<T>().checked_mul(len).ok_or(Error::WouldFault)?;
-        self.check_user_pages_in_range(ptr.0.into(), size, true)?;
-        Ok(unsafe {
-            slice::from_raw_parts_mut(ptr.0 as *mut T, len)
-        })
+        let size = core::mem::size_of::<T>()
+            .checked_mul(len)
+            .ok_or(Error::WouldFault)?;
+        self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
+        Ok(unsafe { slice::from_raw_parts_mut(ptr.0 as *mut T, len) })
     }
 }
 
