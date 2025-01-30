@@ -159,13 +159,13 @@ impl<T> From<PhysicalPointer<T>> for *mut T {
 /// Analogous to a `*const T`.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct VirtualPointer<T>(usize, PhantomData<*const T>);
+pub struct VirtualPointer<T>(usize, PhantomData<T>);
 
 /// A 48-bit virtual address space pointer to a mutable `T` in some address space.
 /// Analogous to a `*mut T`.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct VirtualPointerMut<T>(usize, PhantomData<*mut T>);
+pub struct VirtualPointerMut<T>(usize, PhantomData<T>);
 
 /// A virtual 48-bit address that does not dereference to any particular type of value.
 pub type VirtualAddress = VirtualPointerMut<()>;
@@ -340,6 +340,14 @@ impl PageSize {
         let addr: usize = addr.into();
         let mask = usize::from(self) - 1;
         (addr & !mask, addr & mask)
+    }
+
+    /// Return the minimum number of bits necessary to represent a page offset.
+    pub fn ilog2(self) -> usize {
+        match self {
+            PageSize::FourKiB => 12,
+            PageSize::SixteenKiB => 14,
+        }
     }
 }
 

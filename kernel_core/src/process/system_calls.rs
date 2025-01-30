@@ -251,7 +251,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
 
         let entry_ptr = VirtualAddress::from(info.entry as *mut ());
         ensure!(
-            !entry_ptr.is_null() && entry_ptr.is_aligned_to(8),
+            !entry_ptr.is_null(),
             InvalidPointerSnafu {
                 reason: "thread entry point ptr",
                 ptr: entry_ptr
@@ -394,7 +394,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         let dst_pid: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
         let dst_tid: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
         let message = user_space_memory
-            .check_slice(registers.x[2].into(), registers.x[3].into())
+            .check_slice(registers.x[2].into(), registers.x[3])
             .context(InvalidAddressSnafu { cause: "message" })?;
         let dst = dst_pid
             .and_then(|pid| self.process_manager.process_for_id(pid))

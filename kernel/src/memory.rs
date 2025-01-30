@@ -12,7 +12,7 @@ use kernel_core::{
     memory::{
         page_table::{ActiveUserSpaceTables, MapBlockSize, MemoryKind, MemoryProperties},
         AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
-        PhysicalAddress, PhysicalPointer,
+        PhysicalAddress, PhysicalPointer, VirtualAddress,
     },
     platform::device_tree::DeviceTree,
 };
@@ -72,7 +72,7 @@ unsafe fn flush_tlb_for_asid(asid: u16) {
 /// Write the `MAIR_EL1` register.
 unsafe fn write_mair(value: u64) {
     asm!(
-        "msr MAIR_EL1, {val}",
+        "MSR MAIR_EL1, {val}",
         val = in(reg) value
     );
 }
@@ -267,8 +267,27 @@ pub fn page_allocator() -> &'static PlatformPageAllocator {
     PAGE_ALLOCATOR.wait()
 }
 
+bitfield! {
+    /// PAR_EL1 register.
+    /// Returns the output address or fault from an address translation instruction (`AT ...`).
+    struct PhysicalAddressRegister(u64);
+    impl Debug;
+    u64, phy_addr, _: 47, 12;
+    u8, fault_status_code, _: 6, 1;
+    is_fault, _: 0;
+}
+
+/// Implementation of the [`ActiveUserSpaceTables`] mechanism using the `AT` address translation
+/// instruction.
 pub struct SystemActiveUserSpaceTables {
     page_size: PageSize,
+}
+
+impl SystemActiveUserSpaceTables {
+    /// Create a new instance given the size of pages in the active tables.
+    pub fn new(page_size: PageSize) -> Self {
+        SystemActiveUserSpaceTables { page_size }
+    }
 }
 
 impl ActiveUserSpaceTables for SystemActiveUserSpaceTables {
@@ -280,7 +299,36 @@ impl ActiveUserSpaceTables for SystemActiveUserSpaceTables {
         &self,
         addr: VirtualAddress,
         for_write: bool,
-    ) -> Result<(PhysicalAddress, MemoryProperties), kernel_core::memory::page_table::Error> {
-        todo!()
+    ) -> Result<PhysicalAddress, kernel_core::memory::page_table::Error> {
+        let addr = usize::from(addr);
+        let mut res: u64;
+        if for_write {
+            unsafe {
+                asm!(
+                    "AT S1E0W, {a}",
+                    "MRS {r}, PAR_EL1",
+                    a = in (reg) addr,
+                    r = out (reg) res
+                );
+            }
+        } else {
+            unsafe {
+                asm!(
+                    "AT S1E0R, {a}",
+                    "MRS {r}, PAR_EL1",
+                    a = in (reg) addr,
+                    r = out (reg) res
+                );
+            }
+        }
+
+        let res = PhysicalAddressRegister(res);
+        if res.is_fault() {
+            Err(kernel_core::memory::page_table::Error::WouldFault {
+                code: res.fault_status_code(),
+            })
+        } else {
+            Ok(((res.phy_addr() as usize) << self.page_size.ilog2()).into())
+        }
     }
 }

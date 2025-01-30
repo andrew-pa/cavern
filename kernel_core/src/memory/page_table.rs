@@ -227,7 +227,13 @@ pub enum Error {
         /// Address that was unaligned (physical or virtual).
         value: usize,
     },
-    WouldFault,
+    /// Dereferencing the address would cause a page fault.
+    #[snafu(display("Dereferencing the address would cause a page fault (code {code:06b})."))]
+    WouldFault {
+        /// The fault status code representing the kind of fault.
+        /// See section D19.2.108 "FST" of Aarch64 reference manual.
+        code: u8,
+    },
 }
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
@@ -860,11 +866,7 @@ pub trait ActiveUserSpaceTables {
     ///
     /// # Errors
     /// Returns an error if the address is not actually mapped.
-    fn translate(
-        &self,
-        addr: VirtualAddress,
-        for_write: bool,
-    ) -> Result<(PhysicalAddress, MemoryProperties), Error>;
+    fn translate(&self, addr: VirtualAddress, for_write: bool) -> Result<PhysicalAddress, Error>;
 
     /// Helper to check that every page in `[start, start + length_in_bytes - 1]`
     /// is mapped in EL0 space, and (if `must_write` is true) that it is writable.
@@ -881,7 +883,7 @@ pub trait ActiveUserSpaceTables {
         let start_usize = usize::from(start);
         let end_usize = start_usize
             .checked_add(length_in_bytes - 1)
-            .context(WouldFaultSnafu)?;
+            .context(WouldFaultSnafu { code: 0xff })?;
 
         // Round each address down to its page base
         let first_page_base = start_usize & !(page_sz - 1);
@@ -890,40 +892,77 @@ pub trait ActiveUserSpaceTables {
         let mut cur_page = first_page_base;
         while cur_page <= last_page_base {
             let va = VirtualAddress::from(cur_page);
-            self.translate(va, for_write)?;
-            cur_page = cur_page.checked_add(page_sz).context(WouldFaultSnafu)?;
+            let _ = self.translate(va, for_write)?;
+            cur_page = cur_page
+                .checked_add(page_sz)
+                .context(WouldFaultSnafu { code: 0xff })?;
         }
         Ok(())
     }
 
+    /// Check to see if a user-space address `ptr` is valid to convert to a reference given that
+    /// the current EL0 page tables remain active. If so, the reference is returned.
+    ///
+    /// # Errors
+    /// If dereferencing the pointer would result in a fault, [`Error::WouldFault`] is returned.
     fn check_ref<T>(&self, ptr: VirtualPointer<T>) -> Result<&T, Error> {
+        trace!("checking user space ref, ptr={ptr:?}");
         let size = core::mem::size_of::<T>();
         // If T is zero-sized, still force checking at least 1 byte of coverage
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
         // Now that we've validated all pages, do the actual pointer cast
-        unsafe { (ptr.0 as *const T).as_ref().ok_or(Error::WouldFault) }
+        unsafe {
+            (ptr.0 as *const T)
+                .as_ref()
+                .ok_or(Error::WouldFault { code: 0b100 })
+        }
     }
 
+    /// Check to see if a user-space address `ptr` is valid to convert to a mutable reference
+    /// given that the current EL0 page tables remain active. If so, the reference is returned.
+    ///
+    /// # Errors
+    /// If dereferencing the pointer would result in a fault, [`Error::WouldFault`] is returned.
+    /// This includes if the memory is mapped as read-only.
     fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&mut T, Error> {
         let size = core::mem::size_of::<T>();
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
-        unsafe { (ptr.0 as *mut T).as_mut().ok_or(Error::WouldFault) }
+        unsafe {
+            (ptr.0 as *mut T)
+                .as_mut()
+                .ok_or(Error::WouldFault { code: 0b100 })
+        }
     }
 
+    /// Check to see if a user-space slice starting at `ptr` with a length of `len` measured in `T`s
+    /// is valid to convert to a regular slice of `T`s, given that the current EL0 page tables
+    /// remain active. If so, the slice is returned.
+    ///
+    /// # Errors
+    /// If dereferencing any index in the slice would result in a fault,
+    /// [`Error::WouldFault`] is returned.
     fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
-            .ok_or(Error::WouldFault)?;
+            .ok_or(Error::WouldFault { code: 0xff })?;
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
         Ok(unsafe { slice::from_raw_parts(ptr.0 as *const T, len) })
     }
 
+    /// Check to see if a user-space mutable slice starting at `ptr` with a length of `len`
+    /// measured in `T`s is valid to convert to a regular slice of `T`s,
+    /// given that the current EL0 page tables remain active. If so, the slice is returned.
+    ///
+    /// # Errors
+    /// If dereferencing () any index in the slice would result in a fault,
+    /// [`Error::WouldFault`] is returned.
+    /// This includes mutating at an index.
     fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
-            .ok_or(Error::WouldFault)?;
+            .ok_or(Error::WouldFault { code: 0xff })?;
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
         Ok(unsafe { slice::from_raw_parts_mut(ptr.0 as *mut T, len) })
     }

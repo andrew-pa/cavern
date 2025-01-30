@@ -107,6 +107,8 @@ pub struct ProcessorState {
     pub registers: Registers,
 }
 
+unsafe impl Send for ProcessorState {}
+
 impl ProcessorState {
     /// Create a zeroed processor state that is valid for the idle thread.
     /// This is valid because the idle thread will always be saved before it is resumed, capturing
@@ -202,6 +204,11 @@ pub struct Thread {
     /// The queue of pointers to unreceived messages for this thread.
     pub inbox_queue: SegQueue<PendingMessage>,
 }
+
+// TODO: remove these and make it more fine grained: the problem is the various `VirtualAddress`s
+// (which are all user space addresses, so we'd have to be careful to deref them anyways).
+unsafe impl Send for Thread {}
+unsafe impl Sync for Thread {}
 
 impl Thread {
     /// Create a new Thread.
