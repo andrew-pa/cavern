@@ -285,6 +285,7 @@ pub struct SystemActiveUserSpaceTables {
 
 impl SystemActiveUserSpaceTables {
     /// Create a new instance given the size of pages in the active tables.
+    #[must_use]
     pub fn new(page_size: PageSize) -> Self {
         SystemActiveUserSpaceTables { page_size }
     }

@@ -4,6 +4,7 @@ use bitflags::bitflags;
 
 bitflags! {
     /// Flags for the `receive()` system call.
+    #[derive(Clone, Copy)]
     pub struct ReceiveFlags: usize {
         /// Immediately return with a [`crate::ErrorCode::WouldBlock`] error if there are no
         /// messages instead of blocking the thread until a message arrives.

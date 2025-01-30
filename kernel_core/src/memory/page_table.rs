@@ -855,6 +855,7 @@ impl Drop for PageTables<'_> {
 /// Mechanisms for interacting with the currently active EL0 page tables.
 /// The lifetime of this object must be tied to the lifetime in which a single set of tables is
 /// mapped for EL0.
+#[cfg_attr(test, mockall::automock)]
 pub trait ActiveUserSpaceTables {
     /// Get the size of pages.
     fn page_size(&self) -> PageSize;
@@ -867,9 +868,26 @@ pub trait ActiveUserSpaceTables {
     /// # Errors
     /// Returns an error if the address is not actually mapped.
     fn translate(&self, addr: VirtualAddress, for_write: bool) -> Result<PhysicalAddress, Error>;
+}
 
+/// Policy for checking references into active user space, wrapping an [`ActiveUserSpaceTables`] instance's translation mechanism.
+#[derive(Copy, Clone)]
+pub struct ActiveUserSpaceTablesChecker<'a, T: ActiveUserSpaceTables>(&'a T);
+
+impl<'a, A: ActiveUserSpaceTables> From<&'a A> for ActiveUserSpaceTablesChecker<'a, A> {
+    fn from(value: &'a A) -> Self {
+        Self(value)
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
     /// Helper to check that every page in `[start, start + length_in_bytes - 1]`
     /// is mapped in EL0 space, and (if `must_write` is true) that it is writable.
+    ///
+    /// # Errors
+    /// Returns an error if the range is not actually mapped at some address, or if it is mapped
+    /// with insufficient permissions.
     fn check_user_pages_in_range(
         &self,
         start: VirtualAddress,
@@ -879,7 +897,7 @@ pub trait ActiveUserSpaceTables {
         use snafu::OptionExt;
         assert!(length_in_bytes > 0);
 
-        let page_sz = usize::from(self.page_size());
+        let page_sz = usize::from(self.0.page_size());
         let start_usize = usize::from(start);
         let end_usize = start_usize
             .checked_add(length_in_bytes - 1)
@@ -892,7 +910,7 @@ pub trait ActiveUserSpaceTables {
         let mut cur_page = first_page_base;
         while cur_page <= last_page_base {
             let va = VirtualAddress::from(cur_page);
-            let _ = self.translate(va, for_write)?;
+            let _ = self.0.translate(va, for_write)?;
             cur_page = cur_page
                 .checked_add(page_sz)
                 .context(WouldFaultSnafu { code: 0xff })?;
@@ -905,7 +923,7 @@ pub trait ActiveUserSpaceTables {
     ///
     /// # Errors
     /// If dereferencing the pointer would result in a fault, [`Error::WouldFault`] is returned.
-    fn check_ref<T>(&self, ptr: VirtualPointer<T>) -> Result<&T, Error> {
+    pub fn check_ref<T>(&self, ptr: VirtualPointer<T>) -> Result<&'a T, Error> {
         trace!("checking user space ref, ptr={ptr:?}");
         let size = core::mem::size_of::<T>();
         // If T is zero-sized, still force checking at least 1 byte of coverage
@@ -924,7 +942,7 @@ pub trait ActiveUserSpaceTables {
     /// # Errors
     /// If dereferencing the pointer would result in a fault, [`Error::WouldFault`] is returned.
     /// This includes if the memory is mapped as read-only.
-    fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&mut T, Error> {
+    pub fn check_mut_ref<T>(&self, ptr: VirtualPointerMut<T>) -> Result<&'a mut T, Error> {
         let size = core::mem::size_of::<T>();
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
         unsafe {
@@ -941,7 +959,7 @@ pub trait ActiveUserSpaceTables {
     /// # Errors
     /// If dereferencing any index in the slice would result in a fault,
     /// [`Error::WouldFault`] is returned.
-    fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&[T], Error> {
+    pub fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&'a [T], Error> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
@@ -958,7 +976,11 @@ pub trait ActiveUserSpaceTables {
     /// If dereferencing () any index in the slice would result in a fault,
     /// [`Error::WouldFault`] is returned.
     /// This includes mutating at an index.
-    fn check_slice_mut<T>(&self, ptr: VirtualPointerMut<T>, len: usize) -> Result<&mut [T], Error> {
+    pub fn check_slice_mut<T>(
+        &self,
+        ptr: VirtualPointerMut<T>,
+        len: usize,
+    ) -> Result<&'a mut [T], Error> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)

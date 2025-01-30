@@ -105,7 +105,7 @@ pub struct Process {
 impl Process {
     /// Create a new process object and sets up the process' virtual memory space using the `image`.
     ///
-    /// The inbox_size is in units of message blocks.
+    /// The `inbox_size` is in units of message blocks.
     ///
     /// # Errors
     /// Returns an error if allocating physical memory for the process fails, or if a page table

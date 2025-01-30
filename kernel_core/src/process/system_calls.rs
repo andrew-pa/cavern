@@ -1,15 +1,16 @@
 //! System calls from user space.
+#![allow(clippy::needless_pass_by_value)]
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    flags::ReceiveFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo,
-    ProcessId, ThreadCreateInfo, ThreadId,
+    flags::ReceiveFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessId,
+    ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::memory::{
-    page_table::{ActiveUserSpaceTables, MemoryProperties},
+    page_table::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker, MemoryProperties},
     PageAllocator, VirtualAddress,
 };
 
@@ -74,8 +75,9 @@ impl Error {
         match self {
             Error::InvalidLength { .. } => ErrorCode::InvalidLength,
             Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
-            Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
-            Error::InvalidAddress { .. } => ErrorCode::InvalidPointer,
+            Error::InvalidPointer { .. } | Error::InvalidAddress { .. } => {
+                ErrorCode::InvalidPointer
+            }
             Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock { .. } => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
@@ -130,12 +132,12 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     ///
     /// # Errors
     /// Returns an error that should be reported to user-space if the system call is unsuccessful.
-    pub fn dispatch_system_call(
+    pub fn dispatch_system_call<AUST: ActiveUserSpaceTables>(
         &self,
         syscall_number: u16,
         current_thread: &Arc<Thread>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: &AUST,
     ) -> Result<SysCallEffect, Error> {
         let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
             warn!(
@@ -147,6 +149,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .expect("kill thread that made invalid system call");
             return Ok(SysCallEffect::ScheduleNextThread);
         };
+        let user_space_memory = user_space_memory.into();
         match syscall_number {
             CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(
                 self.syscall_read_env_value(current_thread, registers),
@@ -231,11 +234,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .expect("failed to kill thread");
     }
 
-    fn syscall_spawn_thread(
+    fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
         &self,
         parent: Arc<Process>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
         let info: &ThreadCreateInfo =
             user_space_memory
@@ -277,14 +280,12 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         Ok(())
     }
 
-    fn syscall_spawn_process(
+    fn syscall_spawn_process<T: ActiveUserSpaceTables>(
         &self,
         parent: Arc<Process>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        // TODO: we probably also need to validate these to ensure that they will deref
-        // correctly given the page tables? seems expensive.
         let info =
             user_space_memory
                 .check_ref(registers.x[0].into())
@@ -333,11 +334,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         Ok(())
     }
 
-    fn syscall_allocate_heap_pages(
+    fn syscall_allocate_heap_pages<T: ActiveUserSpaceTables>(
         &self,
         current_process: &Arc<Process>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
         let size: usize = registers.x[0];
         let dst: &mut usize = user_space_memory
@@ -385,24 +386,24 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .context(ProcessManagerSnafu)
     }
 
-    fn syscall_send(
+    fn syscall_send<T: ActiveUserSpaceTables>(
         &self,
         current_thread: &Arc<Thread>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        let dst_pid: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
-        let dst_tid: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
+        let dst_process_id: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
+        let dst_thread_id: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
         let message = user_space_memory
             .check_slice(registers.x[2].into(), registers.x[3])
             .context(InvalidAddressSnafu { cause: "message" })?;
-        let dst = dst_pid
+        let dst = dst_process_id
             .and_then(|pid| self.process_manager.process_for_id(pid))
             .context(NotFoundSnafu {
                 reason: "destination process id",
-                id: dst_pid.map_or(0, ProcessId::get) as usize,
+                id: dst_process_id.map_or(0, ProcessId::get) as usize,
             })?;
-        let dst_thread = dst_tid.and_then(|tid| self.process_manager.thread_for_id(tid));
+        let dst_thread = dst_thread_id.and_then(|tid| self.process_manager.thread_for_id(tid));
         dst.send_message(
             (
                 current_thread.parent.as_ref().unwrap().id,
@@ -414,11 +415,12 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         .context(ProcessManagerSnafu)
     }
 
-    fn syscall_receive(
+    #[allow(clippy::unused_self)]
+    fn syscall_receive<T: ActiveUserSpaceTables>(
         &self,
         current_thread: &Arc<Thread>,
         registers: &Registers,
-        user_space_memory: &impl ActiveUserSpaceTables,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<SysCallEffect, Error> {
         let flag_bits: usize = registers.x[0];
         let out_msg: &mut VirtualAddress = user_space_memory
@@ -456,7 +458,7 @@ mod tests {
     use core::num::NonZeroU32;
 
     use crate::{
-        memory::{MockPageAllocator, VirtualAddress},
+        memory::{page_table::MockActiveUserSpaceTables, MockPageAllocator, VirtualAddress},
         process::MockProcessManager,
     };
 
@@ -492,11 +494,18 @@ mod tests {
 
         let policy = SystemCalls::new(&pa, &pm);
 
+        let usm = MockActiveUserSpaceTables::new();
+
         let registers = Registers::default();
 
         let system_call_number_that_is_invalid = 1;
         assert!(matches!(
-            policy.dispatch_system_call(system_call_number_that_is_invalid, &thread, &registers),
+            policy.dispatch_system_call(
+                system_call_number_that_is_invalid,
+                &thread,
+                &registers,
+                &usm
+            ),
             Ok(SysCallEffect::ScheduleNextThread)
         ));
     }
@@ -510,11 +519,13 @@ mod tests {
 
         let policy = SystemCalls::new(&pa, &pm);
 
+        let usm = MockActiveUserSpaceTables::new();
+
         let mut registers = Registers::default();
         registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
 
         assert!(matches!(
-            policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers),
+            policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers, &usm),
             Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
         ));
     }
@@ -538,6 +549,8 @@ mod tests {
 
         let policy = SystemCalls::new(&pa, &pm);
 
+        let usm = MockActiveUserSpaceTables::new();
+
         let mut registers = Registers::default();
         registers.x[0] = exit_code as usize;
 
@@ -545,7 +558,8 @@ mod tests {
             policy.dispatch_system_call(
                 CallNumber::ExitCurrentThread.into_integer(),
                 &thread,
-                &registers
+                &registers,
+                &usm
             ),
             Ok(SysCallEffect::ScheduleNextThread)
         ));

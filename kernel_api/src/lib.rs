@@ -6,10 +6,11 @@
 #![deny(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::cast_possible_truncation)]
+#![feature(pointer_is_aligned_to)]
 
 use core::num::NonZeroU32;
 
-use bytemuck::{Contiguous, Pod};
+use bytemuck::Contiguous;
 
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -199,7 +200,7 @@ pub const MESSAGE_BLOCK_SIZE: usize = 64;
 
 /// The header containing information about a received message.
 #[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(8))]
 pub struct MessageHeader {
     /// The process id of the process that send this message.
     pub sender_pid: ProcessId,
@@ -216,21 +217,28 @@ impl Message {
     ///
     /// # Safety
     /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
+    /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be
+    /// aligned to an 8-byte boundary.
     unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
         debug_assert!(
             len >= core::mem::size_of::<MessageHeader>(),
             "message must be at least large enough for a message header"
         );
+        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
         unsafe {
             let slice = core::slice::from_raw_parts(ptr, len);
-            core::mem::transmute(slice)
+            // this is ok because it is part of the precondition of the function (and checked in debug).
+            #[allow(clippy::cast_ptr_alignment)]
+            &*(core::ptr::from_ref(slice) as *const Message)
         }
     }
 
     /// The message header written by the kernel.
+    #[must_use]
     pub fn header(&self) -> &MessageHeader {
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to start with a header.
+            #[allow(clippy::cast_ptr_alignment)]
             self.0
                 .as_ptr()
                 .cast::<MessageHeader>()
@@ -240,6 +248,7 @@ impl Message {
     }
 
     /// The message payload from the sender.
+    #[must_use]
     pub fn payload(&self) -> &[u8] {
         let msg_hdr_size = core::mem::size_of::<MessageHeader>();
         unsafe {

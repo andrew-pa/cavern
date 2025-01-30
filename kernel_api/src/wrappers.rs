@@ -192,8 +192,8 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
-/// | `dest_pid` | Process ID           | The ID of the process that will receive the message. |
-/// | `dest_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
+/// | `dst_pid` | Process ID           | The ID of the process that will receive the message. |
+/// | `dst_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
 /// | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
 /// | `msg_len`  | `usize` | Length of the message payload in bytes. |
 /// | `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
@@ -205,8 +205,8 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer was null or invalid.
 pub fn send(
-    destination_pid: ProcessId,
-    destination_tid: Option<ThreadId>,
+    dst_process_id: ProcessId,
+    dst_thread_id: Option<ThreadId>,
     message: *mut u8,
     message_length: usize,
 ) -> Result<(), ErrorCode> {
@@ -219,8 +219,8 @@ pub fn send(
             "mov x3, {len:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            pid = in(reg) destination_pid.get(),
-            tid = in(reg) destination_tid.map_or(0, ThreadId::get),
+            pid = in(reg) dst_process_id.get(),
+            tid = in(reg) dst_thread_id.map_or(0, ThreadId::get),
             msg = in(reg) message,
             len = in(reg) message_length,
             res = out(reg) result,

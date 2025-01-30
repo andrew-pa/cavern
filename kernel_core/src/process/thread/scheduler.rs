@@ -66,7 +66,6 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
                     }
                     State::Finished => {
                         // remove the thread from the queue by not putting it back
-                        continue;
                     }
                 },
                 None => {

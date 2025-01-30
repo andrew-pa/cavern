@@ -86,7 +86,7 @@ impl<'dt> Iterator for FlattenedTreeIter<'dt> {
                     self.current_offset += pad_end_4b(length);
                     return Some(fdt::Token::Property { name, data });
                 }
-                fdt::TokenType::Nop => continue,
+                fdt::TokenType::Nop => {}
                 fdt::TokenType::End => return None,
                 fdt::TokenType::Unknown(x) => panic!("unknown device tree token: {x}"),
             }

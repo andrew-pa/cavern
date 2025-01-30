@@ -7,7 +7,7 @@ use crossbeam::queue::SegQueue;
 use kernel_api::MessageHeader;
 use spin::Mutex;
 
-use crate::memory::{FreeListAllocator, VirtualAddress};
+use crate::memory::VirtualAddress;
 
 use super::{PendingMessage, Process};
 
