@@ -79,7 +79,7 @@ impl Error {
                 ErrorCode::InvalidPointer
             }
             Error::NotFound { .. } => ErrorCode::NotFound,
-            Error::WouldBlock { .. } => ErrorCode::WouldBlock,
+            Error::WouldBlock => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
                 ProcessManagerError::Memory { source } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
@@ -126,9 +126,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     ///
     /// Returns a [`SysCallEffect`] if there is no error to return to user-space.
     /// - [`SysCallEffect::Return`] to return a value (zero being success) to user-space.
-    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled. This
-    ///     may mean that the current thread was killed by this system call, either intentionally or
-    ///     due to a fault (for example, because an invalid system call number was provided).
+    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled.
+    ///
+    ///  This may mean that the current thread was killed by this system call, either intentionally or
+    ///  due to a fault (for example, because an invalid system call number was provided).
     ///
     /// # Errors
     /// Returns an error that should be reported to user-space if the system call is unsuccessful.
