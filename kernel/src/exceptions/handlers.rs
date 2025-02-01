@@ -3,12 +3,16 @@
 use bytemuck::Contiguous;
 use log::debug;
 
-use crate::process::{
-    thread::{restore_current_thread_state, save_current_thread_state},
-    SYS_CALL_POLICY,
+use crate::{
+    memory::{page_allocator, SystemActiveUserSpaceTables},
+    process::{
+        thread::{restore_current_thread_state, save_current_thread_state},
+        SYS_CALL_POLICY,
+    },
 };
 use kernel_core::{
     exceptions::ExceptionSyndromeRegister,
+    memory::PageAllocator,
     process::{
         system_calls::SysCallEffect,
         thread::{Registers, Scheduler},
@@ -39,10 +43,11 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             .as_mut()
             .expect("asm exception vector code passes non-null ptr to registers object");
         let current_thread = save_current_thread_state(regs);
+        let user_space_mem = SystemActiveUserSpaceTables::new(page_allocator().page_size());
         let result = SYS_CALL_POLICY
             .get()
             .expect("system call handler policy to be initialized before system calls are made")
-            .dispatch_system_call(esr.iss() as u16, &current_thread, regs);
+            .dispatch_system_call(esr.iss() as u16, &current_thread, regs, &user_space_mem);
         match result {
             Ok(SysCallEffect::Return(result)) => {
                 restore_current_thread_state(regs, result);
@@ -56,9 +61,10 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             }
             Err(e) => {
                 debug!(
-                    "system call 0x{:x} from thread #{} failed: {e}",
+                    "system call 0x{:x} from thread #{} failed: {}",
                     esr.iss(),
-                    current_thread.id
+                    current_thread.id,
+                    snafu::Report::from_error(&e)
                 );
                 restore_current_thread_state(regs, e.to_code().into_integer());
             }

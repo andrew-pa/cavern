@@ -94,8 +94,7 @@ impl HandleAllocator {
                     Err(prev) => {
                         // Failed to set the bit, update `current` and retry.
                         current = prev;
-                        // Note: `compare_exchange_weak` may fail spuriously, so we loop.
-                        continue;
+                        // Note: `compare_exchange_weak` may fail spuriously, so we continue to loop.
                     }
                 }
             }
@@ -140,8 +139,7 @@ impl HandleAllocator {
                 Err(prev) => {
                     // Failed to clear the bit, update `current` and retry.
                     current = prev;
-                    // Note: `compare_exchange_weak` may fail spuriously, so we loop.
-                    continue;
+                    // Note: `compare_exchange_weak` may fail spuriously, so we continue to loop.
                 }
             }
         }

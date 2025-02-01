@@ -24,6 +24,12 @@ check cargo_args="" clippy_args="":
     cargo check --target aarch64-unknown-none --all-features {{cargo_args}}
     cargo clippy --target aarch64-unknown-none --all-features {{cargo_args}} -- -Dmissing_docs -Dclippy::all -Wclippy::pedantic {{clippy_args}}
 
+# Fix formatting, types and lints.
+fix force_arg="" cargo_clippy_args=""  cargo_args="" clippy_args="":
+    cargo fmt {{cargo_args}}
+    cargo clippy --target aarch64-unknown-none --all-features {{cargo_args}} --fix {{ if force_arg == "force" { "--allow-dirty --allow-staged" } else {""} }} {{cargo_clippy_args}} -- -Dmissing_docs -Dclippy::all -Wclippy::pedantic {{clippy_args}}
+    cargo fmt {{cargo_args}}
+
 # Test Rust crates that are testable on the host.
 test cargo_args="":
     cargo test -p kernel_core --target {{host_target_triple}} {{cargo_args}}

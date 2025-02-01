@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::cast_possible_truncation)]
+#![feature(pointer_is_aligned_to)]
 
 use core::num::NonZeroU32;
 
@@ -56,7 +57,7 @@ pub enum ErrorCode {
 #[allow(missing_docs)]
 pub enum CallNumber {
     Send = 0x100,
-    Recieve,
+    Receive,
     TransferToSharedBuffer,
     TransferFromSharedBuffer,
     ReadEnvValue,
@@ -119,8 +120,6 @@ pub struct ThreadCreateInfo {
     pub entry: fn(usize) -> !,
     /// The size of the new thread's stack in pages.
     pub stack_size: usize,
-    /// The size of the new thread's inbox in pages.
-    pub inbox_size: usize,
     /// The user paramter that will be passed to the entry point function.
     pub user_data: usize,
 }
@@ -192,6 +191,117 @@ pub struct ProcessCreateInfo {
     pub privilege_level: PrivilegeLevel,
     /// Whether to notify this process via a message when the spawned process exits.
     pub notify_on_exit: bool,
+    /// The size of this process' message inbox, in message blocks.
+    pub inbox_size: usize,
+}
+
+/// The size of a message block in bytes.
+pub const MESSAGE_BLOCK_SIZE: usize = 64;
+
+/// The header containing information about a received message.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(8))]
+pub struct MessageHeader {
+    /// The process id of the process that send this message.
+    pub sender_pid: ProcessId,
+    /// The thread id of the thread that send this message.
+    pub sender_tid: ThreadId,
+    /// The number of shared buffers sent in this message.
+    pub num_buffers: usize,
+}
+
+/// A received message from another process.
+#[repr(C, align(8))]
+pub struct Message([u8]);
+
+impl Message {
+    /// Create a new message from a raw slice in the inbox.
+    ///
+    /// # Safety
+    /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
+    /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be
+    /// aligned to an 8-byte boundary.
+    unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
+        debug_assert!(
+            len >= core::mem::size_of::<MessageHeader>(),
+            "message must be at least large enough for a message header"
+        );
+        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
+        unsafe {
+            let slice = core::slice::from_raw_parts(ptr, len);
+            // this is ok because it is part of the precondition of the function (and checked in debug).
+            #[allow(clippy::cast_ptr_alignment)]
+            &*(core::ptr::from_ref(slice) as *const Message)
+        }
+    }
+
+    /// The message header written by the kernel.
+    #[must_use]
+    pub fn header(&self) -> &MessageHeader {
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to start with a header.
+            #[allow(clippy::cast_ptr_alignment)]
+            self.0
+                .as_ptr()
+                .cast::<MessageHeader>()
+                .as_ref()
+                .unwrap_unchecked()
+        }
+    }
+
+    /// The message payload from the sender.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        let msg_hdr_size = core::mem::size_of::<MessageHeader>()
+            + self.header().num_buffers * core::mem::size_of::<SharedBufferInfo>();
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
+            let ptr = self.0.as_ptr().cast::<u8>().add(msg_hdr_size);
+            core::slice::from_raw_parts(ptr, self.0.len() - msg_hdr_size)
+        }
+    }
+
+    /// The attached shared buffers for this message.
+    #[must_use]
+    pub fn buffers(&self) -> &[SharedBufferInfo] {
+        let msg_hdr_size = core::mem::size_of::<MessageHeader>();
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
+            let ptr = self
+                .0
+                .as_ptr()
+                .byte_add(msg_hdr_size)
+                .cast::<SharedBufferInfo>();
+            core::slice::from_raw_parts(ptr, self.header().num_buffers)
+        }
+    }
+}
+
+/// The unique ID of a shared buffer local to the receiving process.
+pub type SharedBufferId = NonZeroU32;
+
+/// Description of a shared buffer on the sending side.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SharedBufferCreateInfo {
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
+    /// Base address of the buffer.
+    pub base_address: *mut u8,
+    /// Length in bytes of this buffer.
+    pub length: usize,
+}
+
+/// Description of a shared buffer on the receiving side.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SharedBufferInfo {
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
+    /// Id of the buffer.
+    pub buffer: SharedBufferId,
+    /// Length in bytes of this buffer.
+    pub length: usize,
 }
 
 pub mod flags;

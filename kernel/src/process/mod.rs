@@ -53,6 +53,7 @@ impl ProcessManager for SystemProcessManager {
                 notify_parent_on_exit: info.notify_on_exit,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
+            info.inbox_size,
         )?);
         self.processes.insert_with_handle(id, proc.clone());
 
