@@ -159,7 +159,8 @@ The message body will be copied to the receiver.
 | `dest_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
 | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
 | `msg_len`  | `usize` | Length of the message payload in bytes. |
-| `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
+| `buffers`  | `*const [SharedBufferInfo]`| Pointer to array of shared buffers to send with this message. |
+| `buffers_len`| `usize`| Length of the buffers array in elements. |
 
 #### Errors
 - `NotFound`: the process/thread ID was unknown to the system.

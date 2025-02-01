@@ -1,7 +1,7 @@
 //! System call wrapper functions.
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
-use crate::{Message, flags::ReceiveFlags};
+use crate::{Message, SharedBufferCreateInfo, flags::ReceiveFlags};
 
 use super::{
     CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
@@ -197,6 +197,7 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
 /// | `msg_len`  | `usize` | Length of the message payload in bytes. |
 /// | `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
+/// | `buffers_len`| `usize`| Length of the buffers array in elements. |
 ///
 /// # Errors
 /// - `NotFound`: the process/thread ID was unknown to the system.
@@ -207,8 +208,8 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 pub fn send(
     dst_process_id: ProcessId,
     dst_thread_id: Option<ThreadId>,
-    message: *mut u8,
-    message_length: usize,
+    message: &[u8],
+    buffers: &[SharedBufferCreateInfo],
 ) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
@@ -217,12 +218,16 @@ pub fn send(
             "mov x1, {tid:x}",
             "mov x2, {msg:x}",
             "mov x3, {len:x}",
+            "mov x4, {bufs:x}",
+            "mov x5, {bufs_len:x}",
             "svc {call_number}",
             "mov {res}, x0",
             pid = in(reg) dst_process_id.get(),
             tid = in(reg) dst_thread_id.map_or(0, ThreadId::get),
-            msg = in(reg) message,
-            len = in(reg) message_length,
+            msg = in(reg) message.as_ptr(),
+            len = in(reg) message.len(),
+            bufs = in(reg) buffers.as_ptr(),
+            bufs_len = in(reg) buffers.len(),
             res = out(reg) result,
             call_number = const CallNumber::Send.into_num()
         );

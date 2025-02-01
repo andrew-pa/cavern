@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
 use crossbeam::queue::SegQueue;
-use kernel_api::MessageHeader;
+use kernel_api::{MessageHeader, SharedBufferInfo};
 use spin::Mutex;
 
 use crate::memory::VirtualAddress;
@@ -271,7 +271,27 @@ impl Thread {
             header.write(MessageHeader {
                 sender_pid: msg.sender_process_id,
                 sender_tid: msg.sender_thread_id,
+                num_buffers: msg.buffer_handles.len(),
             });
+
+            let mut buffers: *mut SharedBufferInfo = msg
+                .data_address
+                .byte_add(size_of::<MessageHeader>())
+                .cast()
+                .as_ptr();
+            let parent = self.parent.as_ref().unwrap();
+            for buffer in msg.buffer_handles {
+                let b = parent
+                    .shared_buffers
+                    .get(buffer)
+                    .expect("pending message contains valid buffer handles");
+                buffers.write(SharedBufferInfo {
+                    flags: b.flags,
+                    buffer,
+                    length: b.length,
+                });
+                buffers = buffers.add(1);
+            }
         }
 
         Some((msg.data_address, msg.data_length))

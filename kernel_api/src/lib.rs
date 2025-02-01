@@ -206,6 +206,8 @@ pub struct MessageHeader {
     pub sender_pid: ProcessId,
     /// The thread id of the thread that send this message.
     pub sender_tid: ThreadId,
+    /// The number of shared buffers sent in this message.
+    pub num_buffers: usize,
 }
 
 /// A received message from another process.
@@ -250,13 +252,56 @@ impl Message {
     /// The message payload from the sender.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        let msg_hdr_size = core::mem::size_of::<MessageHeader>();
+        let msg_hdr_size = core::mem::size_of::<MessageHeader>()
+            + self.header().num_buffers * core::mem::size_of::<SharedBufferInfo>();
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
             let ptr = self.0.as_ptr().cast::<u8>().add(msg_hdr_size);
             core::slice::from_raw_parts(ptr, self.0.len() - msg_hdr_size)
         }
     }
+
+    /// The attached shared buffers for this message.
+    #[must_use]
+    pub fn buffers(&self) -> &[SharedBufferInfo] {
+        let msg_hdr_size = core::mem::size_of::<MessageHeader>();
+        unsafe {
+            // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
+            let ptr = self
+                .0
+                .as_ptr()
+                .byte_add(msg_hdr_size)
+                .cast::<SharedBufferInfo>();
+            core::slice::from_raw_parts(ptr, self.header().num_buffers)
+        }
+    }
+}
+
+/// The unique ID of a shared buffer local to the receiving process.
+pub type SharedBufferId = NonZeroU32;
+
+/// Description of a shared buffer on the sending side.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SharedBufferCreateInfo {
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
+    /// Base address of the buffer.
+    pub base_address: *mut u8,
+    /// Length in bytes of this buffer.
+    pub length: usize,
+}
+
+/// Description of a shared buffer on the receiving side.
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct SharedBufferInfo {
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
+    /// Id of the buffer.
+    pub buffer: SharedBufferId,
+    /// Length in bytes of this buffer.
+    pub length: usize,
 }
 
 pub mod flags;

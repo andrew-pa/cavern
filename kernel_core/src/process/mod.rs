@@ -2,7 +2,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use kernel_api::{
-    ExitReason, ImageSection, ImageSectionKind, MessageHeader, PrivilegeLevel, ProcessCreateInfo,
+    flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
+    PrivilegeLevel, ProcessCreateInfo, SharedBufferCreateInfo, SharedBufferInfo,
     MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
@@ -13,10 +14,13 @@ pub use thread::{Id as ThreadId, Thread};
 pub mod system_calls;
 pub mod thread;
 
-use crate::memory::{
-    page_table::{MapBlockSize, MemoryProperties},
-    AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
-    VirtualAddress,
+use crate::{
+    collections::HandleMap,
+    memory::{
+        page_table::{MapBlockSize, MemoryProperties},
+        AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
+        VirtualAddress,
+    },
 };
 
 /// A unique id for a process.
@@ -24,6 +28,12 @@ pub type Id = crate::collections::Handle;
 
 /// The largest possible process ID in the system.
 pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
+
+/// A unique id for a shared buffer (scoped to a single process).
+pub type SharedBufferId = crate::collections::Handle;
+
+/// The largest possible shared buffer ID in the system.
+pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
 
 /// A message that is waiting in a thread's inbox queue to be received.
 pub struct PendingMessage {
@@ -35,6 +45,8 @@ pub struct PendingMessage {
     sender_process_id: Id,
     /// The thread id of the sender.
     sender_thread_id: ThreadId,
+    /// The attached buffers to this message.
+    buffer_handles: Vec<SharedBufferId>,
 }
 
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
@@ -78,6 +90,18 @@ pub struct Properties {
     pub notify_parent_on_exit: bool,
 }
 
+/// A buffer shared from an owner process to a borrower process.
+pub struct SharedBuffer {
+    /// The source process that this buffer's memory owned by.
+    pub owner: Arc<Process>,
+    /// Flags defining the properties of this buffer.
+    pub flags: SharedBufferFlags,
+    /// The base address of the buffer in the owner process' address space.
+    pub base_address: VirtualAddress,
+    /// Length of the buffer in bytes.
+    pub length: usize,
+}
+
 /// A user-space process.
 pub struct Process {
     /// The id of this process.
@@ -100,6 +124,9 @@ pub struct Process {
 
     /// Allocator for message blocks in this process' inbox.
     pub inbox_allocator: Mutex<FreeListAllocator>,
+
+    /// Buffers that have been shared with this process from other processes.
+    pub shared_buffers: HandleMap<SharedBuffer>,
 }
 
 impl Process {
@@ -208,6 +235,7 @@ impl Process {
                 inbox_size_in_pages,
                 MESSAGE_BLOCK_SIZE,
             )),
+            shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
         })
     }
 
@@ -318,6 +346,7 @@ impl Process {
         sender: (Id, ThreadId),
         receiver_thread: Option<Arc<Thread>>,
         message: &[u8],
+        buffers: &[Arc<SharedBuffer>],
     ) -> Result<(), ProcessManagerError> {
         // TODO: check message length against max?
         let thread = if let Some(th) = receiver_thread {
@@ -336,7 +365,9 @@ impl Process {
                 })?
                 .clone()
         };
-        let actual_message_size_in_bytes = message.len() + size_of::<MessageHeader>();
+        let payload_start =
+            size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
+        let actual_message_size_in_bytes = message.len() + payload_start;
         let ptr = {
             match self
                 .inbox_allocator
@@ -354,15 +385,24 @@ impl Process {
             // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
             self.page_tables
                 .read()
-                .copy_to_while_unmapped(ptr.byte_add(size_of::<MessageHeader>()), message)
+                .copy_to_while_unmapped(ptr.byte_add(payload_start), message)
                 .context(PageTablesSnafu)?;
         }
+
+        let buffer_handles = buffers
+            .iter()
+            .cloned()
+            .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
+            .collect::<Result<_, _>>()?;
+
         thread.inbox_queue.push(PendingMessage {
             data_address: ptr,
             data_length: actual_message_size_in_bytes,
             sender_process_id: sender.0,
             sender_thread_id: sender.1,
+            buffer_handles,
         });
+
         Ok(())
     }
 }

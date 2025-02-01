@@ -160,7 +160,9 @@ impl<T> From<PhysicalPointer<T>> for *mut T {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct VirtualPointer<T>(usize, PhantomData<*const T>);
+// TODO: this is techinically wrong, but convenient
 unsafe impl<T: Send> Send for VirtualPointer<T> {}
+unsafe impl<T: Send> Sync for VirtualPointer<T> {}
 
 /// A 48-bit virtual address space pointer to a mutable `T` in some address space.
 /// Analogous to a `*mut T`.
@@ -168,6 +170,7 @@ unsafe impl<T: Send> Send for VirtualPointer<T> {}
 #[repr(transparent)]
 pub struct VirtualPointerMut<T>(usize, PhantomData<*mut T>);
 unsafe impl<T: Send> Send for VirtualPointerMut<T> {}
+unsafe impl<T: Send> Sync for VirtualPointerMut<T> {}
 
 /// A virtual 48-bit address that does not dereference to any particular type of value.
 pub type VirtualAddress = VirtualPointerMut<()>;
