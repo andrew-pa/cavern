@@ -92,7 +92,7 @@ pub struct Properties {
 
 /// A buffer shared from an owner process to a borrower process.
 pub struct SharedBuffer {
-    /// The source process that this buffer's memory owned by.
+    /// The source process that this buffer's memory is owned by.
     pub owner: Arc<Process>,
     /// Flags defining the properties of this buffer.
     pub flags: SharedBufferFlags,
@@ -100,6 +100,30 @@ pub struct SharedBuffer {
     pub base_address: VirtualAddress,
     /// Length of the buffer in bytes.
     pub length: usize,
+}
+
+impl SharedBuffer {
+    /// Copies the bytes in `src` into this buffer, starting at `offset`.
+    ///
+    /// # Errors
+    /// Returns an error if the copy would go out of bounds or forbidden by the sender.
+    pub fn transfer_to(&self, offset: usize, src: &[u8]) -> Result<(), ProcessManagerError> {
+        // check flags for WRITE access
+        // check bounds
+        // use PageTables::copy_to_while_unmapped to write into the owner's memory
+        todo!()
+    }
+
+    /// Copies bytes from the buffer starting at `offset` into `dst`.
+    ///
+    /// # Errors
+    /// Returns an error if the copy would go out of bounds or forbidden by the sender.
+    pub fn transfer_from(&self, offset: usize, dst: &mut [u8]) -> Result<(), ProcessManagerError> {
+        // check flags for READ access
+        // check bounds
+        // use PageTables::copy_from_while_unmapped to read from the owner's memory
+        todo!()
+    }
 }
 
 /// A user-space process.

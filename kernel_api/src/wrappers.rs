@@ -1,7 +1,7 @@
 //! System call wrapper functions.
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
-use crate::{Message, SharedBufferCreateInfo, flags::ReceiveFlags};
+use crate::{flags::ReceiveFlags, Message, SharedBufferCreateInfo, SharedBufferId};
 
 use super::{
     CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
@@ -247,14 +247,14 @@ pub fn send(
 /// The thread will resume its running state when it receives a message.
 /// This can be disabled with the `Nonblocking` flag, which will return `WouldBlock` as an error instead if there are no messages.
 ///
-/// #### Arguments
+/// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
 /// | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 /// | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
 /// | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
 ///
-/// #### Flags
+/// # Flags
 /// The `receive` call accepts the following flags:
 ///
 /// | Name           | Description                              |
@@ -290,3 +290,86 @@ pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
 }
+
+/// Copy bytes from the caller process into a shared buffer that has been sent to it.
+/// Only valid if the sender has allowed writes to the buffer.
+/// 
+/// # Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `buffer_handle` | buffer handle   | Handle to the shared buffer to copy into. |
+/// | `dst_offset` | u64                | Offset into the shared buffer to start writing bytes to. |
+/// | `src_address` | `*const u8`       | Source address to copy from in the calling process. |
+/// | `length` | u64                    | Length of the copy in bytes. |
+///
+/// # Errors
+/// - `NotFound`: an unknown buffer handle was passed.
+/// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+/// - `InvalidLength`: the requested operation would extend past the end of the buffer.
+pub fn transfer_to_shared_buffer(buffer: SharedBufferId, dst_offset: usize, src: &[u8]) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {b:x}",
+            "mov x1, {d:x}",
+            "mov x2, {s:x}",
+            "mov x3, {l:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            b = in(reg) buffer.get(),
+            d = in(reg) dst_offset,
+            s = in(reg) src.as_ptr(),
+            l = in(reg) src.len(),
+            res = out(reg) result,
+            call_number = const CallNumber::TransferToSharedBuffer.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// Copy bytes from a shared buffer to the caller process.
+/// Only valid if the sender has allowed reads from the buffer.
+/// 
+/// # Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `buffer_handle` | buffer handle   | Handle to the shared buffer to copy from. |
+/// | `src_offset` | u64                | Offset into the shared buffer to start reading bytes from. |
+/// | `dst_address` | `*const u8`       | Destination address to copy to in the calling process. |
+/// | `length` | u64                    | Length of the copy in bytes. |
+///
+/// # Errors
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `NotFound`: an unknown buffer handle was passed.
+/// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+/// - `InvalidLength`: the requested operation would extend past the end of the buffer.
+pub fn transfer_from_shared_buffer(buffer: SharedBufferId, src_offset: usize, dst: &mut [u8]) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {b:x}",
+            "mov x1, {s:x}",
+            "mov x2, {d:x}",
+            "mov x3, {l:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            b = in(reg) buffer.get(),
+            s = in(reg) src_offset,
+            d = in(reg) dst.as_ptr(),
+            l = in(reg) dst.len(),
+            res = out(reg) result,
+            call_number = const CallNumber::TransferFromSharedBuffer.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+
