@@ -1,7 +1,7 @@
 //! System call wrapper functions.
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
-use crate::{flags::ReceiveFlags, Message, SharedBufferCreateInfo, SharedBufferId};
+use crate::{Message, SharedBufferCreateInfo, SharedBufferId, flags::ReceiveFlags};
 
 use super::{
     CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
@@ -293,7 +293,7 @@ pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
 
 /// Copy bytes from the caller process into a shared buffer that has been sent to it.
 /// Only valid if the sender has allowed writes to the buffer.
-/// 
+///
 /// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
@@ -306,7 +306,11 @@ pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
 /// - `NotFound`: an unknown buffer handle was passed.
 /// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 /// - `InvalidLength`: the requested operation would extend past the end of the buffer.
-pub fn transfer_to_shared_buffer(buffer: SharedBufferId, dst_offset: usize, src: &[u8]) -> Result<(), ErrorCode> {
+pub fn transfer_to_shared_buffer(
+    buffer: SharedBufferId,
+    dst_offset: usize,
+    src: &[u8],
+) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
         asm!(
@@ -333,7 +337,7 @@ pub fn transfer_to_shared_buffer(buffer: SharedBufferId, dst_offset: usize, src:
 
 /// Copy bytes from a shared buffer to the caller process.
 /// Only valid if the sender has allowed reads from the buffer.
-/// 
+///
 /// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
@@ -347,7 +351,11 @@ pub fn transfer_to_shared_buffer(buffer: SharedBufferId, dst_offset: usize, src:
 /// - `NotFound`: an unknown buffer handle was passed.
 /// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 /// - `InvalidLength`: the requested operation would extend past the end of the buffer.
-pub fn transfer_from_shared_buffer(buffer: SharedBufferId, src_offset: usize, dst: &mut [u8]) -> Result<(), ErrorCode> {
+pub fn transfer_from_shared_buffer(
+    buffer: SharedBufferId,
+    src_offset: usize,
+    dst: &mut [u8],
+) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
         asm!(
@@ -371,5 +379,3 @@ pub fn transfer_from_shared_buffer(buffer: SharedBufferId, src_offset: usize, ds
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
 }
-
-

@@ -267,6 +267,7 @@ impl Message {
         let msg_hdr_size = core::mem::size_of::<MessageHeader>();
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
+            #[allow(clippy::cast_ptr_alignment)]
             let ptr = self
                 .0
                 .as_ptr()

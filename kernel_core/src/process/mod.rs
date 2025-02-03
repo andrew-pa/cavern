@@ -3,8 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use kernel_api::{
     flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
-    PrivilegeLevel, ProcessCreateInfo, SharedBufferCreateInfo, SharedBufferInfo,
-    MESSAGE_BLOCK_SIZE,
+    PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -102,27 +101,77 @@ pub struct SharedBuffer {
     pub length: usize,
 }
 
+/// Errors that can arise during shared buffer operations.
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum TransferError {
+    /// The transfer is outside the bounds of the buffer.
+    OutOfBounds,
+    /// The buffer was not shared with the correct permissions for the transfer.
+    InsufficentPermissions,
+    /// An error occured making the copy into the owner's address space.
+    PageTables {
+        /// Underlying cause of the error.
+        source: crate::memory::page_table::Error,
+    },
+}
+
 impl SharedBuffer {
     /// Copies the bytes in `src` into this buffer, starting at `offset`.
+    /// The buffer must have the [`SharedBufferFlags::WRITE`] flag set.
     ///
     /// # Errors
     /// Returns an error if the copy would go out of bounds or forbidden by the sender.
-    pub fn transfer_to(&self, offset: usize, src: &[u8]) -> Result<(), ProcessManagerError> {
-        // check flags for WRITE access
-        // check bounds
-        // use PageTables::copy_to_while_unmapped to write into the owner's memory
-        todo!()
+    pub fn transfer_to(&self, offset: usize, src: &[u8]) -> Result<(), TransferError> {
+        // Check that the shared buffer permits writes.
+        ensure!(
+            self.flags.contains(SharedBufferFlags::WRITE),
+            transfer_error::InsufficentPermissionsSnafu
+        );
+
+        // Check that the transfer lies within the buffer bounds.
+        ensure!(
+            offset
+                .checked_add(src.len())
+                .is_some_and(|end| end <= self.length),
+            transfer_error::OutOfBoundsSnafu
+        );
+
+        // Compute the destination virtual address in the owner’s address space.
+        let dest = self.base_address.byte_add(offset);
+
+        // Use the owner's page tables to copy the data.
+        let pt = self.owner.page_tables.read();
+        unsafe { pt.copy_to_while_unmapped(dest, src) }.context(transfer_error::PageTablesSnafu)
     }
 
     /// Copies bytes from the buffer starting at `offset` into `dst`.
+    /// The buffer must have the [`SharedBufferFlags::READ`] flag set.
     ///
     /// # Errors
     /// Returns an error if the copy would go out of bounds or forbidden by the sender.
-    pub fn transfer_from(&self, offset: usize, dst: &mut [u8]) -> Result<(), ProcessManagerError> {
-        // check flags for READ access
-        // check bounds
-        // use PageTables::copy_from_while_unmapped to read from the owner's memory
-        todo!()
+    pub fn transfer_from(&self, offset: usize, dst: &mut [u8]) -> Result<(), TransferError> {
+        // Check that the shared buffer permits reads.
+        ensure!(
+            self.flags.contains(SharedBufferFlags::READ),
+            transfer_error::InsufficentPermissionsSnafu
+        );
+
+        // Check that the requested transfer is within the bounds of the buffer.
+        ensure!(
+            offset
+                .checked_add(dst.len())
+                .is_some_and(|end| end <= self.length),
+            transfer_error::OutOfBoundsSnafu
+        );
+
+        // Compute the source virtual address in the owner’s address space.
+        let src_addr = self.base_address.byte_add(offset);
+
+        // Use the owner's page tables to copy the data.
+        let pt = self.owner.page_tables.read();
+        unsafe { pt.copy_from_while_unmapped(src_addr, dst) }
+            .context(transfer_error::PageTablesSnafu)
     }
 }
 
