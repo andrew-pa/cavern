@@ -48,6 +48,9 @@ pub enum ErrorCode {
 
     /// The requested resource or memory region is already in use by another process or driver.
     InUse,
+
+    /// The buffer was not shared with the permissions required for the operation.
+    InsufficentPermissions,
 }
 
 /// System call numbers, one per call.

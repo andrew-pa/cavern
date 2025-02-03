@@ -1,5 +1,6 @@
 //! System calls from user space.
 #![allow(clippy::needless_pass_by_value)]
+
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
@@ -14,7 +15,10 @@ use crate::memory::{
     PageAllocator, VirtualAddress,
 };
 
-use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
+use super::{
+    thread::Registers, Process, ProcessManager, ProcessManagerError, SharedBufferId, Thread,
+    TransferError,
+};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, Snafu)]
@@ -51,6 +55,14 @@ pub enum Error {
         /// The specific value that was invalid.
         cause: String,
     },
+    /// A handle provided was invalid, or otherwise could not be used as expected.
+    #[snafu(display("Invalid handle {reason}: 0x{handle:x}"))]
+    InvalidHandle {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid handle value.
+        handle: u32,
+    },
     /// The specified process, thread, or handler ID was unknown or not found in the system.
     #[snafu(display("Id {id} not found: {reason}"))]
     NotFound {
@@ -66,6 +78,11 @@ pub enum Error {
     },
     /// Receiving a message would otherwise block the thread.
     WouldBlock,
+    /// Error occured doing a shared buffer transfer.
+    Transfer {
+        /// Underlying error.
+        source: TransferError,
+    },
 }
 
 impl Error {
@@ -78,7 +95,7 @@ impl Error {
             Error::InvalidPointer { .. } | Error::InvalidAddress { .. } => {
                 ErrorCode::InvalidPointer
             }
-            Error::NotFound { .. } => ErrorCode::NotFound,
+            Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
                 ProcessManagerError::Memory { source } => match source {
@@ -93,6 +110,11 @@ impl Error {
                 }
                 ProcessManagerError::OutOfHandles => ErrorCode::OutOfHandles,
                 ProcessManagerError::InboxFull => ErrorCode::InboxFull,
+            },
+            Error::Transfer { source } => match source {
+                TransferError::OutOfBounds => ErrorCode::OutOfBounds,
+                TransferError::InsufficentPermissions => ErrorCode::InsufficentPermissions,
+                TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
             },
         }
     }
@@ -197,6 +219,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             }
             CallNumber::Receive => {
                 self.syscall_receive(current_thread, registers, user_space_memory)
+            }
+            CallNumber::TransferToSharedBuffer => {
+                self.syscall_transfer_to(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::TransferFromSharedBuffer => {
+                self.syscall_transfer_from(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
             }
             _ => todo!("implement {:?}", syscall_number),
         }
@@ -455,6 +485,64 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             current_thread.set_state(super::thread::State::Blocked);
             Ok(SysCallEffect::ScheduleNextThread)
         }
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_to<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let src = user_space_memory
+            .check_slice(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "source buffer",
+            })?;
+        buf.transfer_to(offset, src).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_from<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let dst = user_space_memory
+            .check_slice_mut(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "destination buffer",
+            })?;
+        buf.transfer_from(offset, dst).context(TransferSnafu)
     }
 }
 
