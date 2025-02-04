@@ -184,6 +184,7 @@ pub struct Process {
     pub props: Properties,
 
     /// The threads running in this process.
+    /// The first thread is the designated receiver thread.
     pub threads: RwLock<Vec<Arc<Thread>>>,
 
     /// The page tables that map this process' virtual address space.

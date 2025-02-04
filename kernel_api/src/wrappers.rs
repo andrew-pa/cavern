@@ -379,3 +379,26 @@ pub fn transfer_from_shared_buffer(
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
 }
+
+/// Set a thread to be the designated receiver thread for the current process.
+///
+/// # Errors
+/// - `NotFound`: the thread id was not found.
+pub fn set_designated_receiver(tid: ThreadId) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {i:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            i = in(reg) tid.get(),
+            res = out(reg) result,
+            call_number = const CallNumber::SetDesignatedReceiver.into_num()
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}

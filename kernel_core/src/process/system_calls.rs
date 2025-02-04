@@ -228,7 +228,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 self.syscall_transfer_from(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
             }
-            _ => todo!("implement {:?}", syscall_number),
+            CallNumber::SetDesignatedReceiver => {
+                self.syscall_set_designated_receiver(current_thread, registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
         }
     }
 
@@ -246,7 +249,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .as_ref()
                 .map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::DesignatedReceiverThreadId => todo!(),
+            EnvironmentValue::DesignatedReceiverThreadId => current_thread
+                .parent
+                .as_ref()
+                .and_then(|p| p.threads.read().first().map(|t| t.id.get()))
+                .unwrap_or(0) as usize,
             EnvironmentValue::CurrentSupervisorId => current_thread
                 .parent
                 .as_ref()
@@ -543,6 +550,30 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 cause: "destination buffer",
             })?;
         buf.transfer_from(offset, dst).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_set_designated_receiver(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let target_thread_id =
+            ThreadId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "thread id",
+                handle: registers.x[0] as u32,
+            })?;
+        let proc = current_thread.parent.as_ref().unwrap();
+        let mut threads = proc.threads.write();
+        let i = threads
+            .iter()
+            .position(|t| t.id == target_thread_id)
+            .context(InvalidHandleSnafu {
+                reason: "thread not in process",
+                handle: target_thread_id.get(),
+            })?;
+        threads.swap(0, i);
+        Ok(())
     }
 }
 

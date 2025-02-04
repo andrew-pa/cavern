@@ -68,7 +68,7 @@ pub enum CallNumber {
     SpawnThread,
     ExitCurrentThread,
     KillProcess,
-    SetDesignatedReciever,
+    SetDesignatedReceiver,
     AllocateHeapPages,
     FreeHeapPages,
 }
