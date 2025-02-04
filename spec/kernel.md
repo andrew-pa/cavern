@@ -80,27 +80,24 @@ Receivers can also send a shared buffer to another process by including it in a 
 Handles, however, are scoped to a single process, so this creates a new handle.
 TODO: can you share the same region of memory with two different processes?
 
-The kernel's own virtual memory is identity mapped to cover the whole range of physical memory.
+The kernel's own virtual address space contains an identity mapping to cover the entire physical range of the system RAM.
 
 ## Messages
 The kernel distributes messages between threads.
-Messages consist of 64-byte blocks, and can be a maximum of 16 blocks long (1024 bytes).
-Messages must be 8-byte aligned.
-Messages contain:
-
-- The process and thread ID of the recipient. The thread ID is optional.
-- The number of memory operations contained in the message.
-- Flags indicating if it should be deleted from the thread's receive queue yet
-- The number of blocks total used by the message
-- Shared buffer descriptors to be sent to the recipient
-- Message payload data to be interpreted by the receiver
-
-Messages can be sent to a process' designated receiver thread without knowing the thread ID by leaving the thread ID unspecified.
+A message can be sent to any process, and optionally to a specific thread in that process.
+If no thread is specified, the designated receiver thread will recieve the message (this is initially the first thread in the process).
+Messages consist of bytes, and must be 8-byte aligned.
+The kernel has a configurable maximum message size.
+Messages should be small (<16KiB) to aid performance.
+Shared buffers can also be sent by attaching them to a message.
 
 The kernel must store messages that are in transit, having been sent but not yet received.
-To do this, the kernel provides, for each thread, a region of memory to hold received messages for that thread.
+To do this, the kernel provides, for each process, a region of memory called the "inbox" to hold received messages for all threads in the process.
+The inbox is allocated in blocks of 64 bytes.
 The process does not actually need to know about this memory region, because it receives the necessary slices from the `receive` system call.
-Threads must mark the messages as read/deletable after they are done with them so the kernel can reuse the space.
+Threads must inform the kernel when they are finished processing a message so that the memory in the inbox can be reused.
+
+When a message is received, the kernel writes a message header before the payload data that contains information about the sender and any attached shared buffers. This header counts for the total size of the message in the inbox.
 
 ## Boot Process
 The kernel boot process looks something like:
@@ -158,28 +155,19 @@ The message body will be copied to the receiver.
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `msg`      | `*const [MessageBlock]`| Pointer to the start of memory in user space that contains the message. |
-| `len`      | u8                   | Number of blocks the message contains total. |
-| `msg_id`   | `*mut MessageId`     | If non-null, writes the unique ID of this message if it is successfully sent. Otherwise the value is preserved. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-
-#### Flags
-The `send` call accepts the following flags:
-
-| Name           | Description                              |
-|----------------|------------------------------------------|
+| `dest_pid` | Process ID           | The ID of the process that will receive the message. |
+| `dest_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
+| `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
+| `msg_len`  | `usize` | Length of the message payload in bytes. |
+| `buffers`  | `*const [SharedBufferInfo]`| Pointer to array of shared buffers to send with this message. |
+| `buffers_len`| `usize`| Length of the buffers array in elements. |
 
 #### Errors
 - `NotFound`: the process/thread ID was unknown to the system.
-- `BadFormat`: the message header was incorrectly formatted.
 - `InboxFull`: the receiving process has too many queued messages and cannot receive the message.
-- `InvalidLength`: the length of the message is invalid, i.e. `len` is not in `1..=16`.
+- `InvalidLength`: the length of the message is invalid.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer was null or invalid.
-
-#### Types
-
-A `MessageBlock` is basically a `[u8; 64]`. The first block in the message must contain the message header.
 
 ### `receive`
 The `receive` system call allows a process to receive a message from another process.
@@ -193,9 +181,9 @@ This can be disabled with the `Nonblocking` flag, which will return `WouldBlock`
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
 | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
 The `receive` call accepts the following flags:

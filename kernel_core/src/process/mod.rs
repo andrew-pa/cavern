@@ -1,19 +1,25 @@
 //! Processes (and threads).
 use alloc::{sync::Arc, vec::Vec};
 
-use kernel_api::{ExitReason, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
+use kernel_api::{
+    flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
+    PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
+};
 use log::trace;
-use snafu::{OptionExt, ResultExt, Snafu};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 pub use thread::{Id as ThreadId, Thread};
 
 pub mod system_calls;
 pub mod thread;
 
-use crate::memory::{
-    page_table::{MapBlockSize, MemoryProperties},
-    AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
-    VirtualAddress,
+use crate::{
+    collections::HandleMap,
+    memory::{
+        page_table::{MapBlockSize, MemoryProperties},
+        AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
+        VirtualAddress,
+    },
 };
 
 /// A unique id for a process.
@@ -21,6 +27,26 @@ pub type Id = crate::collections::Handle;
 
 /// The largest possible process ID in the system.
 pub const MAX_PROCESS_ID: Id = Id::new(0xffff).unwrap();
+
+/// A unique id for a shared buffer (scoped to a single process).
+pub type SharedBufferId = crate::collections::Handle;
+
+/// The largest possible shared buffer ID in the system.
+pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
+
+/// A message that is waiting in a thread's inbox queue to be received.
+pub struct PendingMessage {
+    /// The address of the message in the process' virtual address space.
+    data_address: VirtualAddress,
+    /// The length of the message in bytes.
+    data_length: usize,
+    /// The process id of the sender.
+    sender_process_id: Id,
+    /// The thread id of the sender.
+    sender_thread_id: ThreadId,
+    /// The attached buffers to this message.
+    buffer_handles: Vec<SharedBufferId>,
+}
 
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
 #[must_use]
@@ -63,6 +89,92 @@ pub struct Properties {
     pub notify_parent_on_exit: bool,
 }
 
+/// A buffer shared from an owner process to a borrower process.
+pub struct SharedBuffer {
+    /// The source process that this buffer's memory is owned by.
+    pub owner: Arc<Process>,
+    /// Flags defining the properties of this buffer.
+    pub flags: SharedBufferFlags,
+    /// The base address of the buffer in the owner process' address space.
+    pub base_address: VirtualAddress,
+    /// Length of the buffer in bytes.
+    pub length: usize,
+}
+
+/// Errors that can arise during shared buffer operations.
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum TransferError {
+    /// The transfer is outside the bounds of the buffer.
+    OutOfBounds,
+    /// The buffer was not shared with the correct permissions for the transfer.
+    InsufficentPermissions,
+    /// An error occured making the copy into the owner's address space.
+    PageTables {
+        /// Underlying cause of the error.
+        source: crate::memory::page_table::Error,
+    },
+}
+
+impl SharedBuffer {
+    /// Copies the bytes in `src` into this buffer, starting at `offset`.
+    /// The buffer must have the [`SharedBufferFlags::WRITE`] flag set.
+    ///
+    /// # Errors
+    /// Returns an error if the copy would go out of bounds or forbidden by the sender.
+    pub fn transfer_to(&self, offset: usize, src: &[u8]) -> Result<(), TransferError> {
+        // Check that the shared buffer permits writes.
+        ensure!(
+            self.flags.contains(SharedBufferFlags::WRITE),
+            transfer_error::InsufficentPermissionsSnafu
+        );
+
+        // Check that the transfer lies within the buffer bounds.
+        ensure!(
+            offset
+                .checked_add(src.len())
+                .is_some_and(|end| end <= self.length),
+            transfer_error::OutOfBoundsSnafu
+        );
+
+        // Compute the destination virtual address in the owner’s address space.
+        let dest = self.base_address.byte_add(offset);
+
+        // Use the owner's page tables to copy the data.
+        let pt = self.owner.page_tables.read();
+        unsafe { pt.copy_to_while_unmapped(dest, src) }.context(transfer_error::PageTablesSnafu)
+    }
+
+    /// Copies bytes from the buffer starting at `offset` into `dst`.
+    /// The buffer must have the [`SharedBufferFlags::READ`] flag set.
+    ///
+    /// # Errors
+    /// Returns an error if the copy would go out of bounds or forbidden by the sender.
+    pub fn transfer_from(&self, offset: usize, dst: &mut [u8]) -> Result<(), TransferError> {
+        // Check that the shared buffer permits reads.
+        ensure!(
+            self.flags.contains(SharedBufferFlags::READ),
+            transfer_error::InsufficentPermissionsSnafu
+        );
+
+        // Check that the requested transfer is within the bounds of the buffer.
+        ensure!(
+            offset
+                .checked_add(dst.len())
+                .is_some_and(|end| end <= self.length),
+            transfer_error::OutOfBoundsSnafu
+        );
+
+        // Compute the source virtual address in the owner’s address space.
+        let src_addr = self.base_address.byte_add(offset);
+
+        // Use the owner's page tables to copy the data.
+        let pt = self.owner.page_tables.read();
+        unsafe { pt.copy_from_while_unmapped(src_addr, dst) }
+            .context(transfer_error::PageTablesSnafu)
+    }
+}
+
 /// A user-space process.
 pub struct Process {
     /// The id of this process.
@@ -72,6 +184,7 @@ pub struct Process {
     pub props: Properties,
 
     /// The threads running in this process.
+    /// The first thread is the designated receiver thread.
     pub threads: RwLock<Vec<Arc<Thread>>>,
 
     /// The page tables that map this process' virtual address space.
@@ -82,10 +195,18 @@ pub struct Process {
 
     /// The current address space ID and its generation.
     pub address_space_id: RwLock<(Option<AddressSpaceId>, u32)>,
+
+    /// Allocator for message blocks in this process' inbox.
+    pub inbox_allocator: Mutex<FreeListAllocator>,
+
+    /// Buffers that have been shared with this process from other processes.
+    pub shared_buffers: HandleMap<SharedBuffer>,
 }
 
 impl Process {
     /// Create a new process object and sets up the process' virtual memory space using the `image`.
+    ///
+    /// The `inbox_size` is in units of message blocks.
     ///
     /// # Errors
     /// Returns an error if allocating physical memory for the process fails, or if a page table
@@ -95,19 +216,20 @@ impl Process {
         id: Id,
         props: Properties,
         image: &[ImageSection],
+        inbox_size: usize,
     ) -> Result<Self, ProcessManagerError> {
         trace!("creating new process object #{id}");
 
-        // setup the process' memory space
         let mut page_tables = PageTables::empty(allocator).context(MemorySnafu)?;
         let page_size = allocator.page_size();
         // Allocate memory for the process from the entire virtual memory address space.
         let mut virt_alloc = FreeListAllocator::new(
             VirtualAddress::null(),
             0x0000_ffff_ffff_ffff / page_size,
-            page_size,
+            page_size.into(),
         );
 
+        // setup the process' memory space using the image
         for section in image {
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
@@ -140,7 +262,7 @@ impl Process {
                     section.base_address.into(),
                     memory,
                     size_in_pages,
-                    crate::memory::page_table::MapBlockSize::Page,
+                    MapBlockSize::Page,
                     &props,
                 )
                 .context(PageTablesSnafu)?;
@@ -149,6 +271,29 @@ impl Process {
                 .reserve_range(section.base_address.into(), size_in_pages)
                 .context(MemorySnafu)?;
         }
+
+        // allocate and map the message inbox
+        let inbox_size_in_pages = inbox_size * MESSAGE_BLOCK_SIZE / page_size;
+        let inbox_start = virt_alloc
+            .alloc(inbox_size_in_pages)
+            .context(MemorySnafu)?
+            .start;
+        let inbox_memory = allocator
+            .allocate(inbox_size_in_pages)
+            .context(MemorySnafu)?;
+        page_tables
+            .map(
+                inbox_start,
+                inbox_memory,
+                inbox_size_in_pages,
+                MapBlockSize::Page,
+                &MemoryProperties {
+                    user_space_access: true,
+                    writable: true,
+                    ..Default::default()
+                },
+            )
+            .context(PageTablesSnafu)?;
 
         trace!("process page tables: {page_tables:?}");
 
@@ -159,6 +304,12 @@ impl Process {
             page_tables: RwLock::new(page_tables),
             address_space_allocator: Mutex::new(virt_alloc),
             address_space_id: RwLock::default(),
+            inbox_allocator: Mutex::new(FreeListAllocator::new(
+                inbox_start,
+                inbox_size_in_pages,
+                MESSAGE_BLOCK_SIZE,
+            )),
+            shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
         })
     }
 
@@ -242,9 +393,10 @@ impl Process {
             .page_tables
             .read()
             .physical_address_of(base_address)
-            .context(MissingSnafu {
-                cause: "virtual address does not map to a physical address",
-            })?;
+            .ok_or(crate::memory::page_table::Error::NotMapped {
+                address: base_address,
+            })
+            .context(PageTablesSnafu)?;
         page_allocator
             .free(paddr, size_in_pages)
             .context(MemorySnafu)?;
@@ -252,6 +404,82 @@ impl Process {
             .write()
             .unmap(base_address, size_in_pages, MapBlockSize::Page)
             .context(PageTablesSnafu)?;
+
+        Ok(())
+    }
+
+    /// Send a message to this process, and optionally to a specific thread within this process.
+    /// If no thread is specified, the designated receiver thread will receive the message.
+    /// This method **assumes** that the sender ids are valid!
+    ///
+    /// # Errors
+    /// Returns an error if the message could not be delivered, or something goes wrong with memory
+    /// or page tables.
+    pub fn send_message(
+        &self,
+        sender: (Id, ThreadId),
+        receiver_thread: Option<Arc<Thread>>,
+        message: &[u8],
+        buffers: &[Arc<SharedBuffer>],
+    ) -> Result<(), ProcessManagerError> {
+        // TODO: check message length against max?
+        let thread = if let Some(th) = receiver_thread {
+            ensure!(
+                th.parent.as_ref().is_some_and(|p| p.id == self.id),
+                MissingSnafu {
+                    cause: "provided thread not in process"
+                }
+            );
+            th
+        } else {
+            let ths = self.threads.read();
+            ths.first()
+                .context(MissingSnafu {
+                    cause: "process has no threads",
+                })?
+                .clone()
+        };
+        let payload_start =
+            size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
+        let actual_message_size_in_bytes = message.len() + payload_start;
+        trace!(
+            "sending message of size {actual_message_size_in_bytes} to thread #{}",
+            thread.id
+        );
+        let ptr = {
+            match self
+                .inbox_allocator
+                .lock()
+                .alloc(actual_message_size_in_bytes.div_ceil(MESSAGE_BLOCK_SIZE))
+            {
+                Ok(r) => r.start,
+                Err(crate::memory::Error::OutOfMemory) => {
+                    return Err(ProcessManagerError::InboxFull)
+                }
+                Err(e) => return Err(ProcessManagerError::Memory { source: e }),
+            }
+        };
+        unsafe {
+            // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
+            self.page_tables
+                .read()
+                .copy_to_while_unmapped(ptr.byte_add(payload_start), message)
+                .context(PageTablesSnafu)?;
+        }
+
+        let buffer_handles = buffers
+            .iter()
+            .cloned()
+            .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
+            .collect::<Result<_, _>>()?;
+
+        thread.inbox_queue.push(PendingMessage {
+            data_address: ptr,
+            data_length: actual_message_size_in_bytes,
+            sender_process_id: sender.0,
+            sender_thread_id: sender.1,
+            buffer_handles,
+        });
 
         Ok(())
     }
@@ -275,6 +503,9 @@ pub enum ProcessManagerError {
 
     /// The kernel has run out of handles.
     OutOfHandles,
+
+    /// The process' inbox is full.
+    InboxFull,
 
     /// An `Option` was `None`.
     Missing {

@@ -1,16 +1,24 @@
 //! System calls from user space.
+#![allow(clippy::needless_pass_by_value)]
+
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessCreateInfo, ProcessId,
+    flags::ReceiveFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessId,
     ThreadCreateInfo, ThreadId,
 };
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress};
+use crate::memory::{
+    page_table::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker, MemoryProperties},
+    PageAllocator, VirtualAddress,
+};
 
-use super::{thread::Registers, Process, ProcessManager, ProcessManagerError, Thread};
+use super::{
+    thread::Registers, Process, ProcessManager, ProcessManagerError, SharedBufferId, Thread,
+    TransferError,
+};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, Snafu)]
@@ -39,6 +47,22 @@ pub enum Error {
         /// The invalid pointer value.
         ptr: usize,
     },
+    /// A pointer provided was to an address that was not mapped correctly.
+    #[snafu(display("Invalid address for {cause}"))]
+    InvalidAddress {
+        /// The information about what the source of the error was.
+        source: crate::memory::page_table::Error,
+        /// The specific value that was invalid.
+        cause: String,
+    },
+    /// A handle provided was invalid, or otherwise could not be used as expected.
+    #[snafu(display("Invalid handle {reason}: 0x{handle:x}"))]
+    InvalidHandle {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid handle value.
+        handle: u32,
+    },
     /// The specified process, thread, or handler ID was unknown or not found in the system.
     #[snafu(display("Id {id} not found: {reason}"))]
     NotFound {
@@ -52,6 +76,13 @@ pub enum Error {
         /// Underlying error.
         source: ProcessManagerError,
     },
+    /// Receiving a message would otherwise block the thread.
+    WouldBlock,
+    /// Error occured doing a shared buffer transfer.
+    Transfer {
+        /// Underlying error.
+        source: TransferError,
+    },
 }
 
 impl Error {
@@ -61,18 +92,29 @@ impl Error {
         match self {
             Error::InvalidLength { .. } => ErrorCode::InvalidLength,
             Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
-            Error::InvalidPointer { .. } => ErrorCode::InvalidPointer,
-            Error::NotFound { .. } => ErrorCode::NotFound,
+            Error::InvalidPointer { .. } | Error::InvalidAddress { .. } => {
+                ErrorCode::InvalidPointer
+            }
+            Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
+            Error::WouldBlock => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
                 ProcessManagerError::Memory { source } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
                     crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
                 },
-                ProcessManagerError::Missing { .. } | ProcessManagerError::PageTables { .. } => {
-                    ErrorCode::InvalidPointer
+                ProcessManagerError::PageTables { .. } => ErrorCode::InvalidPointer,
+                ProcessManagerError::Missing { cause } => {
+                    error!("Missing value in process manager: {cause}");
+                    ErrorCode::NotFound
                 }
                 ProcessManagerError::OutOfHandles => ErrorCode::OutOfHandles,
+                ProcessManagerError::InboxFull => ErrorCode::InboxFull,
+            },
+            Error::Transfer { source } => match source {
+                TransferError::OutOfBounds => ErrorCode::OutOfBounds,
+                TransferError::InsufficentPermissions => ErrorCode::InsufficentPermissions,
+                TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
             },
         }
     }
@@ -106,17 +148,19 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     ///
     /// Returns a [`SysCallEffect`] if there is no error to return to user-space.
     /// - [`SysCallEffect::Return`] to return a value (zero being success) to user-space.
-    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled. This
-    ///     may mean that the current thread was killed by this system call, either intentionally or
-    ///     due to a fault (for example, because an invalid system call number was provided).
+    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled.
+    ///
+    ///  This may mean that the current thread was killed by this system call, either intentionally or
+    ///  due to a fault (for example, because an invalid system call number was provided).
     ///
     /// # Errors
     /// Returns an error that should be reported to user-space if the system call is unsuccessful.
-    pub fn dispatch_system_call(
+    pub fn dispatch_system_call<AUST: ActiveUserSpaceTables>(
         &self,
         syscall_number: u16,
         current_thread: &Arc<Thread>,
         registers: &Registers,
+        user_space_memory: &AUST,
     ) -> Result<SysCallEffect, Error> {
         let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
             warn!(
@@ -124,56 +168,77 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 syscall_number, current_thread.id
             );
             self.process_manager
-                .exit_thread(current_thread, ExitReason::InvalidSysCall)
+                .exit_thread(current_thread, ExitReason::invalid_syscall())
                 .expect("kill thread that made invalid system call");
             return Ok(SysCallEffect::ScheduleNextThread);
         };
+        let user_space_memory = user_space_memory.into();
         match syscall_number {
             CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(
-                EnvironmentValue::from_integer(registers.x[0])
-                    .map_or(0, |v| self.syscall_read_env_value(current_thread, v)),
+                self.syscall_read_env_value(current_thread, registers),
             )),
             CallNumber::SpawnThread => {
-                self.syscall_spawn_thread(current_thread.parent.clone().unwrap(), registers)?;
+                self.syscall_spawn_thread(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::SpawnProcess => {
-                self.syscall_spawn_process(current_thread.parent.clone().unwrap(), registers)?;
+                self.syscall_spawn_process(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::KillProcess => {
-                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers.x[0])?;
+                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::AllocateHeapPages => {
                 self.syscall_allocate_heap_pages(
                     current_thread.parent.as_ref().unwrap(),
-                    registers.x[0],
-                    registers.x[1] as *mut _,
+                    registers,
+                    user_space_memory,
                 )?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::FreeHeapPages => {
-                self.syscall_free_heap_pages(
-                    current_thread.parent.as_ref().unwrap(),
-                    registers.x[0].into(),
-                    registers.x[1],
-                )?;
+                self.syscall_free_heap_pages(current_thread.parent.as_ref().unwrap(), registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitCurrentThread => {
-                self.syscall_exit_current_thread(current_thread, registers.x[0] as u32);
+                self.syscall_exit_current_thread(current_thread, registers);
                 Ok(SysCallEffect::ScheduleNextThread)
             }
-            _ => todo!("implement {:?}", syscall_number),
+            CallNumber::Send => {
+                self.syscall_send(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::Receive => {
+                self.syscall_receive(current_thread, registers, user_space_memory)
+            }
+            CallNumber::TransferToSharedBuffer => {
+                self.syscall_transfer_to(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::TransferFromSharedBuffer => {
+                self.syscall_transfer_from(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::SetDesignatedReceiver => {
+                self.syscall_set_designated_receiver(current_thread, registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
         }
     }
 
-    fn syscall_read_env_value(
-        &self,
-        current_thread: &Arc<Thread>,
-        value_to_read: EnvironmentValue,
-    ) -> usize {
+    fn syscall_read_env_value(&self, current_thread: &Arc<Thread>, registers: &Registers) -> usize {
+        let Some(value_to_read) = EnvironmentValue::from_integer(registers.x[0]) else {
+            return 0;
+        };
         trace!(
             "reading value {value_to_read:?} for thread {}",
             current_thread.id
@@ -184,7 +249,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .as_ref()
                 .map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::DesignatedReceiverThreadId => todo!(),
+            EnvironmentValue::DesignatedReceiverThreadId => current_thread
+                .parent
+                .as_ref()
+                .and_then(|p| p.threads.read().first().map(|t| t.id.get()))
+                .unwrap_or(0) as usize,
             EnvironmentValue::CurrentSupervisorId => current_thread
                 .parent
                 .as_ref()
@@ -194,40 +263,36 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         }
     }
 
-    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, code: u32) {
+    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
+        let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
         self.process_manager
-            .exit_thread(current_thread, ExitReason::User(code))
+            .exit_thread(current_thread, ExitReason::user(code))
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
     }
 
-    fn syscall_spawn_thread(
+    fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
         &self,
         parent: Arc<Process>,
         registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        // TODO: we probably also need to validate these to ensure that they will deref
-        // correctly given the page tables? seems expensive.
-        let info = unsafe {
-            (registers.x[0] as *const ThreadCreateInfo)
-                .as_ref()
-                .context(InvalidPointerSnafu {
-                    reason: "thread create info ptr",
-                    ptr: registers.x[1],
-                })?
-        };
-        let out_thread_id = unsafe {
-            (registers.x[1] as *mut ThreadId)
-                .as_mut()
-                .context(InvalidPointerSnafu {
-                    reason: "thread ID output ptr",
-                    ptr: registers.x[2],
-                })?
-        };
+        let info: &ThreadCreateInfo =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "thread info",
+                })?;
+        let out_thread_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output thread id",
+            })?;
+
         let entry_ptr = VirtualAddress::from(info.entry as *mut ());
         ensure!(
-            !entry_ptr.is_null() && entry_ptr.is_aligned_to(8),
+            !entry_ptr.is_null(),
             InvalidPointerSnafu {
                 reason: "thread entry point ptr",
                 ptr: entry_ptr
@@ -240,38 +305,36 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 length: info.stack_size
             }
         );
+
         debug!("spawning thread {info:?} in process #{}", parent.id);
+
         let thread = self
             .process_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
             .context(ProcessManagerSnafu)?;
+
         *out_thread_id = thread.id;
+
         Ok(())
     }
 
-    fn syscall_spawn_process(
+    fn syscall_spawn_process<T: ActiveUserSpaceTables>(
         &self,
         parent: Arc<Process>,
         registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        // TODO: we probably also need to validate these to ensure that they will deref
-        // correctly given the page tables? seems expensive.
-        let info = unsafe {
-            (registers.x[0] as *const ProcessCreateInfo)
-                .as_ref()
-                .context(InvalidPointerSnafu {
-                    reason: "process create info ptr",
-                    ptr: registers.x[1],
-                })?
-        };
-        let out_process_id = unsafe {
-            (registers.x[1] as *mut ProcessId)
-                .as_mut()
-                .context(InvalidPointerSnafu {
-                    reason: "process ID output ptr",
-                    ptr: registers.x[2],
-                })?
-        };
+        let info =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "process info",
+                })?;
+        let out_process_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output process id",
+            })?;
         debug!("spawning process {info:?}, parent #{}", parent.id);
         let proc = self
             .process_manager
@@ -284,9 +347,9 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_kill_process(
         &self,
         current_process: &Arc<Process>,
-        pid: usize,
+        registers: &Registers,
     ) -> Result<(), Error> {
-        let pid = ProcessId::new(pid as u32).context(NotFoundSnafu {
+        let pid = ProcessId::new(registers.x[0] as u32).context(NotFoundSnafu {
             reason: "process id is zero",
             id: 0usize,
         })?;
@@ -309,18 +372,18 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         Ok(())
     }
 
-    fn syscall_allocate_heap_pages(
+    fn syscall_allocate_heap_pages<T: ActiveUserSpaceTables>(
         &self,
         current_process: &Arc<Process>,
-        size: usize,
-        dst_ptr: *mut usize,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        let dst = unsafe {
-            dst_ptr.as_mut().context(InvalidPointerSnafu {
-                reason: "memory address output ptr",
-                ptr: dst_ptr as usize,
-            })?
-        };
+        let size: usize = registers.x[0];
+        let dst: &mut usize = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output pointer",
+            })?;
 
         debug!(
             "allocating {size} pages for process #{}",
@@ -348,9 +411,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_free_heap_pages(
         &self,
         current_process: &Arc<Process>,
-        ptr: VirtualAddress,
-        size: usize,
+        registers: &Registers,
     ) -> Result<(), Error> {
+        let ptr: VirtualAddress = registers.x[0].into();
+        let size: usize = registers.x[1];
         debug!(
             "freeing {size} pages @ {ptr:?} for process #{}",
             current_process.id
@@ -359,6 +423,158 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .free_memory(self.page_allocator, ptr, size)
             .context(ProcessManagerSnafu)
     }
+
+    fn syscall_send<T: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<(), Error> {
+        let dst_process_id: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
+        let dst_thread_id: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
+        let message = user_space_memory
+            .check_slice(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu { cause: "message" })?;
+        let buffers = user_space_memory
+            .check_slice(registers.x[4].into(), registers.x[5])
+            .context(InvalidAddressSnafu { cause: "buffers" })?;
+        let dst = dst_process_id
+            .and_then(|pid| self.process_manager.process_for_id(pid))
+            .context(NotFoundSnafu {
+                reason: "destination process id",
+                id: dst_process_id.map_or(0, ProcessId::get) as usize,
+            })?;
+        let dst_thread = dst_thread_id.and_then(|tid| self.process_manager.thread_for_id(tid));
+        dst.send_message(
+            (
+                current_thread.parent.as_ref().unwrap().id,
+                current_thread.id,
+            ),
+            dst_thread,
+            message,
+            buffers,
+        )
+        .context(ProcessManagerSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_receive<T: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<SysCallEffect, Error> {
+        let flag_bits: usize = registers.x[0];
+        let out_msg: &mut VirtualAddress = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+            cause: "output message ptr",
+        })?;
+        let out_len: &mut usize = user_space_memory
+            .check_mut_ref(registers.x[2].into())
+            .context(InvalidAddressSnafu {
+                cause: "output message len",
+            })?;
+        let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
+            reason: "invalid bits",
+            bits: flag_bits,
+        })?;
+        if let Some((msg_ptr, msg_len)) = unsafe {
+            // SAFETY: it is safe to call this for the current thread, because the its page tables are current.
+            current_thread.receive_message()
+        } {
+            *out_msg = msg_ptr;
+            *out_len = msg_len;
+            Ok(SysCallEffect::Return(0))
+        } else if flags.contains(ReceiveFlags::NONBLOCKING) {
+            Err(Error::WouldBlock)
+        } else {
+            current_thread.set_state(super::thread::State::Blocked);
+            Ok(SysCallEffect::ScheduleNextThread)
+        }
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_to<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let src = user_space_memory
+            .check_slice(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "source buffer",
+            })?;
+        buf.transfer_to(offset, src).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_from<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let dst = user_space_memory
+            .check_slice_mut(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "destination buffer",
+            })?;
+        buf.transfer_from(offset, dst).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_set_designated_receiver(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let target_thread_id =
+            ThreadId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "thread id",
+                handle: registers.x[0] as u32,
+            })?;
+        let proc = current_thread.parent.as_ref().unwrap();
+        let mut threads = proc.threads.write();
+        let i = threads
+            .iter()
+            .position(|t| t.id == target_thread_id)
+            .context(InvalidHandleSnafu {
+                reason: "thread not in process",
+                handle: target_thread_id.get(),
+            })?;
+        threads.swap(0, i);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -366,7 +582,7 @@ mod tests {
     use core::num::NonZeroU32;
 
     use crate::{
-        memory::{MockPageAllocator, VirtualAddress},
+        memory::{page_table::MockActiveUserSpaceTables, MockPageAllocator, VirtualAddress},
         process::MockProcessManager,
     };
 
@@ -397,16 +613,23 @@ mod tests {
         let thread2 = thread.clone();
         pm.expect_exit_thread()
             .once()
-            .withf(move |t, r| t.id == thread2.id && matches!(r, ExitReason::InvalidSysCall))
+            .withf(move |t, r| t.id == thread2.id && *r == ExitReason::invalid_syscall())
             .returning(|_, _| Ok(()));
 
         let policy = SystemCalls::new(&pa, &pm);
+
+        let usm = MockActiveUserSpaceTables::new();
 
         let registers = Registers::default();
 
         let system_call_number_that_is_invalid = 1;
         assert!(matches!(
-            policy.dispatch_system_call(system_call_number_that_is_invalid, &thread, &registers),
+            policy.dispatch_system_call(
+                system_call_number_that_is_invalid,
+                &thread,
+                &registers,
+                &usm
+            ),
             Ok(SysCallEffect::ScheduleNextThread)
         ));
     }
@@ -420,11 +643,13 @@ mod tests {
 
         let policy = SystemCalls::new(&pa, &pm);
 
+        let usm = MockActiveUserSpaceTables::new();
+
         let mut registers = Registers::default();
         registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
 
         assert!(matches!(
-            policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers),
+            policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers, &usm),
             Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
         ));
     }
@@ -441,12 +666,12 @@ mod tests {
         let thread2 = thread.clone();
         pm.expect_exit_thread()
             .once()
-            .withf(move |t, r| {
-                t.id == thread2.id && matches!(r, ExitReason::User(x) if *x == exit_code)
-            })
+            .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
             .returning(|_, _| Ok(()));
 
         let policy = SystemCalls::new(&pa, &pm);
+
+        let usm = MockActiveUserSpaceTables::new();
 
         let mut registers = Registers::default();
         registers.x[0] = exit_code as usize;
@@ -455,7 +680,8 @@ mod tests {
             policy.dispatch_system_call(
                 CallNumber::ExitCurrentThread.into_integer(),
                 &thread,
-                &registers
+                &registers,
+                &usm
             ),
             Ok(SysCallEffect::ScheduleNextThread)
         ));

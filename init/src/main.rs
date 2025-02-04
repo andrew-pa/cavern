@@ -25,8 +25,21 @@ pub extern "C" fn _start() {
 
     spawn_thread(&ThreadCreateInfo {
         entry: thread2,
+        stack_size: 0,
+        user_data: 0,
+    })
+    .expect_err("spawn thread");
+
+    spawn_thread(unsafe {
+        (0xffff_0000_ffff_0000 as *const ThreadCreateInfo)
+            .as_ref()
+            .unwrap()
+    })
+    .expect_err("spawn thread");
+
+    spawn_thread(&ThreadCreateInfo {
+        entry: thread2,
         stack_size: 1,
-        inbox_size: 0,
         user_data: 7000,
     })
     .expect("spawn thread");

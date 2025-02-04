@@ -88,6 +88,7 @@ pub fn spawn_init_process(
                 supervisor: None,
                 privilege_level: PrivilegeLevel::Driver,
                 notify_on_exit: false,
+                inbox_size: 4096,
             };
             debug!("init image = {info:?}");
             let init_process = proc_man.spawn_process(None, &info).context(ProcessSnafu)?;

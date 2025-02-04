@@ -3,11 +3,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
+use crossbeam::queue::SegQueue;
+use kernel_api::{MessageHeader, SharedBufferInfo};
 use spin::Mutex;
 
 use crate::memory::VirtualAddress;
 
-use super::Process;
+use super::{PendingMessage, Process};
 
 pub mod scheduler;
 
@@ -105,6 +107,8 @@ pub struct ProcessorState {
     pub registers: Registers,
 }
 
+unsafe impl Send for ProcessorState {}
+
 impl ProcessorState {
     /// Create a zeroed processor state that is valid for the idle thread.
     /// This is valid because the idle thread will always be saved before it is resumed, capturing
@@ -196,7 +200,15 @@ pub struct Thread {
 
     /// (Stack base address, stack size in pages).
     pub stack: (VirtualAddress, usize),
+
+    /// The queue of pointers to unreceived messages for this thread.
+    pub inbox_queue: SegQueue<PendingMessage>,
 }
+
+// TODO: remove these and make it more fine grained: the problem is the various `VirtualAddress`s
+// (which are all user space addresses, so we'd have to be careful to deref them anyways).
+unsafe impl Send for Thread {}
+unsafe impl Sync for Thread {}
 
 impl Thread {
     /// Create a new Thread.
@@ -214,6 +226,7 @@ impl Thread {
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
             stack,
+            inbox_queue: SegQueue::new(),
         }
     }
 
@@ -239,6 +252,49 @@ impl Thread {
                 Err(p) => props = ThreadProperties(p),
             }
         }
+    }
+
+    /// Receive a message, returning the message's address in the process' virtual address space.
+    /// The message header will be written as the first part of the message.
+    /// The length is returned in bytes, and includes the header.
+    ///
+    /// # Safety
+    /// This function is only safe to call if the current EL0 page tables are the process' page
+    /// tables, because it directly writes the message header assuming that the address is mapped.
+    /// This is an optimization and the restriction could be lifted.
+    pub unsafe fn receive_message(&self) -> Option<(VirtualAddress, usize)> {
+        let msg = self.inbox_queue.pop()?;
+
+        // write message header
+        unsafe {
+            let header: *mut MessageHeader = msg.data_address.cast::<MessageHeader>().as_ptr();
+            header.write(MessageHeader {
+                sender_pid: msg.sender_process_id,
+                sender_tid: msg.sender_thread_id,
+                num_buffers: msg.buffer_handles.len(),
+            });
+
+            let mut buffers: *mut SharedBufferInfo = msg
+                .data_address
+                .byte_add(size_of::<MessageHeader>())
+                .cast()
+                .as_ptr();
+            let parent = self.parent.as_ref().unwrap();
+            for buffer in msg.buffer_handles {
+                let b = parent
+                    .shared_buffers
+                    .get(buffer)
+                    .expect("pending message contains valid buffer handles");
+                buffers.write(SharedBufferInfo {
+                    flags: b.flags,
+                    buffer,
+                    length: b.length,
+                });
+                buffers = buffers.add(1);
+            }
+        }
+
+        Some((msg.data_address, msg.data_length))
     }
 }
 
