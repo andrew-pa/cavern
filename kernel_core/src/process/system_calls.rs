@@ -168,7 +168,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 syscall_number, current_thread.id
             );
             self.process_manager
-                .exit_thread(current_thread, ExitReason::InvalidSysCall)
+                .exit_thread(current_thread, ExitReason::invalid_syscall())
                 .expect("kill thread that made invalid system call");
             return Ok(SysCallEffect::ScheduleNextThread);
         };
@@ -267,7 +267,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
         self.process_manager
-            .exit_thread(current_thread, ExitReason::User(code))
+            .exit_thread(current_thread, ExitReason::user(code))
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
     }
@@ -613,7 +613,7 @@ mod tests {
         let thread2 = thread.clone();
         pm.expect_exit_thread()
             .once()
-            .withf(move |t, r| t.id == thread2.id && matches!(r, ExitReason::InvalidSysCall))
+            .withf(move |t, r| t.id == thread2.id && *r == ExitReason::invalid_syscall())
             .returning(|_, _| Ok(()));
 
         let policy = SystemCalls::new(&pa, &pm);
@@ -666,9 +666,7 @@ mod tests {
         let thread2 = thread.clone();
         pm.expect_exit_thread()
             .once()
-            .withf(move |t, r| {
-                t.id == thread2.id && matches!(r, ExitReason::User(x) if *x == exit_code)
-            })
+            .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
             .returning(|_, _| Ok(()));
 
         let policy = SystemCalls::new(&pa, &pm);

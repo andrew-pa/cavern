@@ -1,7 +1,7 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
 use itertools::Itertools;
-use kernel_api::{ExitReason, ProcessCreateInfo};
+use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo, KERNEL_FAKE_PID};
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
@@ -27,6 +27,34 @@ pub static PROCESS_MANAGER: Once<SystemProcessManager> = Once::new();
 /// The system process manager instance.
 pub struct SystemProcessManager {
     processes: HandleMap<Process>,
+}
+
+// TODO: if the designated receiver thread exits then we should just kill the whole process?
+
+impl SystemProcessManager {
+    /// Handle a process exiting, from either being killed or from the last thread exiting.
+    fn exit_process(
+        &self,
+        process: &Arc<Process>,
+        reason: ExitReason,
+    ) -> Result<(), ProcessManagerError> {
+        self.processes.remove(process.id);
+
+        if let Some(parent) = process.props.parent.as_ref() {
+            let msg = ExitMessage::process(process.id.get(), reason);
+            parent.send_message(
+                (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
+                None,
+                bytemuck::bytes_of(&msg),
+                &[],
+            )?;
+        } else {
+            panic!("root process exited with reason: {reason:?}");
+        }
+
+        // the process will free all owned memory (including thread stacks) when dropped
+        Ok(())
+    }
 }
 
 impl ProcessManager for SystemProcessManager {
@@ -119,9 +147,7 @@ impl ProcessManager for SystemProcessManager {
                 .remove(t.id)
                 .expect("thread is in thread handle table");
         }
-        self.processes.remove(process.id);
-        // TODO: send message to parent
-        // the process will free all owned memory (including thread stacks) when dropped
+        self.exit_process(process, ExitReason::killed())?;
         Ok(())
     }
 
@@ -154,10 +180,18 @@ impl ProcessManager for SystemProcessManager {
                 // if this was the last thread, the parent process is now also finished
                 // the "parent" will then be the process that spawned this process.
                 debug!("last thread in process exited");
-                self.processes.remove(parent.id);
-                // the process will be cleaned up when it is dropped.
+                self.exit_process(parent, reason)?;
+            } else {
+                // notify the process that a thread exited
+                let msg = ExitMessage::thread(reason);
+                trace!("sending exit message {msg:?} to process #{}", parent.id);
+                parent.send_message(
+                    (KERNEL_FAKE_PID, thread.id),
+                    None,
+                    bytemuck::bytes_of(&msg),
+                    &[],
+                )?;
             }
-            // TODO: send message to parent
         }
         // remove thread from handle table
         thread::THREADS

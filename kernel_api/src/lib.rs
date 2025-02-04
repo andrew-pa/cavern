@@ -10,7 +10,7 @@
 
 use core::num::NonZeroU32;
 
-use bytemuck::Contiguous;
+use bytemuck::{Contiguous, Pod, Zeroable};
 
 /// Errors that can arise during a system call.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -100,7 +100,7 @@ pub enum EnvironmentValue {
 /// The reason that a thread/process exited.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(C)]
-pub enum ExitReason {
+pub enum ExitReasonOld {
     /// The thread requested the exit with the given code.
     /// The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed.
     User(u32),
@@ -129,6 +129,10 @@ pub struct ThreadCreateInfo {
 
 /// The unique ID of a process.
 pub type ProcessId = NonZeroU32;
+
+/// The process id given as the sender for notifications originating from the kernel that have no
+/// other sender.
+pub const KERNEL_FAKE_PID: ProcessId = ProcessId::new(0xffff_ffff).unwrap();
 
 /// Level of privilege granted to a process.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Contiguous, Default)]
@@ -306,6 +310,115 @@ pub struct SharedBufferInfo {
     pub buffer: SharedBufferId,
     /// Length in bytes of this buffer.
     pub length: usize,
+}
+
+/// The tag representing the exit reason. This is a C‐friendly C-like enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Contiguous)]
+#[repr(u32)]
+pub enum ExitReasonTag {
+    /// The thread requested exit with the given exit code.
+    User = 0,
+    /// The thread accessed unmapped or protected memory.
+    PageFault = 1,
+    /// The thread made an invalid system call.
+    InvalidSysCall = 2,
+    /// The thread was killed by another thread/process.
+    Killed = 3,
+}
+
+/// The C‐friendly representation of the exit reason.
+/// If the reason is `User`, then `user_code` is valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable)]
+#[repr(C)]
+pub struct ExitReason {
+    /// Discriminant value.
+    pub tag: ExitReasonTag,
+    /// Exit code provided by the user. Only valid if tag == `ExitReasonTag::User`.
+    pub user_code: u32,
+}
+unsafe impl Pod for ExitReason {}
+
+impl ExitReason {
+    /// Create a user exit reason with the exit code from the user.
+    #[must_use]
+    pub fn user(code: u32) -> Self {
+        Self {
+            tag: ExitReasonTag::User,
+            user_code: code,
+        }
+    }
+
+    /// Exit occured due to page fault.
+    #[must_use]
+    pub fn page_fault() -> Self {
+        Self {
+            tag: ExitReasonTag::PageFault,
+            user_code: 0,
+        }
+    }
+
+    /// Exit occured due to invalid system call.
+    #[must_use]
+    pub fn invalid_syscall() -> Self {
+        Self {
+            tag: ExitReasonTag::InvalidSysCall,
+            user_code: 0,
+        }
+    }
+
+    /// Exit occured because another process/thread requested it.
+    #[must_use]
+    pub fn killed() -> Self {
+        Self {
+            tag: ExitReasonTag::Killed,
+            user_code: 0,
+        }
+    }
+}
+
+/// The tag to indicate whether this exit message is for a thread or a process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Contiguous)]
+#[repr(u32)]
+pub enum ExitSource {
+    /// A thread in the current process exited.
+    Thread = 0,
+    /// A child process exited.
+    Process = 1,
+}
+
+/// The complete exit message. This is plain old data and can be safely cast to a `[u8]` buffer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable)]
+pub struct ExitMessage {
+    /// Indicates if the exit was for a thread or a process.
+    pub source: ExitSource,
+    /// If the exit is for a process, this is the process ID; otherwise, it is ignored.
+    pub pid: u32,
+    /// The reason for the exit.
+    pub reason: ExitReason,
+}
+unsafe impl Pod for ExitMessage {}
+
+impl ExitMessage {
+    /// Create a message for a thread exit.
+    #[must_use]
+    pub fn thread(reason: ExitReason) -> Self {
+        Self {
+            source: ExitSource::Thread,
+            pid: 0,
+            reason,
+        }
+    }
+
+    /// Create a message for a process exit.
+    #[must_use]
+    pub fn process(pid: u32, reason: ExitReason) -> Self {
+        Self {
+            source: ExitSource::Process,
+            pid,
+            reason,
+        }
+    }
 }
 
 pub mod flags;

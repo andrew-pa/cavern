@@ -442,11 +442,15 @@ impl Process {
         let payload_start =
             size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
         let actual_message_size_in_bytes = message.len() + payload_start;
+        trace!(
+            "sending message of size {actual_message_size_in_bytes} to thread #{}",
+            thread.id
+        );
         let ptr = {
             match self
                 .inbox_allocator
                 .lock()
-                .alloc(actual_message_size_in_bytes / MESSAGE_BLOCK_SIZE)
+                .alloc(actual_message_size_in_bytes.div_ceil(MESSAGE_BLOCK_SIZE))
             {
                 Ok(r) => r.start,
                 Err(crate::memory::Error::OutOfMemory) => {
