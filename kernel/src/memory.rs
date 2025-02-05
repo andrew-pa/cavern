@@ -10,7 +10,8 @@ use core::{arch::asm, ptr::addr_of_mut};
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{
-        page_table::{ActiveUserSpaceTables, MapBlockSize, MemoryKind, MemoryProperties},
+        active_user_space_tables::ActiveUserSpaceTables,
+        page_table::{MapBlockSize, MemoryKind, MemoryProperties},
         AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
         PhysicalAddress, PhysicalPointer, VirtualAddress,
     },

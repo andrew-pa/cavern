@@ -11,7 +11,8 @@ use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::memory::{
-    page_table::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker, MemoryProperties},
+    active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
+    page_table::MemoryProperties,
     PageAllocator, VirtualAddress,
 };
 
@@ -582,7 +583,9 @@ mod tests {
     use core::num::NonZeroU32;
 
     use crate::{
-        memory::{page_table::MockActiveUserSpaceTables, MockPageAllocator, VirtualAddress},
+        memory::{
+            active_user_space_tables::MockActiveUserSpaceTables, MockPageAllocator, VirtualAddress,
+        },
         process::MockProcessManager,
     };
 

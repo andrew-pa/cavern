@@ -33,6 +33,8 @@ pub use subtract_ranges::*;
 pub mod page_table;
 pub use page_table::PageTables;
 
+pub mod active_user_space_tables;
+
 mod asid_pool;
 pub use asid_pool::{AddressSpaceId, AddressSpaceIdPool};
 
@@ -44,12 +46,19 @@ pub use free_list::FreeListAllocator;
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
 /// must be `0xffff` to select the kernel page tables, so a `*mut T` is not quite but very close to
 /// the physical address of the `T`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct PhysicalPointer<T>(usize, PhantomData<*mut T>);
+unsafe impl<T: Send> Send for PhysicalPointer<T> {}
 
 /// A physical 48-bit address that does not dereference to any particular type of value.
 pub type PhysicalAddress = PhysicalPointer<()>;
+
+impl<T> Clone for PhysicalPointer<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, PhantomData)
+    }
+}
 
 impl<T> PhysicalPointer<T> {
     /// Offset this pointer forward by `count` number of `T`s.
