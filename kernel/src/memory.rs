@@ -327,6 +327,7 @@ impl ActiveUserSpaceTables for SystemActiveUserSpaceTables {
         let res = PhysicalAddressRegister(res);
         if res.is_fault() {
             Err(kernel_core::memory::page_table::Error::WouldFault {
+                address: addr.into(),
                 code: res.fault_status_code(),
             })
         } else {

@@ -7,11 +7,14 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
-    ThreadCreateInfo, allocate_heap_pages, exit_current_thread, free_heap_pages, spawn_thread,
+    ProcessId, ThreadCreateInfo, allocate_heap_pages, exit_current_thread, flags::ReceiveFlags,
+    free_heap_pages, receive, send, spawn_thread,
 };
 
 fn thread2(arg: usize) -> ! {
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
+    let msg = receive(ReceiveFlags::empty()).expect("receive message");
+    assert_eq!(msg.payload(), b"Hello!");
     exit_current_thread((thread_id + 1 + arg) as u32);
 }
 
@@ -21,7 +24,10 @@ fn thread2(arg: usize) -> ! {
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() {
-    let process_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentProcessId);
+    let process_id = ProcessId::new(kernel_api::read_env_value(
+        kernel_api::EnvironmentValue::CurrentProcessId,
+    ) as u32)
+    .unwrap();
 
     spawn_thread(&ThreadCreateInfo {
         entry: thread2,
@@ -37,7 +43,7 @@ pub extern "C" fn _start() {
     })
     .expect_err("spawn thread");
 
-    spawn_thread(&ThreadCreateInfo {
+    let tid = spawn_thread(&ThreadCreateInfo {
         entry: thread2,
         stack_size: 1,
         user_data: 7000,
@@ -50,7 +56,9 @@ pub extern "C" fn _start() {
     }
     free_heap_pages(p, 1).expect("free");
 
-    exit_current_thread((process_id + 1) as u32);
+    send(process_id, Some(tid), b"Hello!", &[]).expect("send message");
+
+    exit_current_thread(process_id.get() + 1);
 }
 
 /// The panic handler.

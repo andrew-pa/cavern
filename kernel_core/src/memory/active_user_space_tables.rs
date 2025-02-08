@@ -57,7 +57,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         let start_usize = usize::from(start);
         let end_usize = start_usize
             .checked_add(length_in_bytes - 1)
-            .ok_or(Error::WouldFault { code: 0xff })?;
+            .ok_or(Error::WouldFault {
+                code: 0xff,
+                address: start.byte_add(length_in_bytes),
+            })?;
 
         // Round each address down to its page base
         let first_page_base = start_usize & !(page_sz - 1);
@@ -67,9 +70,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         while cur_page <= last_page_base {
             let va = VirtualAddress::from(cur_page);
             let _ = self.0.translate(va, for_write)?;
-            cur_page = cur_page
-                .checked_add(page_sz)
-                .ok_or(Error::WouldFault { code: 0xff })?;
+            cur_page = cur_page.checked_add(page_sz).ok_or(Error::WouldFault {
+                code: 0xff,
+                address: va,
+            })?;
         }
         Ok(())
     }
@@ -86,9 +90,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
         // Now that we've validated all pages, do the actual pointer cast
         unsafe {
-            (ptr.0 as *const T)
-                .as_ref()
-                .ok_or(Error::WouldFault { code: 0b100 })
+            (ptr.0 as *const T).as_ref().ok_or(Error::WouldFault {
+                code: 0b100,
+                address: usize::from(ptr).into(),
+            })
         }
     }
 
@@ -102,9 +107,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         let size = core::mem::size_of::<T>();
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
         unsafe {
-            (ptr.0 as *mut T)
-                .as_mut()
-                .ok_or(Error::WouldFault { code: 0b100 })
+            (ptr.0 as *mut T).as_mut().ok_or(Error::WouldFault {
+                code: 0b100,
+                address: ptr.cast(),
+            })
         }
     }
 
@@ -119,7 +125,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
-            .ok_or(Error::WouldFault { code: 0xff })?;
+            .ok_or(Error::WouldFault {
+                code: 0xee,
+                address: VirtualAddress::null(),
+            })?;
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), false)?;
         Ok(unsafe { slice::from_raw_parts(ptr.0 as *const T, len) })
     }
@@ -140,7 +149,10 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
-            .ok_or(Error::WouldFault { code: 0xff })?;
+            .ok_or(Error::WouldFault {
+                code: 0xee,
+                address: VirtualAddress::null(),
+            })?;
         self.check_user_pages_in_range(ptr.0.into(), size.max(1), true)?;
         Ok(unsafe { slice::from_raw_parts_mut(ptr.0 as *mut T, len) })
     }
@@ -198,12 +210,17 @@ mod tests {
         // Simulate an unmapped page by returning an error.
         mock.expect_translate()
             .withf(move |va, write| *write == false && (va.0 as usize) == expected_page)
-            .returning(|_, _| Err(Error::WouldFault { code: 0b100 }));
+            .returning(|_, _| {
+                Err(Error::WouldFault {
+                    code: 0b100,
+                    address: VirtualAddress::null(),
+                })
+            });
 
         let checker = ActiveUserSpaceTablesChecker::from(&mock);
         let result = checker.check_ref(virt_ptr);
         assert!(result.is_err());
-        if let Err(Error::WouldFault { code }) = result {
+        if let Err(Error::WouldFault { code, .. }) = result {
             assert_eq!(code, 0b100);
         } else {
             panic!("Expected a WouldFault error");
@@ -245,12 +262,17 @@ mod tests {
 
         mock.expect_translate()
             .withf(move |va, write| *write == true && (va.0 as usize) == expected_page)
-            .returning(|_, _| Err(Error::WouldFault { code: 0b100 }));
+            .returning(|_, _| {
+                Err(Error::WouldFault {
+                    code: 0b100,
+                    address: VirtualAddress::null(),
+                })
+            });
 
         let checker = ActiveUserSpaceTablesChecker::from(&mock);
         let result = checker.check_mut_ref(virt_ptr);
         assert!(result.is_err());
-        if let Err(Error::WouldFault { code }) = result {
+        if let Err(Error::WouldFault { code, .. }) = result {
             assert_eq!(code, 0b100);
         } else {
             panic!("Expected a WouldFault error");
@@ -318,12 +340,17 @@ mod tests {
 
         mock.expect_translate()
             .withf(move |va, write| *write == true && (va.0 as usize) == expected_page)
-            .returning(|_, _| Err(Error::WouldFault { code: 0b100 }));
+            .returning(|_, _| {
+                Err(Error::WouldFault {
+                    code: 0b100,
+                    address: VirtualAddress::null(),
+                })
+            });
 
         let checker = ActiveUserSpaceTablesChecker::from(&mock);
         let result = checker.check_slice_mut(virt_ptr, vec.len());
         assert!(result.is_err());
-        if let Err(Error::WouldFault { code }) = result {
+        if let Err(Error::WouldFault { code, .. }) = result {
             assert_eq!(code, 0b100);
         } else {
             panic!("Expected a WouldFault error");
@@ -451,13 +478,18 @@ mod tests {
             .once()
             .in_sequence(&mut seq)
             .with(eq(VirtualAddress::from(0x7000)), eq(false))
-            .returning(|_, _| Err(Error::WouldFault { code: 0b101 }));
+            .returning(|_, _| {
+                Err(Error::WouldFault {
+                    code: 0b101,
+                    address: VirtualAddress::null(),
+                })
+            });
 
         let checker = ActiveUserSpaceTablesChecker::from(&mock);
         let res =
             checker.check_user_pages_in_range(VirtualAddress::from(start_addr), length, false);
         assert!(res.is_err());
-        if let Err(Error::WouldFault { code }) = res {
+        if let Err(Error::WouldFault { code, .. }) = res {
             assert_eq!(code, 0b101);
         } else {
             panic!("Expected a WouldFault error");

@@ -1,6 +1,7 @@
 //! The exception vector and handler functions.
 
 use bytemuck::Contiguous;
+use kernel_api::CallNumber;
 use log::debug;
 
 use crate::{
@@ -61,8 +62,9 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             }
             Err(e) => {
                 debug!(
-                    "system call 0x{:x} from thread #{} failed: {}",
+                    "system call 0x{:x} ({:?}) from thread #{} failed: {}",
                     esr.iss(),
+                    CallNumber::from_integer(esr.iss() as u16),
                     current_thread.id,
                     snafu::Report::from_error(&e)
                 );

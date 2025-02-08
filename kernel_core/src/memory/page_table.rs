@@ -226,8 +226,12 @@ pub enum Error {
         value: usize,
     },
     /// Dereferencing the address would cause a page fault.
-    #[snafu(display("Dereferencing the address would cause a page fault (code {code:06b})."))]
+    #[snafu(display(
+        "Dereferencing the address {address:?} would cause a page fault (code {code:06b})."
+    ))]
     WouldFault {
+        /// The address that would fault, if any.
+        address: VirtualAddress,
         /// The fault status code representing the kind of fault.
         /// See section D19.2.108 "FST" of Aarch64 reference manual.
         code: u8,

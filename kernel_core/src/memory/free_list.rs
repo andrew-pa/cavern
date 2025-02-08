@@ -52,7 +52,7 @@ impl FreeListAllocator {
     /// Create a new allocator with a single free range of `[start..start + blocks * block_size)`.
     ///
     /// # Parameters
-    /// - `start`: A **block-aligned** virtual address in kernel space.
+    /// - `start`: A **block-aligned** virtual address.
     /// - `blocks`: The number of blocks that this allocator should initially manage.
     /// - `block_size`: The size of each block in bytes (must be a non-zero power of two).
     ///
@@ -209,7 +209,12 @@ impl FreeListAllocator {
     ///
     /// **Note**: This does not check for ownership or overlapping with existing free ranges.
     /// It's the caller's responsibility to ensure that only valid allocated ranges are freed.
-    pub fn free(&mut self, range: Range) -> Result<(), Error> {
+    pub fn free(&mut self, start: VirtualAddress, size: usize) -> Result<(), Error> {
+        let range = Range {
+            start,
+            blocks: size,
+        };
+
         if range.blocks == 0 {
             return Err(Error::InvalidSize);
         }
@@ -353,11 +358,11 @@ mod tests {
         assert_eq!(alloc.free_blocks(), 0);
 
         // Free r2, 1 page is free again
-        alloc.free(r2).unwrap();
+        alloc.free(r2.start, r2.blocks).unwrap();
         assert_eq!(alloc.free_blocks(), 1);
 
         // Free r1, total free blocks = 3
-        alloc.free(r1).unwrap();
+        alloc.free(r1.start, r1.blocks).unwrap();
         assert_eq!(alloc.free_blocks(), 3);
     }
 
@@ -373,7 +378,7 @@ mod tests {
         assert_eq!(alloc.free_blocks(), 2);
 
         // Free it -> the free list merges back to 4 blocks
-        alloc.free(r).unwrap();
+        alloc.free(r.start, r.blocks).unwrap();
         assert_eq!(alloc.free_blocks(), 4);
         assert_eq!(alloc.free_list.len(), 1);
     }

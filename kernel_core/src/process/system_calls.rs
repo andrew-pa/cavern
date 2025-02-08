@@ -99,7 +99,7 @@ impl Error {
             Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
-                ProcessManagerError::Memory { source } => match source {
+                ProcessManagerError::Memory { source, .. } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
                     crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
@@ -436,9 +436,13 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         let message = user_space_memory
             .check_slice(registers.x[2].into(), registers.x[3])
             .context(InvalidAddressSnafu { cause: "message" })?;
-        let buffers = user_space_memory
-            .check_slice(registers.x[4].into(), registers.x[5])
-            .context(InvalidAddressSnafu { cause: "buffers" })?;
+        let buffers = if registers.x[5] == 0 {
+            &[]
+        } else {
+            user_space_memory
+                .check_slice(registers.x[4].into(), registers.x[5])
+                .context(InvalidAddressSnafu { cause: "buffers" })?
+        };
         let dst = dst_process_id
             .and_then(|pid| self.process_manager.process_for_id(pid))
             .context(NotFoundSnafu {

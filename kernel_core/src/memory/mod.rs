@@ -140,7 +140,15 @@ impl<T> From<*const T> for PhysicalPointer<T> {
 
 impl<T> From<PhysicalPointer<T>> for *const T {
     fn from(val: PhysicalPointer<T>) -> Self {
-        (val.0 | 0xffff_0000_0000_0000) as _
+        #[cfg(not(test))]
+        {
+            (val.0 | 0xffff_0000_0000_0000) as _
+        }
+        #[cfg(test)]
+        {
+            // HACK: Because the test environment is in user-space, we assume that physical pointers are actually untagged, but fit in the 48-bit space.
+            val.0 as _
+        }
     }
 }
 
@@ -779,6 +787,7 @@ pub mod tests {
         total_allocated: Arc<Mutex<usize>>, // Tracks total allocated pages
     }
 
+    unsafe impl Send for MockPageAllocator {}
     unsafe impl Sync for MockPageAllocator {}
 
     impl MockPageAllocator {

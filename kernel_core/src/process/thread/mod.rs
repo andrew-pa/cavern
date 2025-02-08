@@ -5,6 +5,7 @@ use alloc::sync::Arc;
 use bytemuck::Contiguous;
 use crossbeam::queue::SegQueue;
 use kernel_api::{MessageHeader, SharedBufferInfo};
+use log::trace;
 use spin::Mutex;
 
 use crate::memory::VirtualAddress;
@@ -205,11 +206,6 @@ pub struct Thread {
     pub inbox_queue: SegQueue<PendingMessage>,
 }
 
-// TODO: remove these and make it more fine grained: the problem is the various `VirtualAddress`s
-// (which are all user space addresses, so we'd have to be careful to deref them anyways).
-unsafe impl Send for Thread {}
-unsafe impl Sync for Thread {}
-
 impl Thread {
     /// Create a new Thread.
     #[must_use]
@@ -264,6 +260,8 @@ impl Thread {
     /// This is an optimization and the restriction could be lifted.
     pub unsafe fn receive_message(&self) -> Option<(VirtualAddress, usize)> {
         let msg = self.inbox_queue.pop()?;
+
+        trace!("thread #{} received message {msg:?}", self.id);
 
         // write message header
         unsafe {

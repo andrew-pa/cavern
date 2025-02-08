@@ -1,5 +1,6 @@
 //! Processes (and threads).
-use alloc::{sync::Arc, vec::Vec};
+
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use kernel_api::{
     flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
@@ -35,6 +36,7 @@ pub type SharedBufferId = crate::collections::Handle;
 pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
 
 /// A message that is waiting in a thread's inbox queue to be received.
+#[derive(Debug)]
 pub struct PendingMessage {
     /// The address of the message in the process' virtual address space.
     data_address: VirtualAddress,
@@ -218,13 +220,16 @@ impl Process {
         image: &[ImageSection],
         inbox_size: usize,
     ) -> Result<Self, ProcessManagerError> {
+        // TODO: this function is huge, it should be decomposed
         trace!("creating new process object #{id}");
 
-        let mut page_tables = PageTables::empty(allocator).context(MemorySnafu)?;
+        let mut page_tables = PageTables::empty(allocator).context(MemorySnafu {
+            cause: "create new page tables for process",
+        })?;
         let page_size = allocator.page_size();
         // Allocate memory for the process from the entire virtual memory address space.
         let mut virt_alloc = FreeListAllocator::new(
-            VirtualAddress::null(),
+            VirtualAddress::null().byte_add(page_size.into()),
             0x0000_ffff_ffff_ffff / page_size,
             page_size.into(),
         );
@@ -234,7 +239,13 @@ impl Process {
             // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
             // allocate memory
-            let memory = allocator.allocate(size_in_pages).context(MemorySnafu)?;
+            let memory = allocator
+                .allocate(size_in_pages)
+                .with_context(|_| MemorySnafu {
+                    cause: alloc::format!(
+                        "allocate memory for image section {section:?} ({size_in_pages} pages)"
+                    ),
+                })?;
             // copy the data / zero the remainder
             let ptr: *mut u8 = memory.cast().into();
             unsafe {
@@ -269,18 +280,29 @@ impl Process {
             // reserve the range with the allocator as well
             virt_alloc
                 .reserve_range(section.base_address.into(), size_in_pages)
-                .context(MemorySnafu)?;
+                .context(MemorySnafu {
+                    cause: "reserve image section in process virtual address space allocator",
+                })?;
         }
 
         // allocate and map the message inbox
-        let inbox_size_in_pages = inbox_size * MESSAGE_BLOCK_SIZE / page_size;
+        let inbox_size_in_pages = (inbox_size * MESSAGE_BLOCK_SIZE).div_ceil(page_size.into());
         let inbox_start = virt_alloc
             .alloc(inbox_size_in_pages)
-            .context(MemorySnafu)?
+            .with_context(|_| MemorySnafu {
+                cause: alloc::format!(
+                    "allocate virtual addresses for process inbox, size {inbox_size_in_pages}"
+                ),
+            })?
             .start;
         let inbox_memory = allocator
             .allocate(inbox_size_in_pages)
-            .context(MemorySnafu)?;
+            .context(MemorySnafu {
+                cause: "allocate physical pages for process inbox",
+            })?;
+        trace!(
+            "process inbox at {inbox_start:?}, {inbox_size_in_pages} pages; at {inbox_memory:?}"
+        );
         page_tables
             .map(
                 inbox_start,
@@ -351,12 +373,16 @@ impl Process {
     ) -> Result<VirtualAddress, ProcessManagerError> {
         let phys_addr = page_allocator
             .allocate(size_in_pages)
-            .context(MemorySnafu)?;
+            .context(MemorySnafu {
+                cause: "allocate physical pages",
+            })?;
         let virt_addr = self
             .address_space_allocator
             .lock()
             .alloc(size_in_pages)
-            .context(MemorySnafu)?
+            .context(MemorySnafu {
+                cause: "allocate virtual addresses",
+            })?
             .start;
         // let the page tables own this memory so that it is freed when the process is dropped.
         properties.owned = true;
@@ -399,12 +425,19 @@ impl Process {
             .context(PageTablesSnafu)?;
         page_allocator
             .free(paddr, size_in_pages)
-            .context(MemorySnafu)?;
+            .context(MemorySnafu {
+                cause: "free physical pages",
+            })?;
         self.page_tables
             .write()
             .unmap(base_address, size_in_pages, MapBlockSize::Page)
             .context(PageTablesSnafu)?;
-
+        self.address_space_allocator
+            .lock()
+            .free(base_address, size_in_pages)
+            .context(MemorySnafu {
+                cause: "free virtual addresses",
+            })?;
         Ok(())
     }
 
@@ -446,6 +479,7 @@ impl Process {
             "sending message of size {actual_message_size_in_bytes} to thread #{}",
             thread.id
         );
+        trace!("{message:?}");
         let ptr = {
             match self
                 .inbox_allocator
@@ -456,7 +490,7 @@ impl Process {
                 Err(crate::memory::Error::OutOfMemory) => {
                     return Err(ProcessManagerError::InboxFull)
                 }
-                Err(e) => return Err(ProcessManagerError::Memory { source: e }),
+                Err(e) => return Err(ProcessManagerError::Memory { cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"), source: e }),
             }
         };
         unsafe {
@@ -473,13 +507,17 @@ impl Process {
             .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
             .collect::<Result<_, _>>()?;
 
-        thread.inbox_queue.push(PendingMessage {
+        let msg = PendingMessage {
             data_address: ptr,
             data_length: actual_message_size_in_bytes,
             sender_process_id: sender.0,
             sender_thread_id: sender.1,
             buffer_handles,
-        });
+        };
+
+        trace!("enqueuing {msg:?}");
+
+        thread.inbox_queue.push(msg);
 
         Ok(())
     }
@@ -490,7 +528,10 @@ impl Process {
 #[snafu(visibility(pub))]
 pub enum ProcessManagerError {
     /// An error occurred during a memory operation.
+    #[snafu(display("Memory error: {cause}"))]
     Memory {
+        /// A string containing more information about what caused the error.
+        cause: String,
         /// Underlying error.
         source: crate::memory::Error,
     },
@@ -508,6 +549,7 @@ pub enum ProcessManagerError {
     InboxFull,
 
     /// An `Option` was `None`.
+    #[snafu(display("Encountered `None` value: {cause}"))]
     Missing {
         /// The source of the `None` option.
         cause: &'static str,
@@ -563,4 +605,96 @@ pub trait ProcessManager {
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use kernel_api::{MessageHeader, ProcessId};
+    use std::sync::{Arc, LazyLock};
+
+    use crate::memory::{tests::MockPageAllocator, PageSize, VirtualAddress};
+
+    use super::{
+        thread::{ProcessorState, State},
+        Process, ProcessManagerError, Properties, Thread, ThreadId,
+    };
+
+    static PAGE_ALLOCATOR: LazyLock<MockPageAllocator> =
+        LazyLock::new(|| MockPageAllocator::new(PageSize::FourKiB, 1024));
+
+    fn create_test_process(
+        pid: ProcessId,
+        props: Properties,
+        tid: ThreadId,
+    ) -> Result<Arc<Process>, ProcessManagerError> {
+        let proc = Arc::new(Process::new(&*PAGE_ALLOCATOR, pid, props, &[], 8)?);
+        let thread = Arc::new(Thread::new(
+            tid,
+            Some(proc.clone()),
+            State::Running,
+            ProcessorState::new_for_user_thread(VirtualAddress::null(), VirtualAddress::null(), 0),
+            (VirtualAddress::null(), 0),
+        ));
+        proc.threads.write().push(thread);
+        Ok(proc)
+    }
+
+    #[test]
+    fn create_process() {
+        let proc = create_test_process(
+            ProcessId::new(1).unwrap(),
+            Properties {
+                supervisor: None,
+                parent: None,
+                privilage: kernel_api::PrivilegeLevel::Driver,
+                notify_parent_on_exit: false,
+            },
+            ThreadId::new(1).unwrap(),
+        )
+        .map_err(|e| snafu::Report::from_error(e))
+        .unwrap();
+        assert_eq!(proc.threads.read().len(), 1);
+    }
+
+    #[test]
+    fn send_message() {
+        let proc = create_test_process(
+            ProcessId::new(1).unwrap(),
+            Properties {
+                supervisor: None,
+                parent: None,
+                privilage: kernel_api::PrivilegeLevel::Driver,
+                notify_parent_on_exit: false,
+            },
+            ThreadId::new(1).unwrap(),
+        )
+        .expect("create process");
+        let thread = proc.threads.read().first().cloned().unwrap();
+
+        let sender_pid = ProcessId::new(333).unwrap();
+        let sender_tid = ProcessId::new(999).unwrap();
+
+        let message = b"Hello, world!!";
+
+        proc.send_message((sender_pid, sender_tid), None, message, &[])
+            .expect("send message");
+
+        let msg = thread.inbox_queue.pop().unwrap();
+        assert_eq!(msg.data_length, 14 + size_of::<MessageHeader>());
+        assert_eq!(msg.sender_process_id, sender_pid);
+        assert_eq!(msg.sender_thread_id, sender_tid);
+        assert!(msg.buffer_handles.is_empty());
+
+        let mut message_data_check = [0u8; 14];
+        unsafe {
+            proc.page_tables
+                .read()
+                .copy_from_while_unmapped(
+                    msg.data_address.byte_add(size_of::<MessageHeader>()),
+                    &mut message_data_check,
+                )
+                .unwrap();
+        }
+        assert_eq!(&message_data_check, message);
+    }
 }
