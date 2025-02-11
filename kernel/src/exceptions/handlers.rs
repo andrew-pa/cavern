@@ -1,14 +1,14 @@
 //! The exception vector and handler functions.
 
 use bytemuck::Contiguous;
-use kernel_api::CallNumber;
+use kernel_api::{CallNumber, ExitReason};
 use log::debug;
 
 use crate::{
     memory::{page_allocator, SystemActiveUserSpaceTables},
     process::{
-        thread::{restore_current_thread_state, save_current_thread_state},
-        SYS_CALL_POLICY,
+        thread::{restore_current_thread_state, save_current_thread_state, SCHEDULER},
+        PROCESS_MANAGER, SYS_CALL_POLICY,
     },
 };
 use kernel_core::{
@@ -17,6 +17,7 @@ use kernel_core::{
     process::{
         system_calls::SysCallEffect,
         thread::{Registers, Scheduler},
+        ProcessManager,
     },
 };
 
@@ -39,11 +40,12 @@ extern "C" {
 unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usize, far: usize) {
     let esr = ExceptionSyndromeRegister(esr as u64);
 
+    let regs = regs
+        .as_mut()
+        .expect("asm exception vector code passes non-null ptr to registers object");
+    let current_thread = save_current_thread_state(regs);
+
     if esr.ec().is_system_call() {
-        let regs = regs
-            .as_mut()
-            .expect("asm exception vector code passes non-null ptr to registers object");
-        let current_thread = save_current_thread_state(regs);
         let user_space_mem = SystemActiveUserSpaceTables::new(page_allocator().page_size());
         let result = SYS_CALL_POLICY
             .get()
@@ -54,10 +56,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                 restore_current_thread_state(regs, result);
             }
             Ok(SysCallEffect::ScheduleNextThread) => {
-                crate::process::thread::SCHEDULER
-                    .get()
-                    .unwrap()
-                    .next_time_slice();
+                SCHEDULER.get().unwrap().next_time_slice();
                 restore_current_thread_state(regs, None);
             }
             Err(e) => {
@@ -71,11 +70,20 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                 restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }
+    } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_kernel_data_page_fault() {
+        PROCESS_MANAGER
+            .get()
+            .unwrap()
+            .exit_thread(&current_thread, ExitReason::page_fault())
+            .expect("kill thread");
+
+        SCHEDULER.get().unwrap().next_time_slice();
+
+        restore_current_thread_state(regs, None);
     } else {
         panic!(
             "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
-            esr,
-            regs.as_ref()
+            esr, regs
         );
     }
 }
