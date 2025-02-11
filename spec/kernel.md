@@ -198,6 +198,26 @@ The `receive` call accepts the following flags:
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 
+### `free_message`
+Free a message, making its space in the inbox available for new messages.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `msg`      | `*mut [MessageBlock]`| the pointer to the received message data. |
+
+#### Flags
+The `free_message` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+| `FreeBuffers` | If set, frees all shared buffers attached to this message that are not already freed. |
+
+#### Errors
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidPointer`: the message pointer was null or invalid.
+
 ### `transfer_to_shared_buffer`
 Copy bytes from the caller process into a shared buffer that has been sent to it.
 Only valid if the sender has allowed writes to the buffer.
@@ -247,6 +267,21 @@ The `transfer_from_shared_buffer` call accepts the following flags:
 - `NotFound`: an unknown buffer handle was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 - `InvalidLength`: the requested operation would extend past the end of the buffer.
+
+### `free_shared_buffers`
+Release a group of shared buffer handle, freeing up its resources. This does not free the memory in the owner process.
+If one of the handles does not exist, the rest will still be freed but `NotFound` will be returned.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `buffer_handles` | buffer handle array   | Handles to free. |
+| `length` | u64                    | Number of handles in the array. |
+
+#### Errors
+- `NotFound`: one or more of the handles was unknown
+- `InvalidPointer`: the array pointer was null or invalid.
+- `InvalidLength`: the length value was invalid.
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
@@ -314,6 +349,28 @@ This function does not return to the caller.
 |------------|----------------------|----------------------------------|
 | `exit_code` |  u32   | Code to return to the parent indicating the reason for exiting. The value 0 indicates success. |
 
+### `exit_notification_subscription`
+Subscribes the current process to the exit notification sent when another process or thread exits.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `pid_or_tid` |  Process/Thread ID   | The ID to subscribe to. |
+| `receiver_tid` | Optional thread ID | The ID of the thread in this process that will receive the message. If `None`, then the designated receiver thread will get it. |
+
+#### Flags
+The `exit_notification_subscription` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+| `PROCESS`      | The ID parameter is a process. Mutex with `THREAD`. |
+| `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
+| `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
+
+#### Errors
+- `NotFound`: the handle was unknown or invalid.
+- `InvalidFlags`: the flags value was invalid.
 
 ### `spawn_thread`
 Spawn a new thread in the current process.
