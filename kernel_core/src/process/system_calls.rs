@@ -1,11 +1,14 @@
 //! System calls from user space.
 #![allow(clippy::needless_pass_by_value)]
 
+use core::num::NonZeroU32;
+
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    flags::ReceiveFlags, CallNumber, EnvironmentValue, ErrorCode, ExitReason, ProcessId,
-    ThreadCreateInfo, ThreadId,
+    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, ThreadCreateInfo,
+    ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -13,7 +16,7 @@ use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use crate::memory::{
     active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
     page_table::MemoryProperties,
-    PageAllocator, VirtualAddress,
+    PageAllocator, VirtualAddress, VirtualPointer,
 };
 
 use super::{
@@ -231,6 +234,18 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             }
             CallNumber::SetDesignatedReceiver => {
                 self.syscall_set_designated_receiver(current_thread, registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeMessage => {
+                self.syscall_free_message(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeSharedBuffers => {
+                self.syscall_free_shared_buffers(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::ExitNotificationSubscription => {
+                self.syscall_exit_notification_subscription(current_thread, registers)?;
                 Ok(SysCallEffect::Return(0))
             }
         }
@@ -470,23 +485,27 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<SysCallEffect, Error> {
         let flag_bits: usize = registers.x[0];
-        let out_msg: &mut VirtualAddress = user_space_memory
-            .check_mut_ref(registers.x[1].into())
-            .context(InvalidAddressSnafu {
-            cause: "output message ptr",
-        })?;
-        let out_len: &mut usize = user_space_memory
-            .check_mut_ref(registers.x[2].into())
-            .context(InvalidAddressSnafu {
-                cause: "output message len",
-            })?;
+        let u_out_msg = registers.x[1].into();
+        let out_msg: &mut VirtualAddress =
+            user_space_memory
+                .check_mut_ref(u_out_msg)
+                .context(InvalidAddressSnafu {
+                    cause: "output message ptr",
+                })?;
+        let u_out_len = registers.x[2].into();
+        let out_len: &mut usize =
+            user_space_memory
+                .check_mut_ref(u_out_len)
+                .context(InvalidAddressSnafu {
+                    cause: "output message len",
+                })?;
         let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
             reason: "invalid bits",
             bits: flag_bits,
         })?;
         if let Some((msg_ptr, msg_len)) = unsafe {
             // SAFETY: it is safe to call this for the current thread, because the its page tables are current.
-            current_thread.receive_message()
+            current_thread.receive_message_immediately()
         } {
             *out_msg = msg_ptr;
             *out_len = msg_len;
@@ -494,7 +513,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         } else if flags.contains(ReceiveFlags::NONBLOCKING) {
             Err(Error::WouldBlock)
         } else {
-            current_thread.set_state(super::thread::State::Blocked);
+            current_thread.wait_for_message(u_out_msg, u_out_len);
             Ok(SysCallEffect::ScheduleNextThread)
         }
     }
@@ -578,6 +597,141 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 handle: target_thread_id.get(),
             })?;
         threads.swap(0, i);
+        Ok(())
+    }
+
+    fn syscall_free_message<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let flags = FreeMessageFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
+            reason: "invalid bits",
+            bits: registers.x[0],
+        })?;
+
+        let ptr: VirtualAddress = registers.x[1].into();
+        let len = registers.x[2];
+
+        let proc = current_thread.parent.as_ref().unwrap();
+
+        if flags.contains(FreeMessageFlags::FREE_BUFFERS) {
+            let msg: &[u8] = user_space_memory
+                .check_slice(VirtualPointer::from(ptr).cast(), len)
+                .context(InvalidAddressSnafu { cause: "message" })?;
+            let msg = unsafe { Message::from_slice(msg) };
+            proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
+                .context(ProcessManagerSnafu)?;
+        }
+
+        proc.free_message(ptr, len).context(ProcessManagerSnafu)?;
+
+        Ok(())
+    }
+
+    fn syscall_free_shared_buffers<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let buffers: &[SharedBufferId] = user_space_memory
+            .check_slice(registers.x[0].into(), registers.x[1])
+            .context(InvalidAddressSnafu {
+                cause: "buffers slice",
+            })?;
+
+        let proc = current_thread.parent.as_ref().unwrap();
+
+        proc.free_shared_buffers(buffers.iter().copied())
+            .context(ProcessManagerSnafu)
+    }
+
+    fn syscall_exit_notification_subscription(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let flags = ExitNotificationSubscriptionFlags::from_bits(registers.x[0]).context(
+            InvalidFlagsSnafu {
+                reason: "invalid flag bits",
+                bits: registers.x[0],
+            },
+        )?;
+
+        ensure!(
+            !flags.contains(
+                ExitNotificationSubscriptionFlags::PROCESS
+                    | ExitNotificationSubscriptionFlags::THREAD
+            ) && !flags.is_empty(),
+            InvalidFlagsSnafu {
+                reason: "process mode xor thread mode",
+                bits: registers.x[0]
+            }
+        );
+
+        let current_proc = current_thread.parent.as_ref().unwrap();
+
+        let receiver_tid = if let Some(tid) = ThreadId::new(registers.x[2] as u32) {
+            ensure!(
+                current_proc.threads.read().iter().any(|t| t.id == tid),
+                NotFoundSnafu {
+                    reason: "receiver thread not in process",
+                    id: registers.x[2]
+                }
+            );
+            Some(tid)
+        } else {
+            None
+        };
+
+        let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
+            if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {
+                exit_subs.retain_mut(|(pid, tid)| {
+                    *pid != current_proc.id
+                        && match (tid, receiver_tid) {
+                            (Some(a), Some(b)) => *a != b,
+                            (None, None) => false,
+                            _ => true,
+                        }
+                });
+            } else {
+                let sub = (current_proc.id, receiver_tid);
+                if !exit_subs.contains(&sub) {
+                    exit_subs.push(sub);
+                }
+            }
+        };
+
+        if flags.contains(ExitNotificationSubscriptionFlags::PROCESS) {
+            let proc = ProcessId::new(registers.x[1] as u32)
+                .and_then(|id| self.process_manager.process_for_id(id))
+                .context(InvalidHandleSnafu {
+                    reason: "process id unknown",
+                    handle: registers.x[1] as u32,
+                })?;
+            debug!(
+                "subscribing process #{}, thread #{:?} to exit of process #{}",
+                current_proc.id, receiver_tid, proc.id
+            );
+            let mut s = proc.exit_subscribers.lock();
+            process_subscription(&mut s);
+        } else if flags.contains(ExitNotificationSubscriptionFlags::THREAD) {
+            let thread = ThreadId::new(registers.x[1] as u32)
+                .and_then(|id| self.process_manager.thread_for_id(id))
+                .context(InvalidHandleSnafu {
+                    reason: "thread id unknown",
+                    handle: registers.x[1] as u32,
+                })?;
+            debug!(
+                "subscribing process #{}, thread #{:?} to exit of thread #{}",
+                current_proc.id, receiver_tid, thread.id
+            );
+            let mut s = thread.exit_subscribers.lock();
+            process_subscription(&mut s);
+        }
+
         Ok(())
     }
 }

@@ -81,14 +81,8 @@ pub struct Properties {
     ///
     /// None means that this process is the root process (of which there should only be one).
     pub supervisor: Option<Arc<Process>>,
-    /// The parent process that spawned this process.
-    ///
-    /// None means that this process is the root process (of which there should only be one).
-    pub parent: Option<Arc<Process>>,
-    /// Level of privilage this process has.
-    pub privilage: PrivilegeLevel,
-    /// Enable parent notification when this process exits.
-    pub notify_parent_on_exit: bool,
+    /// Level of privilege this process has.
+    pub privilege: PrivilegeLevel,
 }
 
 /// A buffer shared from an owner process to a borrower process.
@@ -203,6 +197,9 @@ pub struct Process {
 
     /// Buffers that have been shared with this process from other processes.
     pub shared_buffers: HandleMap<SharedBuffer>,
+
+    /// Threads/processes that will be notified when this process exits.
+    pub exit_subscribers: Mutex<Vec<(Id, Option<ThreadId>)>>,
 }
 
 impl Process {
@@ -332,6 +329,7 @@ impl Process {
                 MESSAGE_BLOCK_SIZE,
             )),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
+            exit_subscribers: Default::default(),
         })
     }
 
@@ -521,6 +519,44 @@ impl Process {
 
         Ok(())
     }
+
+    /// Frees a message from the inbox.
+    ///
+    /// # Errors
+    /// Returns an error if the memory could not be freed.
+    pub fn free_message(&self, ptr: VirtualAddress, len: usize) -> Result<(), ProcessManagerError> {
+        self.inbox_allocator
+            .lock()
+            .free(ptr, len.div_ceil(MESSAGE_BLOCK_SIZE))
+            .context(MemorySnafu {
+                cause: "free inbox memory",
+            })
+    }
+
+    /// Free a group of shared buffers by id. After calling this method, all ids passed to it
+    /// are invalid. All ids will be processed even if one is already freed.
+    ///
+    /// # Errors
+    /// - `Missing` if one or more buffers was already freed.
+    pub fn free_shared_buffers(
+        &self,
+        buffers: impl Iterator<Item = SharedBufferId>,
+    ) -> Result<(), ProcessManagerError> {
+        let mut not_found = false;
+
+        for buffer in buffers {
+            not_found = self.shared_buffers.remove(buffer).is_none() || not_found;
+        }
+
+        ensure!(
+            !not_found,
+            MissingSnafu {
+                cause: "a buffer handle was not found"
+            }
+        );
+
+        Ok(())
+    }
 }
 
 /// Errors arising from [`ProcessManager`] operations.
@@ -645,9 +681,7 @@ mod tests {
             ProcessId::new(1).unwrap(),
             Properties {
                 supervisor: None,
-                parent: None,
-                privilage: kernel_api::PrivilegeLevel::Driver,
-                notify_parent_on_exit: false,
+                privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),
         )
@@ -662,9 +696,7 @@ mod tests {
             ProcessId::new(1).unwrap(),
             Properties {
                 supervisor: None,
-                parent: None,
-                privilage: kernel_api::PrivilegeLevel::Driver,
-                notify_parent_on_exit: false,
+                privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),
         )

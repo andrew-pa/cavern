@@ -332,6 +332,12 @@ impl<T> TryFrom<VirtualPointerMut<T>> for *mut T {
     }
 }
 
+impl<T> From<VirtualPointerMut<T>> for VirtualPointer<T> {
+    fn from(value: VirtualPointerMut<T>) -> Self {
+        Self(value.0, PhantomData)
+    }
+}
+
 /// Errors that arise due to memory related operations.
 #[derive(Debug, Snafu)]
 pub enum Error {

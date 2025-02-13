@@ -7,7 +7,7 @@ use crate::platform::cpu::{CpuIdReader, Id as CpuId};
 use alloc::sync::Arc;
 use crossbeam::queue::SegQueue;
 use hashbrown::HashMap;
-use log::trace;
+use log::{debug, trace};
 
 /// A simple round-robin thread scheduler.
 pub struct RoundRobinScheduler<C: CpuIdReader> {
@@ -55,13 +55,12 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
                         next_thread = Some(t);
                         break;
                     }
-                    State::Blocked => {
-                        if t.inbox_queue.is_empty() {
-                            queue.push(t);
-                        } else {
-                            t.set_state(State::Running);
+                    State::WaitingForMessage => {
+                        if t.check_resume() {
                             next_thread = Some(t);
                             break;
+                        } else {
+                            queue.push(t);
                         }
                     }
                     State::Finished => {
@@ -74,6 +73,7 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
             }
         }
         if let Some(next_thread) = next_thread {
+            debug!("scheduling thread #{}", next_thread.id);
             let last_thread = self
                 .current_threads
                 .get(&cpu_id)

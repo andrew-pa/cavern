@@ -116,7 +116,6 @@ The kernel boot process looks something like:
 - Load the `init` process from the initramfs and spawn it. The device tree blob and initramfs blob are moved into the `init` process's address space, and it starts with 'driver' permissions.
 - Start the thread scheduler
 
-
 # Interfaces
 The kernel's interface is primarily the system call interface. Additionally, the kernel processes some configuration provided by the firmware via the device tree blob.
 
@@ -145,7 +144,7 @@ TODO: describe structures passed as arguments.
 
 There should be a crate that provides nice definitions for each system call, and also defines the various types used and any useful operations on those types.
 
-(Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array.)
+(Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array, but the pointer is still only as wide as a machine pointer and the length is specified else where.)
 
 ### `send`
 The `send` system call allows a process to send a message to another process.
@@ -394,7 +393,6 @@ The `ThreadCreateInfo` struct contains:
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
 - `InvalidPointer`: the entry or info pointer was null or invalid.
-
 
 ### `set_designated_receiver`
 Designates a thread in the current process as the thread which will receive messages from other processes who do not specify a thread ID.

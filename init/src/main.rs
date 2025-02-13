@@ -7,7 +7,9 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
-    ProcessId, ThreadCreateInfo, allocate_heap_pages, exit_current_thread, flags::ReceiveFlags,
+    KERNEL_FAKE_PID, ProcessId, ThreadCreateInfo, allocate_heap_pages, exit_current_thread,
+    exit_notification_subscription,
+    flags::{ExitNotificationSubscriptionFlags, ReceiveFlags},
     free_heap_pages, receive, send, spawn_thread,
 };
 
@@ -50,6 +52,9 @@ pub extern "C" fn _start() {
     })
     .expect("spawn thread");
 
+    exit_notification_subscription(ExitNotificationSubscriptionFlags::THREAD, tid.get(), None)
+        .expect("subscribe to exit");
+
     let p = allocate_heap_pages(1).expect("allocate");
     unsafe {
         p.write(0xab);
@@ -57,6 +62,10 @@ pub extern "C" fn _start() {
     free_heap_pages(p, 1).expect("free");
 
     send(process_id, Some(tid), b"Hello!", &[]).expect("send message");
+
+    let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
+    assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_PID);
+    assert_eq!(exit_msg.header().sender_tid, tid);
 
     exit_current_thread(process_id.get() + 1);
 }

@@ -22,3 +22,25 @@ bitflags! {
         const WRITE = 0b10;
     }
 }
+
+bitflags! {
+    /// Flags for the `free_message()` system call.
+    #[derive(Debug, Clone, Copy)]
+    pub struct FreeMessageFlags: usize {
+        /// If set, frees all shared buffers attached to this message that are not already freed.
+        const FREE_BUFFERS = 0b1;
+    }
+}
+
+bitflags! {
+    /// Flags for the `exit_notification_subscription()` system call.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ExitNotificationSubscriptionFlags: usize {
+        /// The ID parameter is a process. Mutex with `THREAD`.
+        const PROCESS = 0b001;
+        /// The ID parameter is a thread. Mutex with `PROCESS`.
+        const THREAD = 0b010;
+        /// Unsubscribes the current process if it was already subscribed.
+        const UNSUBSCRIBE = 0b100;
+    }
+}
