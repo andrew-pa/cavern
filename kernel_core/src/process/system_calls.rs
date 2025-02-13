@@ -1,22 +1,23 @@
 //! System calls from user space.
 #![allow(clippy::needless_pass_by_value)]
 
-use core::num::NonZeroU32;
-
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, ThreadCreateInfo,
-    ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId,
+    SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::memory::{
-    active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
-    page_table::MemoryProperties,
-    PageAllocator, VirtualAddress, VirtualPointer,
+use crate::{
+    memory::{
+        active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
+        page_table::MemoryProperties,
+        PageAllocator, VirtualAddress, VirtualPointer,
+    },
+    process::SharedBuffer,
 };
 
 use super::{
@@ -451,13 +452,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         let message = user_space_memory
             .check_slice(registers.x[2].into(), registers.x[3])
             .context(InvalidAddressSnafu { cause: "message" })?;
-        let buffers = if registers.x[5] == 0 {
+        let buffers: &[SharedBufferCreateInfo] = if registers.x[5] == 0 {
             &[]
         } else {
             user_space_memory
                 .check_slice(registers.x[4].into(), registers.x[5])
                 .context(InvalidAddressSnafu { cause: "buffers" })?
         };
+        trace!("sending buffers {buffers:?}");
         let dst = dst_process_id
             .and_then(|pid| self.process_manager.process_for_id(pid))
             .context(NotFoundSnafu {
@@ -465,6 +467,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 id: dst_process_id.map_or(0, ProcessId::get) as usize,
             })?;
         let dst_thread = dst_thread_id.and_then(|tid| self.process_manager.thread_for_id(tid));
+        let current_proc = current_thread.parent.as_ref().unwrap();
         dst.send_message(
             (
                 current_thread.parent.as_ref().unwrap().id,
@@ -472,7 +475,14 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             ),
             dst_thread,
             message,
-            buffers,
+            buffers.iter().map(|b| {
+                Arc::new(SharedBuffer {
+                    owner: current_proc.clone(),
+                    flags: b.flags,
+                    base_address: VirtualAddress::from(b.base_address.cast()),
+                    length: b.length,
+                })
+            }),
         )
         .context(ProcessManagerSnafu)
     }

@@ -47,6 +47,7 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
     fn next_time_slice(&self) {
         let cpu_id = C::current_cpu();
         let mut next_thread = None;
+
         let queue = self.queues.get(&cpu_id).expect("cpu has queue");
         for _ in 0..queue.len() {
             match queue.pop() {
@@ -72,6 +73,7 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
                 }
             }
         }
+
         if let Some(next_thread) = next_thread {
             debug!("scheduling thread #{}", next_thread.id);
             let last_thread = self

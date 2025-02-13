@@ -86,6 +86,7 @@ pub struct Properties {
 }
 
 /// A buffer shared from an owner process to a borrower process.
+#[derive(Debug)]
 pub struct SharedBuffer {
     /// The source process that this buffer's memory is owned by.
     pub owner: Arc<Process>,
@@ -200,6 +201,12 @@ pub struct Process {
 
     /// Threads/processes that will be notified when this process exits.
     pub exit_subscribers: Mutex<Vec<(Id, Option<ThreadId>)>>,
+}
+
+impl core::fmt::Debug for Process {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "<Process #{}>", self.id)
+    }
 }
 
 impl Process {
@@ -329,7 +336,7 @@ impl Process {
                 MESSAGE_BLOCK_SIZE,
             )),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
-            exit_subscribers: Default::default(),
+            exit_subscribers: Mutex::default(),
         })
     }
 
@@ -451,7 +458,7 @@ impl Process {
         sender: (Id, ThreadId),
         receiver_thread: Option<Arc<Thread>>,
         message: &[u8],
-        buffers: &[Arc<SharedBuffer>],
+        buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
     ) -> Result<(), ProcessManagerError> {
         // TODO: check message length against max?
         let thread = if let Some(th) = receiver_thread {
@@ -500,8 +507,6 @@ impl Process {
         }
 
         let buffer_handles = buffers
-            .iter()
-            .cloned()
             .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
             .collect::<Result<_, _>>()?;
 

@@ -48,7 +48,7 @@ impl SystemProcessManager {
                     (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
                     tid.and_then(|id| THREADS.get().unwrap().get(id)),
                     bytemuck::bytes_of(&msg),
-                    &[],
+                    core::iter::empty(),
                 )?;
             }
         }
@@ -194,7 +194,7 @@ impl ProcessManager for SystemProcessManager {
                             (KERNEL_FAKE_PID, thread.id),
                             tid.and_then(|id| self.thread_for_id(id)),
                             bytemuck::bytes_of(&msg),
-                            &[],
+                            core::iter::empty(),
                         )?;
                     }
                 }

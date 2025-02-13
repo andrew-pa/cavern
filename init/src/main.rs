@@ -7,16 +7,26 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
-    KERNEL_FAKE_PID, ProcessId, ThreadCreateInfo, allocate_heap_pages, exit_current_thread,
+    ExitMessage, ExitReason, ExitReasonTag, ExitSource, KERNEL_FAKE_PID, ProcessId,
+    SharedBufferCreateInfo, ThreadCreateInfo, allocate_heap_pages, exit_current_thread,
     exit_notification_subscription,
-    flags::{ExitNotificationSubscriptionFlags, ReceiveFlags},
-    free_heap_pages, receive, send, spawn_thread,
+    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags, SharedBufferFlags},
+    free_heap_pages, free_message, receive, send, spawn_thread, transfer_from_shared_buffer,
+    transfer_to_shared_buffer,
 };
 
 fn thread2(arg: usize) -> ! {
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
     let msg = receive(ReceiveFlags::empty()).expect("receive message");
     assert_eq!(msg.payload(), b"Hello!");
+    let buf = msg.buffers().first().unwrap();
+    assert_eq!(buf.length, 8);
+    let mut data = [0u8];
+    transfer_from_shared_buffer(buf.buffer, 0, &mut data).expect("read byte");
+    assert_eq!(data[0], 0xab);
+    data[0] = 0xef;
+    transfer_to_shared_buffer(buf.buffer, 0, &data).expect("write byte");
+    free_message(FreeMessageFlags::FREE_BUFFERS, msg).expect("free message");
     exit_current_thread((thread_id + 1 + arg) as u32);
 }
 
@@ -59,15 +69,32 @@ pub extern "C" fn _start() {
     unsafe {
         p.write(0xab);
     }
-    free_heap_pages(p, 1).expect("free");
 
-    send(process_id, Some(tid), b"Hello!", &[]).expect("send message");
+    send(process_id, Some(tid), b"Hello!", &[
+        SharedBufferCreateInfo {
+            flags: SharedBufferFlags::READ | SharedBufferFlags::WRITE,
+            base_address: p,
+            length: 8,
+        },
+    ])
+    .expect("send message");
 
     let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
     assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_PID);
     assert_eq!(exit_msg.header().sender_tid, tid);
+    let em: &ExitMessage = bytemuck::from_bytes(exit_msg.payload());
+    assert_eq!(em.source, ExitSource::Thread);
+    assert_eq!(em.reason.tag, ExitReasonTag::User);
+    assert_eq!(em.reason.user_code, 7000 + tid.get() + 1);
+    free_message(FreeMessageFlags::FREE_BUFFERS, exit_msg).expect("free message");
 
-    exit_current_thread(process_id.get() + 1);
+    unsafe {
+        assert_eq!(p.read(), 0xef);
+    }
+
+    free_heap_pages(p, 1).expect("free");
+
+    exit_current_thread(7000 + process_id.get() + 1);
 }
 
 /// The panic handler.
