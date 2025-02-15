@@ -648,8 +648,9 @@ pub trait ProcessManager {
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
 }
 
+/// Unit tests
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use kernel_api::{MessageHeader, ProcessId};
     use std::sync::{Arc, LazyLock};
 
@@ -660,10 +661,12 @@ mod tests {
         Process, ProcessManagerError, Properties, Thread, ThreadId,
     };
 
-    static PAGE_ALLOCATOR: LazyLock<MockPageAllocator> =
-        LazyLock::new(|| MockPageAllocator::new(PageSize::FourKiB, 1024));
+    /// "Global" page allocator.
+    pub static PAGE_ALLOCATOR: LazyLock<MockPageAllocator> =
+        LazyLock::new(|| MockPageAllocator::new(PageSize::FourKiB, 2048));
 
-    fn create_test_process(
+    /// Create a new test process using the "global" allocator.
+    pub fn create_test_process(
         pid: ProcessId,
         props: Properties,
         tid: ThreadId,
@@ -713,7 +716,7 @@ mod tests {
 
         let message = b"Hello, world!!";
 
-        proc.send_message((sender_pid, sender_tid), None, message, &[])
+        proc.send_message((sender_pid, sender_tid), None, message, core::iter::empty())
             .expect("send message");
 
         let msg = thread.inbox_queue.pop().unwrap();

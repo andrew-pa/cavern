@@ -166,6 +166,27 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
     }
 }
 
+/// An [`ActiveUserSpaceTables`] implementation that always reports that the address is translatable.
+#[cfg(test)]
+pub struct AlwaysValidActiveUserSpaceTables(PageSize);
+#[cfg(test)]
+impl AlwaysValidActiveUserSpaceTables {
+    /// Create a new [`AlwaysValidActiveUserSpaceTables`].
+    pub fn new(page_size: PageSize) -> Self {
+        Self(page_size)
+    }
+}
+#[cfg(test)]
+impl ActiveUserSpaceTables for AlwaysValidActiveUserSpaceTables {
+    fn page_size(&self) -> PageSize {
+        self.0
+    }
+
+    fn translate(&self, addr: VirtualAddress, _for_write: bool) -> Result<PhysicalAddress, Error> {
+        Ok(PhysicalAddress::from(usize::from(addr)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

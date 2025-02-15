@@ -2,7 +2,7 @@
 
 use bytemuck::Contiguous;
 use kernel_api::{CallNumber, ExitReason};
-use log::{debug, warn};
+use log::{debug, error};
 
 use crate::{
     memory::{page_allocator, SystemActiveUserSpaceTables},
@@ -71,7 +71,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             }
         }
     } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_kernel_data_page_fault() {
-        warn!(
+        error!(
             "user space page fault in thread #{}, process #{}! {}, FAR={far:x}, registers = {:x?}",
             current_thread.id,
             current_thread.parent.as_ref().map_or(0, |p| p.id.get()),
