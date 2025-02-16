@@ -606,6 +606,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
     fn syscall_free_message<AUST: ActiveUserSpaceTables>(
         &self,
         current_thread: &Arc<Thread>,
@@ -636,6 +637,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
     fn syscall_free_shared_buffers<AUST: ActiveUserSpaceTables>(
         &self,
         current_thread: &Arc<Thread>,
@@ -748,14 +750,14 @@ mod tests {
     use std::vec::Vec;
 
     use kernel_api::{flags::SharedBufferFlags, MessageHeader, SharedBufferInfo};
-    use mockall::{predicate::eq, Sequence};
+    use mockall::predicate::eq;
 
     use crate::{
         memory::{
             active_user_space_tables::{
                 AlwaysValidActiveUserSpaceTables, MockActiveUserSpaceTables,
             },
-            MockPageAllocator, PageSize, VirtualAddress, VirtualPointerMut,
+            MockPageAllocator, VirtualAddress, VirtualPointerMut,
         },
         process::{
             tests::PAGE_ALLOCATOR,

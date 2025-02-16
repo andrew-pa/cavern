@@ -205,8 +205,8 @@ mod tests {
     fn test_generation_increments() {
         let pool = AddressSpaceIdPool::new(2);
 
-        let (a1, g1) = pool.allocate();
-        let (a2, g2) = pool.allocate();
+        let (_, g1) = pool.allocate();
+        let (_, g2) = pool.allocate();
 
         // No more ASIDs left at this point
         assert_eq!(g1, 0);

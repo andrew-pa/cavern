@@ -78,6 +78,7 @@ pub enum CallNumber {
 
 impl CallNumber {
     /// Convert a variant into its numerical representation, but marked `const`.
+    #[allow(unused)]
     const fn into_num(self) -> u16 {
         // Safe because we are `Contiguous`.
         unsafe { core::mem::transmute(self) }
@@ -232,6 +233,7 @@ impl Message {
     /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
     /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be
     /// aligned to an 8-byte boundary.
+    #[allow(unused)]
     unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
         unsafe {
             let slice = core::slice::from_raw_parts(ptr, len);
@@ -244,6 +246,7 @@ impl Message {
     /// # Safety
     /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
     /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be aligned to an 8-byte boundary.
+    #[must_use]
     pub unsafe fn from_slice(slice: &[u8]) -> &Message {
         debug_assert!(
             slice.len() >= core::mem::size_of::<MessageHeader>(),

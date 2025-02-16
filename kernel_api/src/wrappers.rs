@@ -367,7 +367,7 @@ pub fn free_message(flags: FreeMessageFlags, message: &Message) -> Result<(), Er
             "svc {call_number}",
             "mov {res}, x0",
             f = in(reg) flags.bits(),
-            p = in(reg) message as *const Message as *const u8,
+            p = in(reg) core::ptr::from_ref::<Message>(message).cast::<u8>(),
             l = in(reg) message.0.len(),
             res = out(reg) result,
             call_number = const CallNumber::FreeMessage.into_num()

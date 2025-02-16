@@ -7,9 +7,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
-    ExitMessage, ExitReason, ExitReasonTag, ExitSource, KERNEL_FAKE_PID, ProcessId,
-    SharedBufferCreateInfo, ThreadCreateInfo, allocate_heap_pages, exit_current_thread,
-    exit_notification_subscription,
+    ExitMessage, ExitReasonTag, ExitSource, KERNEL_FAKE_PID, ProcessId, SharedBufferCreateInfo,
+    ThreadCreateInfo, allocate_heap_pages, exit_current_thread, exit_notification_subscription,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags, SharedBufferFlags},
     free_heap_pages, free_message, receive, send, spawn_thread, transfer_from_shared_buffer,
     transfer_to_shared_buffer,

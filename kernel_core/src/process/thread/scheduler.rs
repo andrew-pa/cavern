@@ -60,9 +60,8 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
                         if t.check_resume() {
                             next_thread = Some(t);
                             break;
-                        } else {
-                            queue.push(t);
                         }
+                        queue.push(t);
                     }
                     State::Finished => {
                         // remove the thread from the queue by not putting it back

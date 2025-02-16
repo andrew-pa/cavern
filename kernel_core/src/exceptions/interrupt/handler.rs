@@ -1,5 +1,5 @@
 use crate::{platform::timer::SystemTimer, process::thread::Scheduler};
-use log::{trace, warn};
+use log::warn;
 
 use super::Id as InterruptId;
 

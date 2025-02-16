@@ -122,11 +122,11 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
     /// If dereferencing any index in the slice would result in a fault,
     /// [`Error::WouldFault`] is returned.
     pub fn check_slice<T>(&self, ptr: VirtualPointer<T>, len: usize) -> Result<&'a [T], Error> {
+        use core::slice;
         if len == 0 {
             return Ok(&[]);
         }
 
-        use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
             .ok_or(Error::WouldFault {
@@ -150,11 +150,11 @@ impl<'a, A: ActiveUserSpaceTables> ActiveUserSpaceTablesChecker<'a, A> {
         ptr: VirtualPointerMut<T>,
         len: usize,
     ) -> Result<&'a mut [T], Error> {
+        use core::slice;
         if len == 0 {
             return Ok(&mut []);
         }
 
-        use core::slice;
         let size = core::mem::size_of::<T>()
             .checked_mul(len)
             .ok_or(Error::WouldFault {
