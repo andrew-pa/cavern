@@ -747,9 +747,11 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
 #[cfg(test)]
 mod tests {
     use core::{mem::MaybeUninit, num::NonZeroU32};
-    use std::vec::Vec;
+    use std::{assert_matches::assert_matches, vec::Vec};
 
-    use kernel_api::{flags::SharedBufferFlags, MessageHeader, SharedBufferInfo};
+    use kernel_api::{
+        flags::SharedBufferFlags, MessageHeader, ProcessCreateInfo, SharedBufferInfo,
+    };
     use mockall::predicate::eq;
 
     use crate::{
@@ -803,7 +805,7 @@ mod tests {
         let registers = Registers::default();
 
         let system_call_number_that_is_invalid = 1;
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(
                 system_call_number_that_is_invalid,
                 &thread,
@@ -811,7 +813,7 @@ mod tests {
                 &usm
             ),
             Ok(SysCallEffect::ScheduleNextThread)
-        ));
+        );
     }
 
     #[test]
@@ -828,10 +830,10 @@ mod tests {
         let mut registers = Registers::default();
         registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
 
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers, &usm),
             Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
-        ));
+        );
     }
 
     #[test]
@@ -856,7 +858,7 @@ mod tests {
         let mut registers = Registers::default();
         registers.x[0] = exit_code as usize;
 
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(
                 CallNumber::ExitCurrentThread.into_integer(),
                 &thread,
@@ -864,7 +866,7 @@ mod tests {
                 &usm
             ),
             Ok(SysCallEffect::ScheduleNextThread)
-        ));
+        );
     }
 
     #[test]
@@ -921,7 +923,7 @@ mod tests {
 
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(
                 CallNumber::SpawnThread.into_integer(),
                 &th,
@@ -929,7 +931,7 @@ mod tests {
                 &usm
             ),
             Ok(SysCallEffect::Return(0))
-        ));
+        );
 
         assert_eq!(thread_id, 9);
     }
@@ -981,10 +983,10 @@ mod tests {
 
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(CallNumber::Send.into_integer(), &th, &registers, &usm),
             Ok(SysCallEffect::Return(0))
-        ));
+        );
 
         let thread = receiver_proc.threads.read().first().cloned().unwrap();
         let msg = thread.inbox_queue.pop().unwrap();
@@ -1047,10 +1049,10 @@ mod tests {
 
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
             Err(Error::WouldBlock)
-        ));
+        );
     }
 
     #[test]
@@ -1076,10 +1078,10 @@ mod tests {
 
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
             Ok(SysCallEffect::ScheduleNextThread)
-        ));
+        );
 
         assert_eq!(th.state(), State::WaitingForMessage);
         let pmr = th.pending_message_receive.lock();
@@ -1121,10 +1123,10 @@ mod tests {
 
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-        assert!(matches!(
+        assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
             Ok(SysCallEffect::Return(0))
-        ));
+        );
 
         unsafe {
             assert_eq!(msg_ptr.assume_init(), message.as_mut_ptr() as _);
@@ -1134,5 +1136,541 @@ mod tests {
         assert_eq!(msg.header().sender_pid.get(), 123);
         assert_eq!(msg.header().sender_tid.get(), 456);
         assert_eq!(msg.header().num_buffers, 0);
+    }
+
+    #[test]
+    fn normal_spawn_process() {
+        let mut pm = MockProcessManager::new();
+        let parent_proc = crate::process::tests::create_test_process(
+            ProcessId::new(10).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(11).unwrap(),
+        )
+        .unwrap();
+
+        let dummy_info: ProcessCreateInfo = ProcessCreateInfo {
+            entry_point: 0,
+            num_sections: 0,
+            sections: core::ptr::null(),
+            supervisor: None,
+            privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
+            notify_on_exit: false,
+            inbox_size: 0,
+        };
+        let info_ptr = &dummy_info as *const _;
+        let mut process_id: u32 = 0;
+        let process_id_ptr = &mut process_id as *mut u32;
+
+        let parent_thread = parent_proc.threads.read().first().unwrap().clone();
+        // Create a new process that will be returned by spawn_process.
+        let new_proc = crate::process::tests::create_test_process(
+            ProcessId::new(20).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(21).unwrap(),
+        )
+        .unwrap();
+
+        // Expect spawn_process to be called with the proper parent.
+        let parent_clone = parent_proc.clone();
+        let new_proc2 = new_proc.clone();
+        pm.expect_spawn_process()
+            .withf(move |p, _| p.as_ref().is_some_and(|p| p.id == parent_clone.id))
+            .return_once(move |_, _| Ok(new_proc2));
+
+        let pa = &*PAGE_ALLOCATOR;
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let mut registers = Registers::default();
+        registers.x[0] = info_ptr as usize;
+        registers.x[1] = process_id_ptr as usize;
+
+        // The current thread (from parent_proc) is used so that its parent is set.
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::SpawnProcess.into_integer(),
+                &parent_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+        assert_eq!(process_id, new_proc.id.get());
+    }
+
+    #[test]
+    fn normal_kill_process() {
+        let mut pm = MockProcessManager::new();
+
+        let parent_proc = crate::process::tests::create_test_process(
+            ProcessId::new(30).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(31).unwrap(),
+        )
+        .unwrap();
+
+        let target_proc = crate::process::tests::create_test_process(
+            ProcessId::new(40).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(41).unwrap(),
+        )
+        .unwrap();
+        let target_proc2 = target_proc.clone();
+        let target_proc_id = target_proc.id;
+
+        pm.expect_process_for_id()
+            .with(eq(target_proc_id))
+            .return_once(move |_| Some(target_proc2));
+        pm.expect_kill_process()
+            .withf(move |p| p.id == target_proc_id)
+            .return_once(|_| Ok(()));
+
+        let pa = &*PAGE_ALLOCATOR;
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let mut registers = Registers::default();
+        registers.x[0] = target_proc.id.get() as usize;
+
+        let current_thread = parent_proc.threads.read().first().unwrap().clone();
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::KillProcess.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
+
+    #[test]
+    fn normal_allocate_heap_pages() {
+        let pa = &*PAGE_ALLOCATOR;
+        let parent_proc = crate::process::tests::create_test_process(
+            ProcessId::new(50).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(51).unwrap(),
+        )
+        .unwrap();
+
+        let current_thread = parent_proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let pages = 3;
+        let mut alloc_result: usize = 0;
+        let alloc_result_ptr = &mut alloc_result as *mut usize;
+
+        let mut registers = Registers::default();
+        registers.x[0] = pages;
+        registers.x[1] = alloc_result_ptr as usize;
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::AllocateHeapPages.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+        assert_ne!(alloc_result, 0);
+    }
+
+    #[test]
+    fn normal_free_heap_pages() {
+        let pa = &*PAGE_ALLOCATOR;
+        let parent_proc = crate::process::tests::create_test_process(
+            ProcessId::new(60).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(61).unwrap(),
+        )
+        .unwrap();
+
+        let mem = parent_proc
+            .allocate_memory(
+                pa,
+                1,
+                MemoryProperties {
+                    owned: true,
+                    user_space_access: true,
+                    writable: true,
+                    ..Default::default()
+                },
+            )
+            .expect("allocate");
+
+        let current_thread = parent_proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let mut registers = Registers::default();
+        registers.x[0] = mem.into();
+        registers.x[1] = 1;
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::FreeHeapPages.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
+
+    #[test]
+    fn normal_transfer_to_shared_buffer() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(70).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(71).unwrap(),
+        )
+        .unwrap();
+
+        let mem = proc
+            .allocate_memory(
+                pa,
+                1,
+                MemoryProperties {
+                    owned: true,
+                    user_space_access: true,
+                    writable: true,
+                    ..Default::default()
+                },
+            )
+            .expect("allocate");
+
+        // Insert a shared buffer into the process.
+        let buffer = Arc::new(crate::process::SharedBuffer {
+            owner: proc.clone(),
+            flags: kernel_api::flags::SharedBufferFlags::WRITE,
+            base_address: mem,
+            length: 1024,
+        });
+        let handle = proc.shared_buffers.insert(buffer).unwrap();
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let src_data = [1u8, 2, 3, 4];
+        let mut registers = Registers::default();
+        registers.x[0] = handle.get() as usize;
+        registers.x[1] = 0; // offset
+        registers.x[2] = src_data.as_ptr() as usize;
+        registers.x[3] = src_data.len();
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::TransferToSharedBuffer.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
+
+    #[test]
+    fn normal_transfer_from_shared_buffer() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(80).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(81).unwrap(),
+        )
+        .unwrap();
+
+        let mem = proc
+            .allocate_memory(
+                pa,
+                1,
+                MemoryProperties {
+                    owned: true,
+                    user_space_access: true,
+                    writable: true,
+                    ..Default::default()
+                },
+            )
+            .expect("allocate");
+
+        // Insert a shared buffer into the process.
+        let buffer = Arc::new(crate::process::SharedBuffer {
+            owner: proc.clone(),
+            flags: kernel_api::flags::SharedBufferFlags::READ,
+            base_address: mem,
+            length: 1024,
+        });
+        let handle = proc.shared_buffers.insert(buffer).unwrap();
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let mut dst_data = [0u8; 4];
+        let mut registers = Registers::default();
+        registers.x[0] = handle.get() as usize;
+        registers.x[1] = 0; // offset
+        registers.x[2] = dst_data.as_mut_ptr() as usize;
+        registers.x[3] = dst_data.len();
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::TransferFromSharedBuffer.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
+
+    #[test]
+    fn normal_set_designated_receiver() {
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(90).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(91).unwrap(),
+        )
+        .unwrap();
+
+        // Create an extra thread.
+        let extra_thread = fake_thread();
+        proc.threads.write().push(extra_thread.clone());
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let mut registers = Registers::default();
+        registers.x[0] = extra_thread.id.get() as usize;
+        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::SetDesignatedReceiver.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+        // Verify the extra thread is now at the front.
+        let first_thread = proc.threads.read().first().unwrap().clone();
+        assert_eq!(first_thread.id, extra_thread.id);
+    }
+
+    #[test]
+    fn normal_free_message_no_buffers() {
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(100).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(101).unwrap(),
+        )
+        .unwrap();
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+
+        let message = [0u8; 32];
+        let mut registers = Registers::default();
+        registers.x[0] = 0; // no FREE_BUFFERS flag
+        registers.x[1] = message.as_ptr() as usize;
+        registers.x[2] = message.len();
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::FreeMessage.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
+
+    #[test]
+    fn normal_free_shared_buffers() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(110).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(111).unwrap(),
+        )
+        .unwrap();
+
+        let buf = proc
+            .shared_buffers
+            .insert(Arc::new(SharedBuffer {
+                owner: proc.clone(),
+                flags: SharedBufferFlags::empty(),
+                base_address: VirtualAddress::null(),
+                length: 0,
+            }))
+            .unwrap();
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let buffer_ids = [buf];
+        let mut registers = Registers::default();
+        registers.x[0] = buffer_ids.as_ptr() as usize;
+        registers.x[1] = buffer_ids.len();
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::FreeSharedBuffers.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+
+        assert!(proc.shared_buffers.get(buf).is_none());
+    }
+
+    #[test]
+    fn normal_exit_notification_subscription_process() {
+        let current_proc = crate::process::tests::create_test_process(
+            ProcessId::new(120).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(121).unwrap(),
+        )
+        .unwrap();
+
+        let current_thread = current_proc.threads.read().first().unwrap().clone();
+
+        // Create a target process for exit subscription.
+        let target_proc = crate::process::tests::create_test_process(
+            ProcessId::new(130).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(131).unwrap(),
+        )
+        .unwrap();
+
+        let mut pm = MockProcessManager::new();
+        let tp2 = target_proc.clone();
+        pm.expect_process_for_id()
+            .with(eq(target_proc.id))
+            .return_once(move |_| Some(tp2));
+
+        let receiver_tid = current_thread.id;
+        let flags = ExitNotificationSubscriptionFlags::PROCESS;
+
+        let mut registers = Registers::default();
+        registers.x[0] = flags.bits();
+        registers.x[1] = target_proc.id.get() as usize;
+        registers.x[2] = receiver_tid.get() as usize;
+
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::ExitNotificationSubscription.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+        let subs = target_proc.exit_subscribers.lock();
+        assert!(subs.contains(&(current_proc.id, Some(receiver_tid))));
+    }
+
+    #[test]
+    fn normal_exit_notification_subscription_thread() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(140).unwrap(),
+            Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(141).unwrap(),
+        )
+        .unwrap();
+
+        // Create an extra thread in the process.
+        let extra_thread = fake_thread();
+        proc.threads.write().push(extra_thread.clone());
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let mut pm = MockProcessManager::new();
+        let ex = extra_thread.clone();
+        pm.expect_thread_for_id()
+            .with(eq(extra_thread.id))
+            .return_once(|_| Some(ex));
+        let policy = SystemCalls::new(pa, &pm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let receiver_tid = current_thread.id;
+        let flags = ExitNotificationSubscriptionFlags::THREAD;
+
+        let mut registers = Registers::default();
+        registers.x[0] = flags.bits();
+        registers.x[1] = extra_thread.id.get() as usize;
+        registers.x[2] = receiver_tid.get() as usize;
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::ExitNotificationSubscription.into_integer(),
+                &current_thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+        let subs = extra_thread.exit_subscribers.lock();
+        assert!(subs.contains(&(proc.id, Some(receiver_tid))));
     }
 }

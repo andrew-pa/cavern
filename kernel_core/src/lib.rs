@@ -7,6 +7,7 @@
 #![no_std]
 #![feature(pointer_is_aligned_to)]
 #![feature(alloc_layout_extra)]
+#![feature(assert_matches)]
 #![deny(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::cast_possible_truncation)]
