@@ -1,5 +1,5 @@
 use crate::{platform::timer::SystemTimer, process::thread::Scheduler};
-use log::{trace, warn};
+use log::warn;
 
 use super::Id as InterruptId;
 
@@ -40,7 +40,7 @@ impl<'ic, 'sc, 't, T: SystemTimer, IC: super::Controller, Sched: Scheduler>
             // trace!("handling interrupt {int_id}");
 
             if int_id == self.timer.interrupt_id() {
-                trace!("timer interrupt");
+                // trace!("timer interrupt");
                 self.scheduler.next_time_slice();
                 self.timer.reset();
             } else if int_id == 0 {

@@ -71,10 +71,14 @@ pub enum CallNumber {
     SetDesignatedReceiver,
     AllocateHeapPages,
     FreeHeapPages,
+    FreeMessage,
+    FreeSharedBuffers,
+    ExitNotificationSubscription,
 }
 
 impl CallNumber {
     /// Convert a variant into its numerical representation, but marked `const`.
+    #[allow(unused)]
     const fn into_num(self) -> u16 {
         // Safe because we are `Contiguous`.
         unsafe { core::mem::transmute(self) }
@@ -223,20 +227,34 @@ pub struct Message([u8]);
 
 impl Message {
     /// Create a new message from a raw slice in the inbox.
+    /// The `len` must be the length in bytes.
     ///
     /// # Safety
     /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
     /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be
     /// aligned to an 8-byte boundary.
+    #[allow(unused)]
     unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
-        debug_assert!(
-            len >= core::mem::size_of::<MessageHeader>(),
-            "message must be at least large enough for a message header"
-        );
-        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
         unsafe {
             let slice = core::slice::from_raw_parts(ptr, len);
-            // this is ok because it is part of the precondition of the function (and checked in debug).
+            Self::from_slice(slice)
+        }
+    }
+
+    /// Create a new message from a slice in the inbox.
+    ///
+    /// # Safety
+    /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
+    /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be aligned to an 8-byte boundary.
+    #[must_use]
+    pub unsafe fn from_slice(slice: &[u8]) -> &Message {
+        debug_assert!(
+            slice.len() >= core::mem::size_of::<MessageHeader>(),
+            "message must be at least large enough for a message header"
+        );
+        let ptr = slice.as_ptr();
+        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
+        unsafe {
             #[allow(clippy::cast_ptr_alignment)]
             &*(core::ptr::from_ref(slice) as *const Message)
         }

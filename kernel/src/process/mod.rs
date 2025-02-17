@@ -16,6 +16,7 @@ use kernel_core::{
 use log::{debug, trace};
 use snafu::OptionExt;
 use spin::Once;
+use thread::THREADS;
 
 use crate::memory::{page_allocator, PlatformPageAllocator};
 
@@ -40,16 +41,16 @@ impl SystemProcessManager {
     ) -> Result<(), ProcessManagerError> {
         self.processes.remove(process.id);
 
-        if let Some(parent) = process.props.parent.as_ref() {
-            let msg = ExitMessage::process(process.id.get(), reason);
-            parent.send_message(
-                (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
-                None,
-                bytemuck::bytes_of(&msg),
-                &[],
-            )?;
-        } else {
-            panic!("root process exited with reason: {reason:?}");
+        let msg = ExitMessage::process(process.id.get(), reason);
+        for (pid, tid) in process.exit_subscribers.lock().iter() {
+            if let Some(proc) = self.processes.get(*pid) {
+                proc.send_message(
+                    (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
+                    tid.and_then(|id| THREADS.get().unwrap().get(id)),
+                    bytemuck::bytes_of(&msg),
+                    core::iter::empty(),
+                )?;
+            }
         }
 
         // the process will free all owned memory (including thread stacks) when dropped
@@ -76,9 +77,7 @@ impl ProcessManager for SystemProcessManager {
                     .supervisor
                     .and_then(|sid| self.process_for_id(sid))
                     .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
-                parent,
-                privilage: info.privilege_level,
-                notify_parent_on_exit: info.notify_on_exit,
+                privilege: info.privilege_level,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
             info.inbox_size,
@@ -182,15 +181,23 @@ impl ProcessManager for SystemProcessManager {
                 debug!("last thread in process exited");
                 self.exit_process(parent, reason)?;
             } else {
-                // notify the process that a thread exited
+                // notify exit subscribers that a thread exited
                 let msg = ExitMessage::thread(reason);
-                trace!("sending exit message {msg:?} to process #{}", parent.id);
-                parent.send_message(
-                    (KERNEL_FAKE_PID, thread.id),
-                    None,
-                    bytemuck::bytes_of(&msg),
-                    &[],
-                )?;
+                for (pid, tid) in thread.exit_subscribers.lock().iter() {
+                    trace!(
+                        "sending exit message {msg:?} to process #{}, thread #{:?}",
+                        pid,
+                        tid
+                    );
+                    if let Some(proc) = self.process_for_id(*pid) {
+                        proc.send_message(
+                            (KERNEL_FAKE_PID, thread.id),
+                            tid.and_then(|id| self.thread_for_id(id)),
+                            bytemuck::bytes_of(&msg),
+                            core::iter::empty(),
+                        )?;
+                    }
+                }
             }
         }
         // remove thread from handle table

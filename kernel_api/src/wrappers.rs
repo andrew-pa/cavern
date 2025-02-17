@@ -1,12 +1,25 @@
 //! System call wrapper functions.
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
-use crate::{Message, SharedBufferCreateInfo, SharedBufferId, flags::ReceiveFlags};
+use crate::{
+    Message, SharedBufferCreateInfo, SharedBufferId,
+    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
+};
 
 use super::{
     CallNumber, Contiguous, EnvironmentValue, ErrorCode, NonZeroU32, ProcessCreateInfo, ProcessId,
     ThreadCreateInfo, ThreadId,
 };
+
+/// Convert a return value into a `Result` for system calls that don't return values.
+#[inline]
+fn process_result(result: usize) -> Result<(), ErrorCode> {
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
 
 /// Reads a value from the kernel about the current process environment.
 /// Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error.
@@ -120,11 +133,53 @@ pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
             call_number = const CallNumber::KillProcess.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
+    process_result(result)
+}
+
+/// Subscribes the current process to the exit notification sent when another process or thread exits.
+///
+/// When unsubscribing, the `receiver_tid` will only unregister the designated receiver thread if `None` is passed, not if the id of that thread is passed.
+///
+/// # Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+/// | `pid_or_tid` |  Process/Thread ID   | The ID to subscribe to. |
+/// | `receiver_tid` | Optional thread ID | The ID of the thread in this process that will receive the message. If `None`, then the designated receiver thread will get it. |
+///
+/// # Flags
+/// The `exit_notification_subscription` call accepts the following flags:
+///
+/// | Name           | Description                              |
+/// |----------------|------------------------------------------|
+/// | `PROCESS`      | The ID parameter is a process. Mutex with `THREAD`. |
+/// | `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
+/// | `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
+///
+/// # Errors
+/// - `NotFound`: the handle was unknown or invalid.
+/// - `InvalidFlags`: the flags value was invalid.
+pub fn exit_notification_subscription(
+    flags: ExitNotificationSubscriptionFlags,
+    pid_or_tid: u32,
+    receiver_tid: Option<ThreadId>,
+) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {f:x}",
+            "mov x1, {p:x}",
+            "mov x2, {r:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            f = in(reg) flags.bits(),
+            p = in(reg) pid_or_tid,
+            r = in(reg) receiver_tid.map_or(0, ThreadId::get),
+            res = out(reg) result,
+            call_number = const CallNumber::ExitNotificationSubscription.into_num()
+        );
     }
+    process_result(result)
 }
 
 /// Allocates new system memory, mapping it into the current process' address space as a continuous region.
@@ -178,11 +233,7 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
             call_number = const CallNumber::FreeHeapPages.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
-    }
+    process_result(result)
 }
 
 /// The `send` system call allows a process to send a message to another process.
@@ -232,11 +283,7 @@ pub fn send(
             call_number = const CallNumber::Send.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
-    }
+    process_result(result)
 }
 
 /// The `receive` system call allows a process to receive a message from another process.
@@ -291,6 +338,44 @@ pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
     }
 }
 
+/// Free a message, making its space in the inbox available for new messages.
+///
+/// # Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+/// | `msg`      | `*mut [MessageBlock]`| the pointer to the received message data. |
+/// | `len`      | `usize`| Length in bytes of the entire message, as returned by `receive()`. |
+///
+/// # Flags
+/// The `free_message` call accepts the following flags:
+///
+/// | Name           | Description                              |
+/// |----------------|------------------------------------------|
+/// | `FreeBuffers` | If set, frees all shared buffers attached to this message that are not already freed. |
+///
+/// # Errors
+/// - `InvalidFlags`: an unknown or invalid flag combination was passed.
+/// - `InvalidPointer`: the message pointer was null or invalid.
+pub fn free_message(flags: FreeMessageFlags, message: &Message) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {f:x}",
+            "mov x1, {p:x}",
+            "mov x2, {l:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            f = in(reg) flags.bits(),
+            p = in(reg) core::ptr::from_ref::<Message>(message).cast::<u8>(),
+            l = in(reg) message.0.len(),
+            res = out(reg) result,
+            call_number = const CallNumber::FreeMessage.into_num()
+        );
+    }
+    process_result(result)
+}
+
 /// Copy bytes from the caller process into a shared buffer that has been sent to it.
 /// Only valid if the sender has allowed writes to the buffer.
 ///
@@ -328,11 +413,7 @@ pub fn transfer_to_shared_buffer(
             call_number = const CallNumber::TransferToSharedBuffer.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
-    }
+    process_result(result)
 }
 
 /// Copy bytes from a shared buffer to the caller process.
@@ -373,11 +454,38 @@ pub fn transfer_from_shared_buffer(
             call_number = const CallNumber::TransferFromSharedBuffer.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
+    process_result(result)
+}
+
+/// Release a group of shared buffer handle, freeing up its resources.
+/// This does not free the memory in the owner process.
+/// If one of the handles does not exist, the rest will still be freed but `NotFound` will be returned.
+///
+///#### Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `buffer_handles` | buffer handle array | Handles to free.            |
+/// | `length`   | u64                  | Number of handles in the array.  |
+///
+/// # Errors
+/// - `NotFound`: one or more of the handles was unknown
+/// - `InvalidPointer`: the array pointer was null or invalid.
+/// - `InvalidLength`: the length value was invalid.
+pub fn free_shared_buffers(buffers: &[SharedBufferId]) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {bufs:x}",
+            "mov x1, {bufs_len:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            bufs = in(reg) buffers.as_ptr(),
+            bufs_len = in(reg) buffers.len(),
+            res = out(reg) result,
+            call_number = const CallNumber::FreeSharedBuffers.into_num()
+        );
     }
+    process_result(result)
 }
 
 /// Set a thread to be the designated receiver thread for the current process.
@@ -396,9 +504,5 @@ pub fn set_designated_receiver(tid: ThreadId) -> Result<(), ErrorCode> {
             call_number = const CallNumber::SetDesignatedReceiver.into_num()
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(ErrorCode::from_integer(result).expect("error code"))
-    }
+    process_result(result)
 }

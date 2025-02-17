@@ -170,11 +170,11 @@ pub unsafe fn save_current_thread_state(registers: &Registers) -> Arc<Thread> {
         s.stack_pointer = read_stack_pointer(0);
         s.registers = *registers;
 
-        trace!(
-            "saving processor state to thread#{}, pc={:?}",
-            current_thread.id,
-            s.program_counter
-        );
+        // trace!(
+        //     "saving processor state to thread#{}, pc={:?}",
+        //     current_thread.id,
+        //     s.program_counter
+        // );
     }
 
     current_thread
@@ -223,9 +223,9 @@ pub unsafe fn restore_current_thread_state(
     write_exception_link_reg(s.program_counter);
     write_saved_program_status(&s.spsr);
 
-    trace!(
-        "restoring processor state to thread#{}, pc={:?}",
-        current_thread.id,
-        s.program_counter,
-    );
+    // trace!(
+    //     "restoring processor state to thread#{}, pc={:?}",
+    //     current_thread.id,
+    //     s.program_counter,
+    // );
 }

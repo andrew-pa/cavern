@@ -33,6 +33,8 @@ pub use subtract_ranges::*;
 pub mod page_table;
 pub use page_table::PageTables;
 
+pub mod active_user_space_tables;
+
 mod asid_pool;
 pub use asid_pool::{AddressSpaceId, AddressSpaceIdPool};
 
@@ -44,12 +46,19 @@ pub use free_list::FreeListAllocator;
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
 /// must be `0xffff` to select the kernel page tables, so a `*mut T` is not quite but very close to
 /// the physical address of the `T`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct PhysicalPointer<T>(usize, PhantomData<*mut T>);
+unsafe impl<T: Send> Send for PhysicalPointer<T> {}
 
 /// A physical 48-bit address that does not dereference to any particular type of value.
 pub type PhysicalAddress = PhysicalPointer<()>;
+
+impl<T> Clone for PhysicalPointer<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, PhantomData)
+    }
+}
 
 impl<T> PhysicalPointer<T> {
     /// Offset this pointer forward by `count` number of `T`s.
@@ -131,7 +140,15 @@ impl<T> From<*const T> for PhysicalPointer<T> {
 
 impl<T> From<PhysicalPointer<T>> for *const T {
     fn from(val: PhysicalPointer<T>) -> Self {
-        (val.0 | 0xffff_0000_0000_0000) as _
+        #[cfg(not(test))]
+        {
+            (val.0 | 0xffff_0000_0000_0000) as _
+        }
+        #[cfg(test)]
+        {
+            // HACK: Because the test environment is in user-space, we assume that physical pointers are actually untagged, but fit in the 48-bit space.
+            val.0 as _
+        }
     }
 }
 
@@ -312,6 +329,12 @@ impl<T> TryFrom<VirtualPointerMut<T>> for *mut T {
             .is_in_kernel_space()
             .then_some(value.0 as _)
             .ok_or(NotInKernelAddressSpaceError)
+    }
+}
+
+impl<T> From<VirtualPointerMut<T>> for VirtualPointer<T> {
+    fn from(value: VirtualPointerMut<T>) -> Self {
+        Self(value.0, PhantomData)
     }
 }
 
@@ -770,6 +793,7 @@ pub mod tests {
         total_allocated: Arc<Mutex<usize>>, // Tracks total allocated pages
     }
 
+    unsafe impl Send for MockPageAllocator {}
     unsafe impl Sync for MockPageAllocator {}
 
     impl MockPageAllocator {

@@ -116,7 +116,6 @@ The kernel boot process looks something like:
 - Load the `init` process from the initramfs and spawn it. The device tree blob and initramfs blob are moved into the `init` process's address space, and it starts with 'driver' permissions.
 - Start the thread scheduler
 
-
 # Interfaces
 The kernel's interface is primarily the system call interface. Additionally, the kernel processes some configuration provided by the firmware via the device tree blob.
 
@@ -145,7 +144,7 @@ TODO: describe structures passed as arguments.
 
 There should be a crate that provides nice definitions for each system call, and also defines the various types used and any useful operations on those types.
 
-(Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array.)
+(Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array, but the pointer is still only as wide as a machine pointer and the length is specified else where.)
 
 ### `send`
 The `send` system call allows a process to send a message to another process.
@@ -198,6 +197,26 @@ The `receive` call accepts the following flags:
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 
+### `free_message`
+Free a message, making its space in the inbox available for new messages.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `msg`      | `*mut [MessageBlock]`| the pointer to the received message data. |
+
+#### Flags
+The `free_message` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+| `FreeBuffers` | If set, frees all shared buffers attached to this message that are not already freed. |
+
+#### Errors
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidPointer`: the message pointer was null or invalid.
+
 ### `transfer_to_shared_buffer`
 Copy bytes from the caller process into a shared buffer that has been sent to it.
 Only valid if the sender has allowed writes to the buffer.
@@ -247,6 +266,21 @@ The `transfer_from_shared_buffer` call accepts the following flags:
 - `NotFound`: an unknown buffer handle was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 - `InvalidLength`: the requested operation would extend past the end of the buffer.
+
+### `free_shared_buffers`
+Release a group of shared buffer handle, freeing up its resources. This does not free the memory in the owner process.
+If one of the handles does not exist, the rest will still be freed but `NotFound` will be returned.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `buffer_handles` | buffer handle array   | Handles to free. |
+| `length` | u64                    | Number of handles in the array. |
+
+#### Errors
+- `NotFound`: one or more of the handles was unknown
+- `InvalidPointer`: the array pointer was null or invalid.
+- `InvalidLength`: the length value was invalid.
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
@@ -314,6 +348,28 @@ This function does not return to the caller.
 |------------|----------------------|----------------------------------|
 | `exit_code` |  u32   | Code to return to the parent indicating the reason for exiting. The value 0 indicates success. |
 
+### `exit_notification_subscription`
+Subscribes the current process to the exit notification sent when another process or thread exits.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `pid_or_tid` |  Process/Thread ID   | The ID to subscribe to. |
+| `receiver_tid` | Optional thread ID | The ID of the thread in this process that will receive the message. If `None`, then the designated receiver thread will get it. |
+
+#### Flags
+The `exit_notification_subscription` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+| `PROCESS`      | The ID parameter is a process. Mutex with `THREAD`. |
+| `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
+| `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
+
+#### Errors
+- `NotFound`: the handle was unknown or invalid.
+- `InvalidFlags`: the flags value was invalid.
 
 ### `spawn_thread`
 Spawn a new thread in the current process.
@@ -337,7 +393,6 @@ The `ThreadCreateInfo` struct contains:
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
 - `InvalidPointer`: the entry or info pointer was null or invalid.
-
 
 ### `set_designated_receiver`
 Designates a thread in the current process as the thread which will receive messages from other processes who do not specify a thread ID.
