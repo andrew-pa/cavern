@@ -69,13 +69,16 @@ pub extern "C" fn _start() {
         p.write(0xab);
     }
 
-    send(process_id, Some(tid), b"Hello!", &[
-        SharedBufferCreateInfo {
+    send(
+        process_id,
+        Some(tid),
+        b"Hello!",
+        &[SharedBufferCreateInfo {
             flags: SharedBufferFlags::READ | SharedBufferFlags::WRITE,
             base_address: p,
             length: 8,
-        },
-    ])
+        }],
+    )
     .expect("send message");
 
     let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
