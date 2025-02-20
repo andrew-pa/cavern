@@ -123,8 +123,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    #[cfg(test)]
-                    std::println!("pop_free {order} {head:x?}");
+                    // trace!("pop_free {order} {head:x?}");
                     return Some(head);
                 }
                 Err(h) => head = NonNull::new(h)?,
@@ -140,8 +139,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     /// We assume that `block` is *not* shared between threads, and that the header is initialized
     /// and reference-convertable.
     unsafe fn push_free(&self, order: usize, mut block: NonNull<FreeHeader>) {
-        #[cfg(test)]
-        std::println!("push_free {order} {block:x?}");
+        // trace!("push_free {order} {block:x?}");
         assert!(block.is_aligned_to(usize::from(self.page_size)));
         let mut head = self.free_blocks[order].load(Ordering::Acquire);
         let mut i = 0;
@@ -216,15 +214,18 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
         }
     }
 
-    fn block_in_free_list(&self, order: usize, block: NonNull<FreeHeader>) -> bool {
-        let mut cur = NonNull::new(self.free_blocks[order].load(Ordering::Acquire));
-        while let Some(n) = cur {
-            if n == block {
-                return true;
+    fn is_block_free(&self, order: usize, block: NonNull<FreeHeader>) -> bool {
+        (order..MAX_ORDER).any(|o| {
+            let block_size = (1 << o) * self.page_size;
+            let mut cur = NonNull::new(self.free_blocks[o].load(Ordering::Acquire));
+            while let Some(n) = cur {
+                if n <= block && block < unsafe { n.byte_add(block_size) } {
+                    return true;
+                }
+                cur = unsafe { NonNull::new(n.as_ref().next_block.load(Ordering::Relaxed)) };
             }
-            cur = unsafe { NonNull::new(n.as_ref().next_block.load(Ordering::Relaxed)) };
-        }
-        false
+            false
+        })
     }
 
     #[cfg(test)]
@@ -296,12 +297,14 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
 
         let block = self.split_block_to_size(free_block, actual_order, order);
 
+        // debug!("got block {block:?} of order {order} from actual size {actual_order}");
+
         Ok(PhysicalAddress::from(block.as_ptr().cast()))
     }
 
     fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error> {
         let pages_ptr: *mut () = pages.into();
-        let block = NonNull::new(pages_ptr.cast()).context(UnknownPtrSnafu)?;
+        let block: NonNull<FreeHeader> = NonNull::new(pages_ptr.cast()).context(UnknownPtrSnafu)?;
         ensure!(num_pages > 0, InvalidSizeSnafu);
         ensure!(
             pages_ptr.cast() >= self.base_addr && pages_ptr.cast() < self.end_addr,
@@ -315,24 +318,19 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
         let order = block_size.ilog2() as usize;
         ensure!(order < MAX_ORDER, InvalidSizeSnafu);
 
+        // debug!("freeing pages at {block:?}, order={order}");
+
         let buddy = unsafe { self.buddy_of(block, order) };
 
-        #[cfg(test)]
-        std::println!("free block={block:x?} order={order} buddy={buddy:x?}");
+        // trace!("block={block:?} buddy={buddy:?}");
 
         if self.try_remove_buddy(order, buddy) {
-            #[cfg(test)]
-            std::println!("removed buddy");
             unsafe {
-                self.push_free(order + 1, block);
+                self.push_free(order + 1, block.min(buddy));
             }
         } else {
             // prevent double frees
-            ensure!(!self.block_in_free_list(order, block), UnknownPtrSnafu);
-            ensure!(!self.block_in_free_list(order + 1, block), UnknownPtrSnafu);
-            ensure!(!self.block_in_free_list(order + 1, buddy), UnknownPtrSnafu);
-            #[cfg(test)]
-            std::println!("buddy is allocated");
+            ensure!(!self.is_block_free(order, block), UnknownPtrSnafu);
             unsafe {
                 self.push_free(order, block);
             }
@@ -419,6 +417,92 @@ mod tests {
         setup_allocator_with_gap,
         cleanup_allocator
     );
+
+    #[test]
+    fn test_double_free_after_merge_canonicalization() {
+        // Set up an allocator over a small region.
+        let (cx, allocator) = setup_allocator();
+
+        // Allocate two buddy blocks of 2 pages each (which gives order 1).
+        let ptr1 = allocator
+            .allocate(2)
+            .expect("Failed to allocate 2 pages for ptr1");
+        let ptr2 = allocator
+            .allocate(2)
+            .expect("Failed to allocate 2 pages for ptr2");
+
+        // Free them in an order that causes a merge.
+        // (The allocator should canonicalize and merge the two blocks into a block at the lower address.)
+        allocator.free(ptr2, 2).expect("Free of ptr2 failed");
+        allocator.free(ptr1, 2).expect("Free of ptr1 failed");
+
+        // Now, a subsequent free call using either original pointer should be rejected.
+        let result1 = allocator.free(ptr1, 2);
+        assert!(
+            matches!(result1, Err(Error::UnknownPtr)),
+            "Double free using first pointer should fail"
+        );
+
+        let result2 = allocator.free(ptr2, 2);
+        assert!(
+            matches!(result2, Err(Error::UnknownPtr)),
+            "Double free using second pointer should fail"
+        );
+
+        cleanup_allocator(cx, allocator);
+    }
+
+    #[test]
+    fn test_free_non_canonical_pointer_after_merge() {
+        use crate::memory::{Error, PhysicalAddress};
+        use core::ptr::NonNull;
+
+        // Set up an allocator over a small region.
+        let (cx, allocator) = setup_allocator();
+
+        // Allocate two buddy blocks of 2 pages each (order 1).
+        let ptr1 = allocator
+            .allocate(2)
+            .expect("Failed to allocate 2 pages for ptr1");
+        let ptr2 = allocator
+            .allocate(2)
+            .expect("Failed to allocate 2 pages for ptr2");
+
+        // Get the pointer for the first block as a FreeHeader.
+        let block1 = NonNull::new(ptr1.cast::<u8>().into())
+            .unwrap()
+            .cast::<FreeHeader>();
+
+        // Compute its buddy at order 1.
+        let buddy = unsafe { allocator.buddy_of(block1, 1) };
+        let block1_addr = block1.as_ptr() as usize;
+        let buddy_addr = buddy.as_ptr() as usize;
+        // The canonical address is the lower of the two.
+        let canonical_addr = block1_addr.min(buddy_addr);
+
+        // Free both blocks so they merge.
+        allocator.free(ptr1, 2).expect("Free of ptr1 failed");
+        allocator.free(ptr2, 2).expect("Free of ptr2 failed");
+
+        // Now, simulate a free call using the non-canonical (higher) address.
+        let non_canonical_addr = if block1_addr == canonical_addr {
+            buddy_addr
+        } else {
+            block1_addr
+        };
+        // Only run this check if the non-canonical pointer really differs.
+        if non_canonical_addr != canonical_addr {
+            let non_canonical_ptr = non_canonical_addr as *mut ();
+            let non_canonical_phys = PhysicalAddress::from(non_canonical_ptr);
+            let result = allocator.free(non_canonical_phys, 2);
+            assert!(
+                matches!(result, Err(Error::UnknownPtr)),
+                "Freeing a block with a non-canonical pointer after merge should fail"
+            );
+        }
+
+        cleanup_allocator(cx, allocator);
+    }
 
     #[test]
     fn real_world_4gib() {
