@@ -546,11 +546,17 @@ pub mod tests {
                     // Test double free (should fail)
                     #[test]
                     fn double_free_tricky() {
+                        let _ = env_logger::try_init();
                         let (cx, allocator) = $setup_allocator();
+                        log::info!("first allocation");
                         let ptr = allocator.allocate(2).expect("Failed to allocate a page");
+                        log::info!("second allocation");
                         let ptr2 = allocator.allocate(2).expect("Failed to allocate a page");
+                        log::info!("free ptr2 {ptr2:?}");
                         allocator.free(ptr2, 2).expect("Failed to free allocated page");
+                        log::info!("free ptr {ptr:?}");
                         allocator.free(ptr, 2).expect("Failed to free allocated page");
+                        log::info!("do double free");
                         let result = allocator.free(ptr2, 2);
                         assert!(matches!(result, Err(Error::UnknownPtr)), "Double free should fail");
                         $cleanup_allocator(cx, allocator);
@@ -569,6 +575,7 @@ pub mod tests {
                     // Test allocating more pages than available (simulated out-of-memory condition), but do so slowly, and then free everything
                     #[test]
                     fn out_of_memory_slow() {
+                        let _ = env_logger::try_init();
                         let (cx, allocator) = $setup_allocator();
                         let mut ptrs = std::vec::Vec::new();
                         while ptrs.len() < 1_000_000 {
@@ -617,6 +624,7 @@ pub mod tests {
                     // Test interleaved allocate/free pattern
                     #[test]
                     fn interleaved_alloc_free() {
+                        let _ = env_logger::try_init();
                         let (cx, allocator) = $setup_allocator();
 
                         let ptr1 = allocator.allocate(2).expect("Failed to allocate pages");

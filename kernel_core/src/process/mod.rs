@@ -428,15 +428,16 @@ impl Process {
                 address: base_address,
             })
             .context(PageTablesSnafu)?;
+        trace!("freeing {base_address:?} = {paddr:?}, {size_in_pages} pages");
+        self.page_tables
+            .write()
+            .unmap(base_address, size_in_pages, MapBlockSize::Page)
+            .context(PageTablesSnafu)?;
         page_allocator
             .free(paddr, size_in_pages)
             .context(MemorySnafu {
                 cause: "free physical pages",
             })?;
-        self.page_tables
-            .write()
-            .unmap(base_address, size_in_pages, MapBlockSize::Page)
-            .context(PageTablesSnafu)?;
         self.address_space_allocator
             .lock()
             .free(base_address, size_in_pages)
