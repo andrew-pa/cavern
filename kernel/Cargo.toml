@@ -6,7 +6,7 @@ build = "build.rs"
 
 [dependencies]
 kernel_core = { path = "../kernel_core"}
-itertools = { version = "^0.13", default-features = false }
+itertools = { version = "^0.14", default-features = false }
 log = { version = "^0.4" }
 byteorder = { version = "^1.5", default-features = false }
 bitfield = { version = "^0.17" }

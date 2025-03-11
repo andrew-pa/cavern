@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-itertools = { version = "^0.13", default-features = false }
+itertools = { version = "^0.14", default-features = false }
 log = { version = "^0.4", features = ["serde"] }
 snafu = { version = "^0.8", default-features = false, features = ["unstable-core-error"] }
 
