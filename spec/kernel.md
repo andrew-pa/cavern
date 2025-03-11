@@ -1,6 +1,4 @@
-<center>
 # **Cavern: Kernel** #
-</center>
 
 This document describes the Cavern microkernel.
 

@@ -11,10 +11,11 @@ use kernel_api::{
     ThreadCreateInfo, allocate_heap_pages, exit_current_thread, exit_notification_subscription,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags, SharedBufferFlags},
     free_heap_pages, free_message, receive, send, spawn_thread, transfer_from_shared_buffer,
-    transfer_to_shared_buffer,
+    transfer_to_shared_buffer, write_log,
 };
 
 fn thread2(arg: usize) -> ! {
+    write_log(3, "hello from init, thread 2!").unwrap();
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
     let msg = receive(ReceiveFlags::empty()).expect("receive message");
     assert_eq!(msg.payload(), b"Hello!");
@@ -39,6 +40,8 @@ pub extern "C" fn _start() {
         kernel_api::EnvironmentValue::CurrentProcessId,
     ) as u32)
     .unwrap();
+
+    write_log(3, "hello from init!").unwrap();
 
     spawn_thread(&ThreadCreateInfo {
         entry: thread2,
@@ -96,11 +99,14 @@ pub extern "C" fn _start() {
 
     free_heap_pages(p, 1).expect("free");
 
+    write_log(3, "init successful").unwrap();
+
     exit_current_thread(7000 + process_id.get() + 1);
 }
 
 /// The panic handler.
 #[panic_handler]
 pub fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+    let _ = write_log(1, "panic!");
     exit_current_thread(1);
 }

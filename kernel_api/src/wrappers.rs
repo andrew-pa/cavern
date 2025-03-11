@@ -506,3 +506,28 @@ pub fn set_designated_receiver(tid: ThreadId) -> Result<(), ErrorCode> {
     }
     process_result(result)
 }
+
+/// Writes a message to the kernel log with log level `level` (a `log::Level`).
+/// This is for early boot user space components, before user space logging is set up.
+///
+/// # Errors
+/// - `InvalidFlags` if the log level is invalid (not in [1,5]).
+/// - `InvalidPointer` if the message slice is not valid.
+pub fn write_log(level: usize, msg: &str) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {l:x}",
+            "mov x1, {m:x}",
+            "mov x2, {ml:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            l = in(reg) level,
+            m = in(reg) msg.as_ptr(),
+            ml = in(reg) msg.len(),
+            res = out(reg) result,
+            call_number = const CallNumber::WriteLogMessage.into_num()
+        );
+    }
+    process_result(result)
+}

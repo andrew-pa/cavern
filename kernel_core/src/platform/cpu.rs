@@ -133,9 +133,7 @@ pub fn list_cores<'a, 'dt: 'a>(
         }
 
         let cpu_id = cpu_id.ok_or(OwnedParseError::PropertyNotFound { name: "reg" })?;
-        let enable_method = enable_method.ok_or(OwnedParseError::PropertyNotFound {
-            name: "enable-method",
-        })?;
+        let enable_method = enable_method.unwrap_or_default();
         cpus.push(CoreInfo {
             id: cpu_id,
             enable_method,
@@ -161,17 +159,17 @@ pub fn boot_all_cores<PM: PowerManager>(
     let mut successful = 0;
 
     for CoreInfo { id, enable_method } in cores {
+        if *id == 0 {
+            // this is the boot CPU that is currently running, it doesn't need to be started.
+            continue;
+        }
+
         ensure!(
             *enable_method == PM::enable_method_name(),
             UnsupportedEnableMethodSnafu {
                 method: core::str::from_utf8(enable_method).unwrap_or("unknown")
             }
         );
-
-        if *id == 0 {
-            // this is the boot CPU that is currently running, it doesn't need to be started.
-            continue;
-        }
 
         let stack_size = 4 * 1024 * 1024;
         let stack: VirtualAddress = page_allocator
@@ -222,7 +220,7 @@ mod tests {
 
     #[test]
     fn boot_cores() {
-        env_logger::init();
+        let _ = env_logger::try_init();
 
         let dt = test_tree_smp8();
         let mut pa = crate::memory::MockPageAllocator::new();
