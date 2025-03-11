@@ -74,6 +74,7 @@ pub enum CallNumber {
     FreeMessage,
     FreeSharedBuffers,
     ExitNotificationSubscription,
+    WriteLogMessage,
 }
 
 impl CallNumber {

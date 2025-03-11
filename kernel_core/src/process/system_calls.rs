@@ -249,6 +249,10 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 self.syscall_exit_notification_subscription(current_thread, registers)?;
                 Ok(SysCallEffect::Return(0))
             }
+            CallNumber::WriteLogMessage => {
+                self.syscall_write_log(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
         }
     }
 
@@ -739,6 +743,43 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             let mut s = thread.exit_subscribers.lock();
             process_subscription(&mut s);
         }
+
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_write_log<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let level = match registers.x[0] {
+            1 => log::Level::Error,
+            2 => log::Level::Warn,
+            3 => log::Level::Info,
+            4 => log::Level::Debug,
+            5 => log::Level::Trace,
+            _ => {
+                return Err(Error::InvalidFlags {
+                    reason: "unknown log level".into(),
+                    bits: registers.x[0],
+                })
+            }
+        };
+
+        let msg_data = user_space_memory
+            .check_slice::<u8>(registers.x[1].into(), registers.x[2])
+            .context(InvalidAddressSnafu {
+                cause: "message slice",
+            })?;
+
+        let msg = unsafe { core::str::from_utf8_unchecked(msg_data) };
+
+        let pid = current_thread.parent.as_ref().unwrap().id;
+        let tid = current_thread.id;
+
+        log::log!(level, "({pid}:{tid}) {msg}");
 
         Ok(())
     }
