@@ -22,6 +22,7 @@ The registry service provides the following methods using the basic RPC protocol
 ### Unregister Resource Provider
 ### Lookup Resource
 ### Create Resource
+### Delete Resource
 ### List Subresources
 
 ## Resource Provider Protocol
