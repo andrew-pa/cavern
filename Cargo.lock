@@ -172,6 +172,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "check-syscalls"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "kernel_api",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -292,6 +300,13 @@ name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1435fa1053d8b2fbbe9be7e97eca7f33d37b28409959813daefc1446a14247f1"
+
+[[package]]
+name = "egg"
+version = "0.1.0"
+dependencies = [
+ "kernel_api",
+]
 
 [[package]]
 name = "either"
@@ -442,14 +457,6 @@ checksum = "634d9b1461af396cad843f47fdba5597a4f9e6ddd4bfb6ff5d85028c25cb12f6"
 dependencies = [
  "unicode-bidi",
  "unicode-normalization",
-]
-
-[[package]]
-name = "init"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "kernel_api",
 ]
 
 [[package]]

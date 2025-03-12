@@ -4,6 +4,7 @@ This requires it to have a few somewhat disjoint responsibilities:
 - providing a service to interact with the initial RAM disk passed from the kernel as a file system
 - spawning the root resource registry process, root supervisor process and log redistributor
 - starting various core drivers based on the device tree blob passed from the kernel
+- spawning the supervisors for the rest of user space
 
 ## Initramfs Service
 The "egg" service exposes a standard file system under `/volume/init` that provides access to the contents of the initial RAM disk image.

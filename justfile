@@ -64,7 +64,7 @@ make-initrd-image mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
     mkdir -p {{img_dir}}
-    contents=("init")
+    contents=("check-syscalls" "egg")
     output={{img_dir / "initrd.img"}}
     newer_found=false
     for file in "${contents[@]}"; do
