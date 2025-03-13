@@ -1129,4 +1129,46 @@ mod tests {
     //TODO: if you map a block and then try to unmap a page in the block or try to remap a page in
     //the block, what should happen? implementing this the obvious way is complex, but returning an
     //error seems leaky.
+    
+    #[test_matrix([FourKiB, SixteenKiB])]
+    fn map_at_same_level_persist(page_size: PageSize) {
+        let pa = MockPageAllocator::new(page_size, 128);
+        {
+            let mut pt = PageTables::empty(&pa).unwrap();
+
+            // first mapping at 0x20_0000, one page
+            let first_mem = pa.allocate(1).unwrap();
+            pt.map(
+                0x20_0000.into(),
+                first_mem,
+                1,
+                MapBlockSize::Page,
+                &MemoryProperties::default()
+            ).unwrap();
+            dbg!(&pt);
+            check_mapping(&pt, first_mem, 0x20_0000.into(), 1, MapBlockSize::Page, true);
+
+            // second mapping at 0x21_0000, four pages
+            let second_mem = pa.allocate(4).unwrap();
+            pt.map(
+                0x21_0000.into(),
+                second_mem,
+                4,
+                MapBlockSize::Page,
+                &MemoryProperties { writable: true, ..Default::default() }
+            ).unwrap();
+            dbg!(&pt);
+            check_mapping(&pt, second_mem, 0x21_0000.into(), 4, MapBlockSize::Page, true);
+
+            // the first page should still be mapped!
+            check_mapping(&pt, first_mem, 0x20_0000.into(), 1, MapBlockSize::Page, true);
+
+            pa.free(first_mem, 1).unwrap();
+            pa.free(second_mem, 4).unwrap();
+
+            drop(pt);
+        }
+        pa.end_check();
+
+    }
 }
