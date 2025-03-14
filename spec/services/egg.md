@@ -35,7 +35,7 @@ The configuration file contains the following information:
 ## Kernel Interface
 The egg interfaces directly with the kernel due to being the first process spawned.
 The kernel must map the initial RAM disk image and device tree blob into its address space, using a read-only mapping.
-The egg expects before doing anything to receive a message from the kernel containing:
-- the address/length of the initial RAM disk in its virtual address space
-- the address/length of the device tree blob in its virtual address space
+The egg expects to receive a message from the kernel containing:
+- the address/length of the initial RAM disk in the service's virtual address space
+- the address/length of the device tree blob in the service's virtual address space
 

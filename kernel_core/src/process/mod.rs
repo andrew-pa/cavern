@@ -17,7 +17,9 @@ pub mod thread;
 use crate::{
     collections::HandleMap,
     memory::{
-        page_table::{MapBlockSize, MemoryProperties}, AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables, PhysicalAddress, VirtualAddress
+        page_table::{MapBlockSize, MemoryProperties},
+        AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
+        PhysicalAddress, VirtualAddress,
     },
 };
 
@@ -79,7 +81,10 @@ pub fn image_section_kind_as_properties(this: &ImageSectionKind) -> MemoryProper
 /// # Safety
 /// - `memory` must point to writable memory of size `section.total_size.div_ceil(page_size)` pages.
 /// - `section` must be valid, with `section.data` pointing to `section.data_size` bytes.
-unsafe fn copy_image_section_data_to_process_memory(section: &ImageSection, memory: PhysicalAddress) {
+unsafe fn copy_image_section_data_to_process_memory(
+    section: &ImageSection,
+    memory: PhysicalAddress,
+) {
     let dest_ptr: *mut u8 = memory.cast().into();
     if section.data_offset > 0 {
         core::ptr::write_bytes(dest_ptr, 0, section.data_offset);
@@ -89,7 +94,7 @@ unsafe fn copy_image_section_data_to_process_memory(section: &ImageSection, memo
         dest_ptr.byte_add(section.data_offset),
         section.data_size,
     );
-    if section.data_size+section.data_offset < section.total_size {
+    if section.data_size + section.data_offset < section.total_size {
         core::ptr::write_bytes(
             dest_ptr.byte_add(section.data_offset + section.data_size),
             0,
@@ -365,6 +370,37 @@ impl Process {
         }
     }
 
+    /// Map physical memory into the process' address space, returning the new virtual address of the memory.
+    ///
+    /// # Errors
+    /// Returns an error if the virtual addresses in the process' address space cannot be allocated, or if a page mapping operation fails.
+    fn map_arbitrary(
+        &self,
+        base_addr: PhysicalAddress,
+        size_in_pages: usize,
+        props: &MemoryProperties,
+    ) -> Result<VirtualAddress, ProcessManagerError> {
+        let virt_addr = self
+            .address_space_allocator
+            .lock()
+            .alloc(size_in_pages)
+            .context(MemorySnafu {
+                cause: "allocate virtual addresses",
+            })?
+            .start;
+        self.page_tables
+            .write()
+            .map(
+                virt_addr,
+                base_addr,
+                size_in_pages,
+                MapBlockSize::Page,
+                props,
+            )
+            .context(PageTablesSnafu)?;
+        Ok(virt_addr)
+    }
+
     /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
     ///
     /// Warning! The `page_allocator` must be the same as the one used to create the process, but
@@ -384,27 +420,30 @@ impl Process {
             .context(MemorySnafu {
                 cause: "allocate physical pages",
             })?;
-        let virt_addr = self
-            .address_space_allocator
-            .lock()
-            .alloc(size_in_pages)
-            .context(MemorySnafu {
-                cause: "allocate virtual addresses",
-            })?
-            .start;
         // let the page tables own this memory so that it is freed when the process is dropped.
         properties.owned = true;
-        self.page_tables
-            .write()
-            .map(
-                virt_addr,
-                phys_addr,
-                size_in_pages,
-                MapBlockSize::Page,
-                &properties,
-            )
-            .context(PageTablesSnafu)?;
-        Ok(virt_addr)
+        self.map_arbitrary(phys_addr, size_in_pages, &properties)
+    }
+
+    /// Map a region of physical memory into this process' address space without transferring
+    /// ownership to the process.
+    ///
+    /// # Safety
+    /// This is only safe if the physical memory will remain valid for the process to access (ie allocated) until
+    /// it is unmapped or the process exits.
+    /// This is mostly important if the memory is RAM allocated by the kernel, otherwise it is less
+    /// of an issue (ie device memory should be fine).
+    ///
+    /// # Errors
+    /// Returns an error if the virtual addresses in the process' address space cannot be allocated, or if a page mapping operation fails.
+    pub fn map_borrowed_memory(
+        &self,
+        base_addr: PhysicalAddress,
+        size_in_pages: usize,
+        props: &MemoryProperties,
+    ) -> Result<VirtualAddress, ProcessManagerError> {
+        assert!(!props.owned);
+        self.map_arbitrary(base_addr, size_in_pages, props)
     }
 
     /// Free previously allocated memory in the process' virtual memory space, including the
@@ -661,9 +700,12 @@ pub trait ProcessManager {
 /// Unit tests
 #[cfg(test)]
 pub mod tests {
-    use kernel_api::{ImageSection, ImageSectionKind, MessageHeader, ProcessId};
     use core::ptr;
-    use std::{sync::{Arc, LazyLock}, vec::Vec};
+    use kernel_api::{ImageSection, ImageSectionKind, MessageHeader, ProcessId};
+    use std::{
+        sync::{Arc, LazyLock},
+        vec::Vec,
+    };
 
     use test_case::test_case;
 
@@ -787,7 +829,11 @@ pub mod tests {
             data_offset,
             total_size,
             data_size,
-            data: if data_size > 0 { test_data.as_ptr() } else { ptr::null() },
+            data: if data_size > 0 {
+                test_data.as_ptr()
+            } else {
+                ptr::null()
+            },
             kind: ImageSectionKind::ReadOnly,
         };
 
@@ -805,29 +851,20 @@ pub mod tests {
 
         // Verify that the region before the data offset is zero.
         for i in 0..data_offset.min(total_size) {
-            assert_eq!(
-                result[i], 0,
-                "Byte {} (before data copy) should be zero", i
-            );
+            assert_eq!(result[i], 0, "Byte {} (before data copy) should be zero", i);
         }
 
         // Verify that the copied region contains the expected data.
         let copy_end = (data_offset + data_size).min(total_size);
         for i in data_offset..copy_end {
             let expected = test_data[i - data_offset];
-            assert_eq!(
-                result[i], expected,
-                "Byte {} in copied region mismatch", i
-            );
+            assert_eq!(result[i], expected, "Byte {} in copied region mismatch", i);
         }
 
         // Verify that any trailing bytes are zero.
         if data_offset + data_size < total_size {
             for i in (data_offset + data_size)..total_size {
-                assert_eq!(
-                    result[i], 0,
-                    "Byte {} after copied data should be zero", i
-                );
+                assert_eq!(result[i], 0, "Byte {} after copied data should be zero", i);
             }
         }
 
@@ -857,7 +894,11 @@ pub mod tests {
             data_offset,
             total_size,
             data_size,
-            data: if data_size > 0 { test_data.as_ptr() } else { ptr::null() },
+            data: if data_size > 0 {
+                test_data.as_ptr()
+            } else {
+                ptr::null()
+            },
             kind: ImageSectionKind::ReadOnly,
         };
 
@@ -873,18 +914,12 @@ pub mod tests {
 
         // Verify that the first `data_offset` bytes are zero.
         for i in 0..data_offset {
-            assert_eq!(
-                result[i], 0,
-                "Byte {} (before data copy) should be zero", i
-            );
+            assert_eq!(result[i], 0, "Byte {} (before data copy) should be zero", i);
         }
         // Verify that the remaining bytes match the test data.
         for i in data_offset..total_size {
             let expected = test_data[i - data_offset];
-            assert_eq!(
-                result[i], expected,
-                "Byte {} in copied region mismatch", i
-            );
+            assert_eq!(result[i], expected, "Byte {} in copied region mismatch", i);
         }
 
         PAGE_ALLOCATOR.free(memory, 1).expect("Free failed");

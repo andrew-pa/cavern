@@ -9,7 +9,39 @@
 #![deny(missing_docs)]
 #![allow(clippy::cast_possible_truncation)]
 
-use kernel_api::{exit_current_thread, write_log};
+use bytemuck::{Contiguous, Pod, Zeroable};
+use kernel_api::{
+    ErrorCode, KERNEL_FAKE_PID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
+};
+
+// heap
+// async?
+// RPC
+// initramfs parse
+// config
+// spawn processes from initramfs directly (parse elf)
+// device tree
+
+#[derive(Debug, Pod, Zeroable, Clone, Copy)]
+#[repr(C)]
+struct InitMessage {
+    initramfs_address: usize,
+    initramfs_length: usize,
+    device_tree_address: usize,
+    device_tree_length: usize,
+}
+
+fn main() -> Result<(), ErrorCode> {
+    write_log(3, "egg boot start")?;
+    let init_msg = receive(ReceiveFlags::empty())?;
+    assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_PID);
+    let init: &InitMessage = bytemuck::from_bytes(init_msg.payload());
+    assert!(init.initramfs_address > 0);
+    assert!(init.initramfs_length > 0);
+    assert!(init.device_tree_address > 0);
+    assert!(init.device_tree_length > 0);
+    Ok(())
+}
 
 /// The main entry point.
 ///
@@ -17,9 +49,12 @@ use kernel_api::{exit_current_thread, write_log};
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() {
-    write_log(3, "egg boot start").unwrap();
-
-    exit_current_thread(0);
+    match main() {
+        Ok(()) => exit_current_thread(0),
+        Err(e) => {
+            exit_current_thread(e.into_integer() as u32);
+        }
+    }
 }
 
 /// The panic handler.
