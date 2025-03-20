@@ -32,6 +32,8 @@ The configuration file contains the following information:
 - path to configuration file for user process supervisor
 - any parameters for the log redistributor process
 
+The configuration file must be named "config.json" in the initramfs archive root.
+
 ## Kernel Interface
 The egg interfaces directly with the kernel due to being the first process spawned.
 The kernel must map the initial RAM disk image and device tree blob into its address space, using a read-only mapping.

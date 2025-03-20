@@ -9,10 +9,21 @@
 #![deny(missing_docs)]
 #![allow(clippy::cast_possible_truncation)]
 
+extern crate alloc;
+
+use alloc::string::String;
 use bytemuck::{Contiguous, Pod, Zeroable};
+use config::Config;
 use kernel_api::{
     ErrorCode, KERNEL_FAKE_PID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
 };
+use snafu::{OptionExt, ResultExt, Snafu};
+use tar_no_std::TarArchiveRef;
+
+mod config;
+
+#[global_allocator]
+static ALLOCATOR: user_core::GlobalAllocator = user_core::init_allocator();
 
 // heap
 // async?
@@ -22,24 +33,107 @@ use kernel_api::{
 // spawn processes from initramfs directly (parse elf)
 // device tree
 
+/// The initial message sent to the service from the kernel.
 #[derive(Debug, Pod, Zeroable, Clone, Copy)]
 #[repr(C)]
-struct InitMessage {
+pub struct InitMessage {
+    /// Pointer to initramfs blob in service address space.
     initramfs_address: usize,
+    /// Length of initramfs blob in bytes.
     initramfs_length: usize,
+    /// Pointer to device tree blob in service address space.
     device_tree_address: usize,
+    /// Length of device tree blob in bytes.
     device_tree_length: usize,
 }
 
-fn main() -> Result<(), ErrorCode> {
-    write_log(3, "egg boot start")?;
-    let init_msg = receive(ReceiveFlags::empty())?;
+/// Errors
+#[derive(Debug, Snafu)]
+pub enum Error {
+    /// System call returned an error.
+    #[snafu(display("System call failed: {cause}"))]
+    SysCall {
+        /// Message
+        cause: String,
+        /// Underlying error code
+        source: ErrorCode,
+    },
+    /// Initramfs failed to parse.
+    #[snafu(display("Initramfs archive corrupt: {cause}"))]
+    InitramfsArchive {
+        /// Underlying `tar` error
+        cause: tar_no_std::CorruptDataError,
+    },
+    /// File not found in initramfs.
+    #[snafu(display("File in initramfs not found: {name}"))]
+    FileNotFound {
+        /// Name of file not found
+        name: String,
+    },
+    /// Failed to parse configuration file
+    ParseConfig {
+        /// Underlying error
+        source: serde_json_core::de::Error,
+    },
+}
+
+fn main() -> Result<(), Error> {
+    write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
+    let init_msg = receive(ReceiveFlags::empty()).context(SysCallSnafu {
+        cause: "receive init msg",
+    })?;
     assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_PID);
     let init: &InitMessage = bytemuck::from_bytes(init_msg.payload());
     assert!(init.initramfs_address > 0);
     assert!(init.initramfs_length > 0);
     assert!(init.device_tree_address > 0);
     assert!(init.device_tree_length > 0);
+
+    let initramfs_slice =
+        unsafe { core::slice::from_raw_parts(init.initramfs_address as _, init.initramfs_length) };
+    let initramfs =
+        TarArchiveRef::new(initramfs_slice).map_err(|cause| Error::InitramfsArchive { cause })?;
+
+    // Read configuration from initramfs
+    let config_file = initramfs
+        .entries()
+        .find(|e| e.filename().as_str().is_ok_and(|n| n == "config.json"))
+        .context(FileNotFoundSnafu {
+            name: "config.json",
+        })?;
+    let config: Config = serde_json_core::from_slice(config_file.data())
+        .context(ParseConfigSnafu)?
+        .0;
+
+    // Spawn the root resource registry directly using the initramfs
+    let resource_registry_bin = initramfs
+        .entries()
+        .find(|e| {
+            e.filename()
+                .as_str()
+                .is_ok_and(|n| n == config.binaries.resource_registry)
+        })
+        .context(FileNotFoundSnafu {
+            name: config.binaries.resource_registry,
+        })?;
+    let registry_pid = spawn_from_image_slice(resource_registry_bin)?;
+
+    // Spawn the root supervisor directly using the initramfs
+    let supervisor_bin = initramfs
+        .entries()
+        .find(|e| {
+            e.filename()
+                .as_str()
+                .is_ok_and(|n| n == config.binaries.supervisor)
+        })
+        .context(FileNotFoundSnafu {
+            name: config.binaries.supervisor,
+        })?;
+    let supervisor_pid = spawn_from_image_slice(supervisor_bin)?;
+
+    // Register the initramfs service with the registry
+    spawn_initramfs_service(registry_pid, initramfs)?;
+
     Ok(())
 }
 
@@ -52,14 +146,22 @@ pub extern "C" fn _start() {
     match main() {
         Ok(()) => exit_current_thread(0),
         Err(e) => {
-            exit_current_thread(e.into_integer() as u32);
+            let s = alloc::format!("{}", snafu::Report::from_error(&e));
+            let _ = write_log(1, &s);
+            exit_current_thread(match e {
+                Error::SysCall { source, .. } => source.into_integer() as u32 + 0x1000,
+                _ => 1,
+            });
         }
     }
 }
 
 /// The panic handler.
 #[panic_handler]
-pub fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     let _ = write_log(1, "panic!");
+    if let Some(s) = info.message().as_str() {
+        let _ = write_log(1, s);
+    }
     exit_current_thread(1);
 }

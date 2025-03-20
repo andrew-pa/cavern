@@ -4,5 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hashbrown = { version = "0.15", features = ["serde"] }
+snafu = { version = "0.8", default-features = false, features = ["unstable-core-error"] }
 bytemuck = "1"
+serde = { version = "1", default-features = false, features = [ "derive", "alloc" ] }
+serde-json-core = "0.6"
+tar-no-std = "0.3"
+
 kernel_api = { path = "../../kernel_api" }
+user_core = { path = "../../user_core" }
+

@@ -306,7 +306,13 @@ name = "egg"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "hashbrown",
  "kernel_api",
+ "serde",
+ "serde-json-core",
+ "snafu",
+ "tar-no-std",
+ "user_core",
 ]
 
 [[package]]
@@ -419,6 +425,7 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+ "serde",
 ]
 
 [[package]]
@@ -914,6 +921,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talc"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fcad3be1cfe36eb7d716a04791eba36a197da9d9b6ea1e28e64ac569da3701d"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "tar-no-std"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1062,6 +1078,15 @@ dependencies = [
  "form_urlencoded",
  "idna",
  "percent-encoding",
+]
+
+[[package]]
+name = "user_core"
+version = "0.1.0"
+dependencies = [
+ "kernel_api",
+ "spin",
+ "talc",
 ]
 
 [[package]]
