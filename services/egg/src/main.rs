@@ -10,6 +10,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
 extern crate alloc;
+mod config;
+mod spawn;
 
 use alloc::string::String;
 use bytemuck::{Contiguous, Pod, Zeroable};
@@ -18,9 +20,8 @@ use kernel_api::{
     ErrorCode, KERNEL_FAKE_PID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
 };
 use snafu::{OptionExt, ResultExt, Snafu};
+use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
-
-mod config;
 
 #[global_allocator]
 static ALLOCATOR: user_core::GlobalAllocator = user_core::init_allocator();
@@ -75,6 +76,14 @@ pub enum Error {
         /// Underlying error
         source: serde_json_core::de::Error,
     },
+    /// Failed to spawn a root process.
+    #[snafu(display("Failed to spawn {name} process"))]
+    SpawnRootProcess {
+        /// Conceptual name of process
+        name: String,
+        /// Underlying error
+        source: spawn::Error,
+    },
 }
 
 fn main() -> Result<(), Error> {
@@ -106,33 +115,21 @@ fn main() -> Result<(), Error> {
         .0;
 
     // Spawn the root resource registry directly using the initramfs
-    let resource_registry_bin = initramfs
-        .entries()
-        .find(|e| {
-            e.filename()
-                .as_str()
-                .is_ok_and(|n| n == config.binaries.resource_registry)
-        })
-        .context(FileNotFoundSnafu {
-            name: config.binaries.resource_registry,
-        })?;
-    let registry_pid = spawn_from_image_slice(resource_registry_bin)?;
+    let registry_pid = spawn_root_process(&initramfs, config.binaries.resource_registry).context(
+        SpawnRootProcessSnafu {
+            name: "root resource registry",
+        },
+    )?;
 
     // Spawn the root supervisor directly using the initramfs
-    let supervisor_bin = initramfs
-        .entries()
-        .find(|e| {
-            e.filename()
-                .as_str()
-                .is_ok_and(|n| n == config.binaries.supervisor)
-        })
-        .context(FileNotFoundSnafu {
-            name: config.binaries.supervisor,
-        })?;
-    let supervisor_pid = spawn_from_image_slice(supervisor_bin)?;
+    let supervisor_pid = spawn_root_process(&initramfs, config.binaries.supervisor).context(
+        SpawnRootProcessSnafu {
+            name: "root supervisor",
+        },
+    )?;
 
     // Register the initramfs service with the registry
-    spawn_initramfs_service(registry_pid, initramfs)?;
+    // spawn_initramfs_service(registry_pid, initramfs)?;
 
     Ok(())
 }

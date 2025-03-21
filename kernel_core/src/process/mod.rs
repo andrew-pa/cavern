@@ -288,7 +288,7 @@ impl Process {
                     &props,
                 )
                 .context(PageTablesSnafu)?;
-            trace!("process page tables after map: {page_tables:?}");
+            // trace!("process page tables after map: {page_tables:?}");
             // reserve the range with the allocator as well
             virt_alloc
                 .reserve_range(section.base_address.into(), size_in_pages)

@@ -37,25 +37,23 @@ impl OomHandler for KernelAllocOnOom {
         } else {
             layout_pages_req + 2
         };
-        match allocate_heap_pages(num_pages) {
-            Ok(mem) => {
-                unsafe {
-                    talc.claim(Span::new(mem, mem.byte_add(page_size * num_pages)))?;
-                }
-                Ok(())
+        if let Ok(mem) = allocate_heap_pages(num_pages) {
+            unsafe {
+                talc.claim(Span::new(mem, mem.byte_add(page_size * num_pages)))?;
             }
-            Err(_) => {
-                let _ = write_log(1, "failed to allocate memory");
-                Err(())
-            }
+            Ok(())
+        } else {
+            let _ = write_log(1, "failed to allocate memory");
+            Err(())
         }
     }
 }
 
-/// Allocator type.
+/// Global allocator type
 pub type GlobalAllocator = talc::Talck<spin::Mutex<()>, KernelAllocOnOom>;
 
-/// Create a new allocator.
+/// Create a new global allocator that provides a heap backed by memory allocated by the kernel.
+#[must_use]
 pub const fn init_allocator() -> GlobalAllocator {
     talc::Talc::new(KernelAllocOnOom::new()).lock()
 }

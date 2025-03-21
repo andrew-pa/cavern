@@ -1,3 +1,3 @@
 [workspace]
-members = [ "kernel", "kernel_api", "kernel_core", "services/check-syscalls" , "services/egg", "user_core"]
+members = [ "kernel", "kernel_api", "kernel_core", "services/check-syscalls" , "services/egg", "services/registry", "user_core"]
 resolver = "2"

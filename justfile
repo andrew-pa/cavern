@@ -63,25 +63,45 @@ make-kernel-image mkimage_args="": build
 make-initrd-image mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
-    mkdir -p {{img_dir}}
-    contents=("check-syscalls" "egg")
-    output={{img_dir / "initrd.img"}}
-    newer_found=false
-    for file in "${contents[@]}"; do
-        if [[ "{{binary_path}}/$file" -nt "$output" ]]; then
-            echo "$file changed in initrd image"
-            newer_found=true
-            break
+
+    # Ensure output directory exists
+    mkdir -p "{{img_dir}}"
+    output="{{img_dir}}/initrd.img"
+
+    # Only proceed if the output image doesn't exist or if any source file is newer
+    if [ -f "$output" ]; then
+        new_binary=$(find {{binary_path}} -maxdepth 1 -type f -executable ! -name "kernel" -newer "$output" -print -quit)
+        new_template=$(find initramfs_template -type f -newer "$output" -print -quit)
+        if [ -z "$new_binary" ] && [ -z "$new_template" ]; then
+            echo "initrd image already up-to-date"
+            exit 0
         fi
-    done
-    if ! $newer_found; then
-        echo "initrd image already up-to-date"
-        exit 0
     fi
+
+    # Create temporary staging directory and archive file
+    staging_dir=$(mktemp -d -t initrd.XXXXXX)
     archive_path=$(mktemp -t initrd.XXXXXX.tar)
-    tar --format=ustar -cf $archive_path -C {{binary_path}} ${contents[@]}
-    {{mkimage_bin}} -A arm64 -O linux -T ramdisk -C none -a {{kernel_load_addr}} -n "cavern-initrd" -d $archive_path {{mkimage_args}} $output
-    rm $archive_path
+
+    # Ensure temporary files are cleaned up on exit (whether normally or due to error)
+    cleanup() {
+        rm -rf "$staging_dir" "$archive_path"
+    }
+    trap cleanup EXIT
+
+    # Copy executable binaries (excluding "kernel") into staging directory
+    find {{binary_path}} -maxdepth 1 -type f -executable ! -name "kernel" -exec cp {} "$staging_dir" \;
+
+    # Copy configuration/template files into staging directory
+    cp -R initramfs_template/* "$staging_dir"
+
+    # Create tar archive in USTAR format from the staging directory
+    find $staging_dir -mindepth 1 -printf "%P\n" | tar --format=ustar -cf "$archive_path" -C "$staging_dir" -T -
+
+    # Generate the final initrd image using mkimage_bin
+    {{mkimage_bin}} -A arm64 -O linux -T ramdisk -C none -a {{kernel_load_addr}} \
+        -n "cavern-initrd" -d "$archive_path" {{mkimage_args}} "$output"
+
+
 
 make-images mkimage_args="": (make-kernel-image mkimage_args) (make-initrd-image mkimage_args)
 

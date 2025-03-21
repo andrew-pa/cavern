@@ -1,0 +1,10 @@
+[package]
+name = "registry"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+snafu = { version = "0.8", default-features=false, features=["unstable-core-error"] }
+bytemuck = "1"
+kernel_api = { path = "../../kernel_api" }
+user_core = { path = "../../user_core" }
