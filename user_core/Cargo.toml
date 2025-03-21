@@ -1,0 +1,9 @@
+[package]
+name = "user_core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel_api = { path = "../kernel_api" }
+talc = "4"
+spin = "0.9"

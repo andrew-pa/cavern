@@ -53,6 +53,14 @@ pub enum ErrorCode {
     InsufficentPermissions,
 }
 
+impl core::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?} ({})", self.into_integer())
+    }
+}
+
+impl core::error::Error for ErrorCode {}
+
 /// System call numbers, one per call.
 /// See the specification for more details.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
