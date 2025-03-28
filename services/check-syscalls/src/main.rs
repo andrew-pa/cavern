@@ -1,6 +1,4 @@
-//! The Cavern `init` process.
-//!
-//! The `init` process is responsible for starting up user space.
+//! A quick test to make sure that system calls operate as expected.
 #![no_std]
 #![no_main]
 #![deny(missing_docs)]
@@ -15,7 +13,7 @@ use kernel_api::{
 };
 
 fn thread2(arg: usize) -> ! {
-    write_log(3, "hello from init, thread 2!").unwrap();
+    write_log(3, "hello from user space, thread 2!").unwrap();
     let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
     let msg = receive(ReceiveFlags::empty()).expect("receive message");
     assert_eq!(msg.payload(), b"Hello!");
@@ -41,7 +39,7 @@ pub extern "C" fn _start() {
     ) as u32)
     .unwrap();
 
-    write_log(3, "hello from init!").unwrap();
+    write_log(3, "hello from user space!").unwrap();
 
     spawn_thread(&ThreadCreateInfo {
         entry: thread2,

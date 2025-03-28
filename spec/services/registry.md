@@ -7,6 +7,7 @@ The registry service provides a hierarchical namespace.
 Each namespace has a name and can contain subnamespaces or resources.
 Each resource is identified by a unique path string.
 Paths are UTF-8 strings where `/`s delimits a sequence of names representing a path through the resource namespace hierarchy.
+Namespace names can be strings of any UTF-8 characters except `/`.
 
 ### Root Organization
 The root namespace contains the following top level subnamespaces:

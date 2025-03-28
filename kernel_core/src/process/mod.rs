@@ -19,7 +19,7 @@ use crate::{
     memory::{
         page_table::{MapBlockSize, MemoryProperties},
         AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
-        VirtualAddress,
+        PhysicalAddress, VirtualAddress,
     },
 };
 
@@ -72,6 +72,34 @@ pub fn image_section_kind_as_properties(this: &ImageSectionKind) -> MemoryProper
             executable: true,
             ..MemoryProperties::default()
         },
+    }
+}
+
+/// Copy the data for an image section into memory allocated for the process, with the correct offset.
+/// Any leftover bytes in the section (before/after the data) will be zeroed.
+///
+/// # Safety
+/// - `memory` must point to writable memory of size `section.total_size.div_ceil(page_size)` pages.
+/// - `section` must be valid, with `section.data` pointing to `section.data_size` bytes.
+unsafe fn copy_image_section_data_to_process_memory(
+    section: &ImageSection,
+    memory: PhysicalAddress,
+) {
+    let dest_ptr: *mut u8 = memory.cast().into();
+    if section.data_offset > 0 {
+        core::ptr::write_bytes(dest_ptr, 0, section.data_offset);
+    }
+    core::ptr::copy_nonoverlapping(
+        section.data,
+        dest_ptr.byte_add(section.data_offset),
+        section.data_size,
+    );
+    if section.data_size + section.data_offset < section.total_size {
+        core::ptr::write_bytes(
+            dest_ptr.byte_add(section.data_offset + section.data_size),
+            0,
+            section.total_size - (section.data_size + section.data_offset),
+        );
     }
 }
 
@@ -203,12 +231,6 @@ pub struct Process {
     pub exit_subscribers: Mutex<Vec<(Id, Option<ThreadId>)>>,
 }
 
-impl core::fmt::Debug for Process {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "<Process #{}>", self.id)
-    }
-}
-
 impl Process {
     /// Create a new process object and sets up the process' virtual memory space using the `image`.
     ///
@@ -251,27 +273,12 @@ impl Process {
                     ),
                 })?;
             // copy the data / zero the remainder
-            let ptr: *mut u8 = memory.cast().into();
             unsafe {
-                if section.data_offset > 0 {
-                    core::ptr::write_bytes(ptr, 0, section.data_offset);
-                }
-                core::ptr::copy_nonoverlapping(
-                    section.data,
-                    ptr.byte_add(section.data_offset),
-                    section.data_size,
-                );
-                if section.data_size < section.total_size {
-                    core::ptr::write_bytes(
-                        ptr.byte_add(section.data_offset + section.data_size),
-                        0,
-                        section.total_size - section.data_size,
-                    );
-                }
+                copy_image_section_data_to_process_memory(section, memory);
             }
             // map it into the process
             let props = image_section_kind_as_properties(&section.kind);
-            trace!("mapping setion {section:?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
+            trace!("mapping setion {section:x?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
             page_tables
                 .map(
                     section.base_address.into(),
@@ -281,6 +288,7 @@ impl Process {
                     &props,
                 )
                 .context(PageTablesSnafu)?;
+            // trace!("process page tables after map: {page_tables:?}");
             // reserve the range with the allocator as well
             virt_alloc
                 .reserve_range(section.base_address.into(), size_in_pages)
@@ -362,6 +370,37 @@ impl Process {
         }
     }
 
+    /// Map physical memory into the process' address space, returning the new virtual address of the memory.
+    ///
+    /// # Errors
+    /// Returns an error if the virtual addresses in the process' address space cannot be allocated, or if a page mapping operation fails.
+    fn map_arbitrary(
+        &self,
+        base_addr: PhysicalAddress,
+        size_in_pages: usize,
+        props: &MemoryProperties,
+    ) -> Result<VirtualAddress, ProcessManagerError> {
+        let virt_addr = self
+            .address_space_allocator
+            .lock()
+            .alloc(size_in_pages)
+            .context(MemorySnafu {
+                cause: "allocate virtual addresses",
+            })?
+            .start;
+        self.page_tables
+            .write()
+            .map(
+                virt_addr,
+                base_addr,
+                size_in_pages,
+                MapBlockSize::Page,
+                props,
+            )
+            .context(PageTablesSnafu)?;
+        Ok(virt_addr)
+    }
+
     /// Allocate new memory in the process' virtual memory space, and back it with physical pages.
     ///
     /// Warning! The `page_allocator` must be the same as the one used to create the process, but
@@ -381,27 +420,30 @@ impl Process {
             .context(MemorySnafu {
                 cause: "allocate physical pages",
             })?;
-        let virt_addr = self
-            .address_space_allocator
-            .lock()
-            .alloc(size_in_pages)
-            .context(MemorySnafu {
-                cause: "allocate virtual addresses",
-            })?
-            .start;
         // let the page tables own this memory so that it is freed when the process is dropped.
         properties.owned = true;
-        self.page_tables
-            .write()
-            .map(
-                virt_addr,
-                phys_addr,
-                size_in_pages,
-                MapBlockSize::Page,
-                &properties,
-            )
-            .context(PageTablesSnafu)?;
-        Ok(virt_addr)
+        self.map_arbitrary(phys_addr, size_in_pages, &properties)
+    }
+
+    /// Map a region of physical memory into this process' address space without transferring
+    /// ownership to the process.
+    ///
+    /// # Safety
+    /// This is only safe if the physical memory will remain valid for the process to access (ie allocated) until
+    /// it is unmapped or the process exits.
+    /// This is mostly important if the memory is RAM allocated by the kernel, otherwise it is less
+    /// of an issue (ie device memory should be fine).
+    ///
+    /// # Errors
+    /// Returns an error if the virtual addresses in the process' address space cannot be allocated, or if a page mapping operation fails.
+    pub fn map_borrowed_memory(
+        &self,
+        base_addr: PhysicalAddress,
+        size_in_pages: usize,
+        props: &MemoryProperties,
+    ) -> Result<VirtualAddress, ProcessManagerError> {
+        assert!(!props.owned);
+        self.map_arbitrary(base_addr, size_in_pages, props)
     }
 
     /// Free previously allocated memory in the process' virtual memory space, including the
@@ -565,6 +607,12 @@ impl Process {
     }
 }
 
+impl core::fmt::Debug for Process {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "<Process #{}>", self.id)
+    }
+}
+
 /// Errors arising from [`ProcessManager`] operations.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
@@ -652,10 +700,16 @@ pub trait ProcessManager {
 /// Unit tests
 #[cfg(test)]
 pub mod tests {
-    use kernel_api::{MessageHeader, ProcessId};
-    use std::sync::{Arc, LazyLock};
+    use core::ptr;
+    use kernel_api::{ImageSection, ImageSectionKind, MessageHeader, ProcessId};
+    use std::{
+        sync::{Arc, LazyLock},
+        vec::Vec,
+    };
 
-    use crate::memory::{tests::MockPageAllocator, PageSize, VirtualAddress};
+    use test_case::test_case;
+
+    use crate::memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress};
 
     use super::{
         thread::{ProcessorState, State},
@@ -737,5 +791,137 @@ pub mod tests {
                 .unwrap();
         }
         assert_eq!(&message_data_check, message);
+    }
+
+    // Parameterized tests covering a mix of offsets and sizes.
+    #[test_case(0, 10, 10; "Exact copy with no padding")]
+    #[test_case(4, 6, 10; "Leading zeros only (offset > 0, no trailing)")]
+    #[test_case(0, 6, 10; "Trailing zeros only (data_size < total_size)")]
+    #[test_case(2, 3, 10; "Both leading and trailing padding")]
+    #[test_case(10, 0, 10; "Offset equal to total_size, no data copied")]
+    #[test_case(0, 0, 10; "No offset and no data: entire region zeroed")]
+    #[test_case(5, 0, 8; "Nonzero offset, no data, trailing zeros")]
+    #[test_case(3, 4, 8; "Data in the middle with trailing zeros")]
+    fn test_copy_image_section(data_offset: usize, data_size: usize, total_size: usize) {
+        // For simplicity, restrict total_size to one page.
+        let page_size: usize = PageSize::FourKiB.into();
+        assert!(
+            total_size <= page_size,
+            "For these tests total_size must be <= one page ({} bytes)",
+            page_size
+        );
+
+        // Create test data of length `data_size` with a simple pattern.
+        let test_data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
+
+        // Allocate one page using our mock allocator.
+        let memory = PAGE_ALLOCATOR.allocate(1).expect("Allocation failed");
+
+        // Fill the destination region with a known nonzero value.
+        unsafe {
+            let dest_ptr: *mut u8 = memory.cast().into();
+            ptr::write_bytes(dest_ptr, 0xAA, total_size);
+        }
+
+        // Construct an ImageSection for testing.
+        let section = ImageSection {
+            base_address: 0, // Not used in the copy function.
+            data_offset,
+            total_size,
+            data_size,
+            data: if data_size > 0 {
+                test_data.as_ptr()
+            } else {
+                ptr::null()
+            },
+            kind: ImageSectionKind::ReadOnly,
+        };
+
+        // Perform the copy. SAFETY: We have allocated a region that is large enough and writable.
+        unsafe {
+            crate::process::copy_image_section_data_to_process_memory(&section, memory);
+        }
+
+        // Read back the destination memory.
+        let mut result = vec![0u8; total_size];
+        unsafe {
+            let dest_ptr: *mut u8 = memory.cast().into();
+            ptr::copy_nonoverlapping(dest_ptr, result.as_mut_ptr(), total_size);
+        }
+
+        // Verify that the region before the data offset is zero.
+        for i in 0..data_offset.min(total_size) {
+            assert_eq!(result[i], 0, "Byte {} (before data copy) should be zero", i);
+        }
+
+        // Verify that the copied region contains the expected data.
+        let copy_end = (data_offset + data_size).min(total_size);
+        for i in data_offset..copy_end {
+            let expected = test_data[i - data_offset];
+            assert_eq!(result[i], expected, "Byte {} in copied region mismatch", i);
+        }
+
+        // Verify that any trailing bytes are zero.
+        if data_offset + data_size < total_size {
+            for i in (data_offset + data_size)..total_size {
+                assert_eq!(result[i], 0, "Byte {} after copied data should be zero", i);
+            }
+        }
+
+        // Free the allocated memory.
+        PAGE_ALLOCATOR.free(memory, 1).expect("Free failed");
+    }
+
+    /// A dedicated test that uses a full page.
+    #[test]
+    fn test_copy_image_section_full_page() {
+        let page_size: usize = PageSize::FourKiB.into();
+        let total_size = page_size;
+        let data_offset = 100;
+        let data_size = total_size - data_offset;
+        let test_data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
+
+        let memory = PAGE_ALLOCATOR.allocate(1).expect("Allocation failed");
+
+        // Initialize destination memory with a distinct pattern.
+        unsafe {
+            let dest_ptr: *mut u8 = memory.cast().into();
+            ptr::write_bytes(dest_ptr, 0xBB, total_size);
+        }
+
+        let section = ImageSection {
+            base_address: 0,
+            data_offset,
+            total_size,
+            data_size,
+            data: if data_size > 0 {
+                test_data.as_ptr()
+            } else {
+                ptr::null()
+            },
+            kind: ImageSectionKind::ReadOnly,
+        };
+
+        unsafe {
+            crate::process::copy_image_section_data_to_process_memory(&section, memory);
+        }
+
+        let mut result = vec![0u8; total_size];
+        unsafe {
+            let dest_ptr: *mut u8 = memory.cast().into();
+            ptr::copy_nonoverlapping(dest_ptr, result.as_mut_ptr(), total_size);
+        }
+
+        // Verify that the first `data_offset` bytes are zero.
+        for i in 0..data_offset {
+            assert_eq!(result[i], 0, "Byte {} (before data copy) should be zero", i);
+        }
+        // Verify that the remaining bytes match the test data.
+        for i in data_offset..total_size {
+            let expected = test_data[i - data_offset];
+            assert_eq!(result[i], expected, "Byte {} in copied region mismatch", i);
+        }
+
+        PAGE_ALLOCATOR.free(memory, 1).expect("Free failed");
     }
 }

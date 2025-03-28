@@ -1,0 +1,9 @@
+{
+    "binaries": {
+        "resource_registry": "registry",
+        "supervisor": "",
+        "log_redistributor": ""
+    },
+    "drivers": [ ],
+    "supervisors": [ ]
+}

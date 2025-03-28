@@ -130,6 +130,10 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         config.init_exec_name,
         process::PROCESS_MANAGER.get().unwrap(),
         memory::page_allocator().page_size(),
+        (
+            device_tree_blob.cast(),
+            device_tree.header().total_size() as usize,
+        ),
     )
     .expect("spawn init process");
 

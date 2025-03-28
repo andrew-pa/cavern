@@ -15,7 +15,7 @@ impl Default for Config<'_> {
     fn default() -> Self {
         Self {
             log_level: log::LevelFilter::Trace,
-            init_exec_name: "init",
+            init_exec_name: "egg",
         }
     }
 }
