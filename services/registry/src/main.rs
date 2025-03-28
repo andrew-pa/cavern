@@ -8,14 +8,12 @@
 extern crate alloc;
 
 use alloc::string::String;
-use kernel_api::{
-    exit_current_thread, write_log, ErrorCode,
-};
-use snafu::{ResultExt, Snafu};
 use bytemuck::Contiguous;
+use kernel_api::{ErrorCode, exit_current_thread, write_log};
+use snafu::{ResultExt, Snafu};
 
 #[global_allocator]
-static ALLOCATOR: user_core::GlobalAllocator = user_core::init_allocator();
+static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
 
 /// Errors
 #[derive(Debug, Snafu)]

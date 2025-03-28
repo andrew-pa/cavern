@@ -24,7 +24,7 @@ use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
 
 #[global_allocator]
-static ALLOCATOR: user_core::GlobalAllocator = user_core::init_allocator();
+static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
 
 // heap
 // async?

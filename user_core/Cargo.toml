@@ -5,5 +5,11 @@ edition = "2024"
 
 [dependencies]
 kernel_api = { path = "../kernel_api" }
+bitfield = "0.19"
+bytemuck = "1"
+hashbrown = "0.15"
 talc = "4"
+
+futures = { version = "0.3", default-features=false, features=["alloc"] }
+crossbeam = { version = "0.8", default-features=false, features=["alloc"] }
 spin = "0.9"
