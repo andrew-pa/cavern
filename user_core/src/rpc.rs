@@ -1,6 +1,7 @@
 //! Definitions for user space remote procedure call (RPC) protocol.
 use bitfield::bitfield;
 use bytemuck::{Contiguous, Pod, Zeroable};
+use kernel_api::Message;
 
 /// The type of an RPC message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Contiguous)]
@@ -8,9 +9,6 @@ use bytemuck::{Contiguous, Pod, Zeroable};
 pub enum MessageType {
     /// A request to run a procedure.
     Request,
-    /// A request to run a procedure, and then send the response to the designated receiver of the
-    /// requester, ignoring the thread id.
-    RequestRespondToDesignated,
     /// A request to run a procedure and then send the response elsewhere.
     ProxiedRequest,
     /// A response indicating the result of a [`Request`].
@@ -49,4 +47,8 @@ unsafe impl Zeroable for MessageHeader {}
 unsafe impl Pod for MessageHeader {}
 
 /// An RPC service.
-pub trait Service {}
+pub trait Service {
+    /// Handle an incoming request or notification message.
+    /// The service must free the message and any attached buffers when it is finished with them.
+    fn handle_message(&self, msg: Message) -> impl Future<Output = ()> + Send + 'static;
+}

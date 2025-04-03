@@ -1,4 +1,4 @@
-//! Async task executor and other async machinary.
+//! Async task executor that runs the poll and receive loops.
 use alloc::{boxed::Box, sync::Arc, task::Wake};
 use core::{
     future::Future,
@@ -8,14 +8,17 @@ use core::{
 };
 use crossbeam::queue::ArrayQueue;
 use kernel_api::{
-    ErrorCode, Message, ProcessId, SharedBufferCreateInfo, ThreadId, flags::ReceiveFlags, receive,
-    send, spawn_thread,
+    ErrorCode, Message,
+    flags::{FreeMessageFlags, ReceiveFlags},
+    receive,
 };
-use spin::{Mutex, once::Once};
+use spin::Mutex;
 
 use hashbrown::HashMap;
 
 use crate::rpc::{MessageHeader, MessageType, Service};
+
+use super::msg::PendingResponseState;
 
 type TaskId = u64;
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -47,12 +50,12 @@ impl Wake for TaskWaker {
     }
 }
 
-struct Executor {
+pub struct Executor {
     ready_queue: ReadyTaskQueue,
     new_task_queue: NewTaskQueue,
     next_task_id: Arc<AtomicU64>,
     // TODO: we could use a queue for this and reduce locking like the ready_queue, maybe?
-    pending_responses: Mutex<HashMap<u32, PendingResponseState>>,
+    pub(super) pending_responses: Mutex<HashMap<u32, PendingResponseState>>,
 }
 
 impl Default for Executor {
@@ -67,7 +70,7 @@ impl Default for Executor {
 }
 
 impl Executor {
-    fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+    pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
         let task_id = self
             .next_task_id
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -77,18 +80,27 @@ impl Executor {
         }
     }
 
-    fn wake_task_for_msg(&self, msg: Message) {
+    fn process_incoming_message_for_task_loop(&self, msg: Message) {
         let hdr: &MessageHeader =
             bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
-        self.pending_responses
-            .lock()
-            .entry(hdr.correlation_id())
-            .or_default()
-            .ready(msg);
+        match hdr.msg_type() {
+            MessageType::Request | MessageType::ProxiedRequest | MessageType::Notification => {
+                // we're not a receiver thread so drop the message
+                msg.free(FreeMessageFlags::FREE_BUFFERS);
+            }
+            MessageType::Response => {
+                let mut pr = self.pending_responses.lock();
+                if let Some(p) = pr.get_mut(&hdr.correlation_id()) {
+                    p.become_ready(msg);
+                } else {
+                    pr.insert(hdr.correlation_id(), PendingResponseState::Ready(msg));
+                }
+            }
+        }
     }
 
     /// Run the task executor forever. This is intended to be the effective entry point for the executor thread.
-    fn task_poll_loop(&self) -> ! {
+    pub fn task_poll_loop(&self) -> ! {
         let mut tasks = HashMap::new();
         let mut waker_cache = HashMap::new();
 
@@ -105,7 +117,7 @@ impl Executor {
             // check to see if this thread received any messages
             loop {
                 match receive(ReceiveFlags::NONBLOCKING) {
-                    Ok(msg) => self.wake_task_for_msg(msg),
+                    Ok(msg) => self.process_incoming_message_for_task_loop(msg),
                     Err(ErrorCode::WouldBlock) => break,
                     Err(e) => panic!("failed to receive message: {e}"),
                 }
@@ -133,114 +145,24 @@ impl Executor {
     }
 
     /// Run a receive only message loop to wake tasks waiting for responses and handle incoming requests.
-    fn designated_receiver_message_loop(&self, service: impl Service) -> ! {
+    pub fn designated_receiver_message_loop(&self, service: impl Service) -> ! {
         loop {
             let msg = receive(ReceiveFlags::empty()).unwrap();
-            todo!();
-            self.wake_task_for_msg(msg);
-        }
-    }
-}
-
-static EXECUTOR: Once<Executor> = Once::new();
-
-/// Spawn a future on the global executor.
-pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
-    EXECUTOR.get().expect("task executor initialized").spawn(f);
-}
-
-#[derive(Default)]
-enum PendingResponseState {
-    #[default]
-    NeverPolled,
-    Waiting(Waker),
-    Ready(Message),
-    Taken,
-}
-
-unsafe impl Sync for PendingResponseState {}
-
-impl PendingResponseState {
-    fn ready(&mut self, msg: Message) {
-        match core::mem::replace(self, Self::Ready(msg)) {
-            Self::Waiting(w) => w.wake(),
-            // it is possible that we got a response *before* we got polled
-            Self::NeverPolled => {}
-            _ => panic!("received message twice for same id"),
-        }
-    }
-
-    fn poll(&mut self, waker: &Waker) -> Poll<Message> {
-        if matches!(self, Self::Ready(_)) {
-            match core::mem::replace(self, Self::Taken) {
-                Self::Ready(m) => Poll::Ready(m),
-                _ => unreachable!(),
+            let hdr: &MessageHeader =
+                bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
+            match hdr.msg_type() {
+                MessageType::Request | MessageType::ProxiedRequest | MessageType::Notification => {
+                    self.spawn(service.handle_message(msg));
+                }
+                MessageType::Response => {
+                    let mut pr = self.pending_responses.lock();
+                    if let Some(p) = pr.get_mut(&hdr.correlation_id()) {
+                        p.become_ready(msg);
+                    } else {
+                        pr.insert(hdr.correlation_id(), PendingResponseState::Ready(msg));
+                    }
+                }
             }
-        } else {
-            assert!(
-                !matches!(self, Self::Taken),
-                "polled message already received"
-            );
-            *self = Self::Waiting(waker.clone());
-            Poll::Pending
         }
     }
-}
-
-struct ResponseFuture {
-    id: u32,
-}
-
-impl Future for ResponseFuture {
-    type Output = Message;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        EXECUTOR
-            .get()
-            .expect("init task executor")
-            .pending_responses
-            .lock()
-            .entry(self.id)
-            .or_default()
-            .poll(cx.waker())
-    }
-}
-
-/// Send an RPC request to the destination, returning a future that resolves when the response is
-/// received.
-///
-/// To be function correct, `header` must be a slice into `full_msg`, or in other words the header must be
-/// included in `full_msg` at the beginning.
-pub fn send_request<'m>(
-    dst_process_id: ProcessId,
-    dst_thread_id: Option<ThreadId>,
-    full_msg: &'m [u8],
-    header: &'m MessageHeader,
-    buffers: &[SharedBufferCreateInfo],
-) -> Result<impl Future<Output = Message>, ErrorCode> {
-    // TODO: assert message is request? assert that header is in full_msg?
-    send(dst_process_id, dst_thread_id, full_msg, buffers)?;
-    Ok(ResponseFuture {
-        id: header.correlation_id(),
-    })
-}
-
-fn task_thread_entry(_: usize) -> ! {
-    EXECUTOR
-        .get()
-        .expect("executor initialized")
-        .task_poll_loop()
-}
-
-/// Run the task executor with a root task and a service for handling RPC requests.
-pub fn run(service: impl Service, root: impl Future<Output = ()> + Send + 'static) -> ! {
-    let exec = EXECUTOR.call_once(Executor::default);
-    exec.spawn(root);
-    spawn_thread(&kernel_api::ThreadCreateInfo {
-        entry: task_thread_entry,
-        stack_size: 1024,
-        user_data: 0,
-    })
-    .expect("spawn task polling thread");
-    exec.designated_receiver_message_loop(service)
 }

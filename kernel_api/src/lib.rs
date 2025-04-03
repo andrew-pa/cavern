@@ -299,6 +299,12 @@ impl Message {
             core::slice::from_raw_parts(ptr, self.header().num_buffers)
         }
     }
+
+    /// Free this message's space in the inbox.
+    #[cfg(feature = "wrappers")]
+    pub fn free(self, flags: flags::FreeMessageFlags) {
+        free_message(flags, self).unwrap()
+    }
 }
 
 /// The unique ID of a shared buffer local to the receiving process.
