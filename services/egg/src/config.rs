@@ -34,6 +34,9 @@ pub struct SupervisorConfig<'a> {
 /// Configuration for the `egg` service.
 #[derive(Debug, Deserialize)]
 pub struct Config<'a> {
+    /// Path to mount initramfs at (like `/volume/init`).
+    #[serde(borrow)]
+    pub initramfs_root: &'a str,
     /// Paths for locating necessary binaries in initramfs.
     #[serde(borrow)]
     pub binaries: BinariesPaths<'a>,

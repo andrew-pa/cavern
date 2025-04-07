@@ -3,6 +3,7 @@
 mod executor;
 mod msg;
 
+use alloc::boxed::Box;
 use executor::Executor;
 use kernel_api::spawn_thread;
 use spin::once::Once;
@@ -16,7 +17,10 @@ pub static EXECUTOR: Once<Executor> = Once::new();
 
 /// Spawn a future on the global executor.
 pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
-    EXECUTOR.get().expect("task executor initialized").spawn(f);
+    EXECUTOR
+        .get()
+        .expect("task executor initialized")
+        .spawn(Box::new(f));
 }
 
 fn task_thread_entry(_: usize) -> ! {
@@ -27,9 +31,11 @@ fn task_thread_entry(_: usize) -> ! {
 }
 
 /// Run the task executor with a root task and a service for handling RPC requests.
+///
+/// The `service` will listen as the current thread, which is assumed to be the designated receiver.
 pub fn run(service: impl Service, root: impl Future<Output = ()> + Send + 'static) -> ! {
     let exec = EXECUTOR.call_once(Executor::default);
-    exec.spawn(root);
+    exec.spawn(Box::new(root));
     spawn_thread(&kernel_api::ThreadCreateInfo {
         entry: task_thread_entry,
         stack_size: 1024,

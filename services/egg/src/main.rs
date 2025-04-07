@@ -14,15 +14,17 @@ mod config;
 mod initramfs;
 mod spawn;
 
-use alloc::string::String;
+use alloc::{borrow::ToOwned, boxed::Box, string::String};
 use bytemuck::{Contiguous, Pod, Zeroable};
 use config::Config;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_PID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
+    ErrorCode, KERNEL_FAKE_PID, ThreadId, exit_current_thread, flags::ReceiveFlags, read_env_value,
+    receive, write_log,
 };
 use snafu::{OptionExt, ResultExt, Snafu};
 use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
+use user_core::interfaces::registry::RegistryClient;
 
 #[global_allocator]
 static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
@@ -101,8 +103,10 @@ fn main() -> Result<(), Error> {
 
     let initramfs_slice =
         unsafe { core::slice::from_raw_parts(init.initramfs_address as _, init.initramfs_length) };
-    let initramfs =
-        TarArchiveRef::new(initramfs_slice).map_err(|cause| Error::InitramfsArchive { cause })?;
+    // just leak this box so we can have refs from the async task to the config (the box would have only dropped in a panic anyways)
+    let initramfs = Box::leak(Box::new(
+        TarArchiveRef::new(initramfs_slice).map_err(|cause| Error::InitramfsArchive { cause })?,
+    ));
 
     // Read configuration from initramfs
     let config_file = initramfs
@@ -116,24 +120,34 @@ fn main() -> Result<(), Error> {
         .0;
 
     // Spawn the root resource registry directly using the initramfs
-    let registry_pid = spawn_root_process(&initramfs, config.binaries.resource_registry).context(
+    let registry_pid = spawn_root_process(initramfs, config.binaries.resource_registry).context(
         SpawnRootProcessSnafu {
             name: "root resource registry",
         },
     )?;
 
     // Spawn the root supervisor directly using the initramfs
-    let supervisor_pid = spawn_root_process(&initramfs, config.binaries.supervisor).context(
+    let supervisor_pid = spawn_root_process(initramfs, config.binaries.supervisor).context(
         SpawnRootProcessSnafu {
             name: "root supervisor",
         },
     )?;
 
-    // spawn_initramfs_service(registry_pid, initramfs)?;
-    let initramfs_service = initramfs::InitramfsService::new(&initramfs);
+    let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
-    user_core::tasks::run(initramfs_service, async {
+    // this is implied because `tasks::run` always runs the service on the designated receiver thread.
+    let initramfs_service_thread = ThreadId::new(read_env_value(
+        kernel_api::EnvironmentValue::DesignatedReceiverThreadId,
+    ) as u32)
+    .unwrap();
+
+    user_core::tasks::run(initramfs_service, async move {
+        let registry = RegistryClient::new(registry_pid, None);
         // Register the initramfs service with the registry
+        registry
+            .register_provider(config.initramfs_root, initramfs_service_thread)
+            .await
+            .unwrap();
         // Spawn log redistributor via root supervisor
         // Spawn drivers
         // Spawn sub-supervisors

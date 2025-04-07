@@ -70,11 +70,11 @@ impl Default for Executor {
 }
 
 impl Executor {
-    pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+    pub fn spawn(&self, task: Box<dyn Future<Output = ()> + Send>) {
         let task_id = self
             .next_task_id
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        match self.new_task_queue.push((task_id, Box::pin(task))) {
+        match self.new_task_queue.push((task_id, task.into())) {
             Ok(()) => (),
             Err(_) => panic!("new task queue overflow"),
         }
@@ -152,7 +152,7 @@ impl Executor {
                 bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
             match hdr.msg_type() {
                 MessageType::Request | MessageType::ProxiedRequest | MessageType::Notification => {
-                    self.spawn(service.handle_message(msg));
+                    self.spawn(Box::new(service.handle_message(msg)));
                 }
                 MessageType::Response => {
                     let mut pr = self.pending_responses.lock();

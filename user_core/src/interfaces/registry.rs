@@ -61,6 +61,15 @@ pub enum Error {
     },
 }
 
+/// Request body for registering a provider with the registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterProviderRequest<'a> {
+    /// The provider thread ID in the requesting process that provides this resource.
+    pub provider_tid: ThreadId,
+    #[serde(borrow)]
+    root: &'a Path,
+}
+
 /// Result of looking up a resource in the registry.
 #[derive(Debug, Clone)]
 pub struct LookupResult<'a> {
@@ -131,9 +140,18 @@ impl RegistryClient {
         }
     }
 
-    /// Register this process/thread as a resource provider with the registry.
-    pub async fn register_provider(&self, root: &Path) -> Result<(), Error> {
-        let msg = self.encode_path_msg(OpCode::RegisterProvider, root);
+    /// Register the thread as a resource provider with the registry.
+    pub async fn register_provider(
+        &self,
+        root: &Path,
+        provider_tid: ThreadId,
+    ) -> Result<(), Error> {
+        let op = OpCode::RegisterProvider;
+        let header = MessageHeader::new(MessageType::Request, op);
+        let mut msg = Vec::new();
+        msg.extend_from_slice(bytes_of(&header));
+        let msg = postcard::to_extend(&RegisterProviderRequest { root, provider_tid }, msg)
+            .context(DeserializeSnafu)?;
         let response = send_request(self.pid, self.tid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
