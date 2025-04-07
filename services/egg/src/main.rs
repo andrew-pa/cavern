@@ -11,6 +11,7 @@
 
 extern crate alloc;
 mod config;
+mod initramfs;
 mod spawn;
 
 use alloc::string::String;
@@ -128,10 +129,16 @@ fn main() -> Result<(), Error> {
         },
     )?;
 
-    // Register the initramfs service with the registry
     // spawn_initramfs_service(registry_pid, initramfs)?;
+    let initramfs_service = initramfs::InitramfsService::new(&initramfs);
 
-    Ok(())
+    user_core::tasks::run(initramfs_service, async {
+        // Register the initramfs service with the registry
+        // Spawn log redistributor via root supervisor
+        // Spawn drivers
+        // Spawn sub-supervisors
+        // Watch root registry, supervisor and do something if they exit (probably crash)
+    })
 }
 
 /// The main entry point.

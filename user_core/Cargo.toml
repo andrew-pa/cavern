@@ -9,7 +9,11 @@ bitfield = "0.19"
 bytemuck = "1"
 hashbrown = "0.15"
 talc = "4"
+snafu = { version = "0.8", default-features = false, features=["unstable-core-error"] }
 
 futures = { version = "0.3", default-features=false, features=["alloc"] }
 crossbeam = { version = "0.8", default-features=false, features=["alloc"] }
-spin = "0.9"
+spin = "0.10"
+
+serde = { version = "1", default-features = false, features=["derive"] }
+postcard = { version = "1" }

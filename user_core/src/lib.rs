@@ -6,5 +6,6 @@
 extern crate alloc;
 
 pub mod heap;
+pub mod interfaces;
 pub mod rpc;
 pub mod tasks;

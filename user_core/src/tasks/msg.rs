@@ -8,6 +8,8 @@ use kernel_api::{ErrorCode, Message, ProcessId, SharedBufferCreateInfo, ThreadId
 
 use crate::rpc::MessageHeader;
 
+// TODO: we need a way to await the death of a process/thread ?!
+
 use super::EXECUTOR;
 
 /// The state of a [`ResponseFuture`] as it awaits a response.
@@ -55,20 +57,17 @@ impl Future for ResponseFuture {
 }
 
 /// Send an RPC request to the destination, returning a future that resolves when the response is
-/// received.
-///
-/// To be function correct, `header` must be a slice into `full_msg`, or in other words the header must be
-/// included in `full_msg` at the beginning.
-pub fn send_request<'m>(
+/// received. The bytes in `msg` must start with a [`MessageHeader`]. Also, the `correlation_id`
+/// must be unique.
+pub fn send_request(
     dst_process_id: ProcessId,
     dst_thread_id: Option<ThreadId>,
-    full_msg: &'m [u8],
-    header: &'m MessageHeader,
+    msg: &[u8],
     buffers: &[SharedBufferCreateInfo],
 ) -> Result<impl Future<Output = Message>, ErrorCode> {
-    // TODO: assert message is request? assert that header is in full_msg?
-    send(dst_process_id, dst_thread_id, full_msg, buffers)?;
-    Ok(ResponseFuture {
-        id: header.correlation_id(),
-    })
+    let hdr: &MessageHeader = bytemuck::from_bytes(&msg[0..core::mem::size_of::<MessageHeader>()]);
+    let id = hdr.correlation_id();
+    // TODO: assert message is request?
+    send(dst_process_id, dst_thread_id, msg, buffers)?;
+    Ok(ResponseFuture { id })
 }
