@@ -54,8 +54,8 @@ pub enum Error {
     NotFound,
     /// Unregister requested from a thread that was not registered
     NotRegistered,
-    /// Error occurred deserializing response from service.
-    Deserialize {
+    /// Error occurred serializing/deserializing a request to or response from the service.
+    Serde {
         /// The underlying error.
         source: postcard::Error,
     },
@@ -100,7 +100,7 @@ pub struct RegistryClient {
 
 impl RegistryClient {
     /// Create a new client, connecting to the server at `pid`/`tid`.
-    pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> RegistryClient {
+    pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> Self {
         Self { pid, tid }
     }
 
@@ -151,7 +151,7 @@ impl RegistryClient {
         let mut msg = Vec::new();
         msg.extend_from_slice(bytes_of(&header));
         let msg = postcard::to_extend(&RegisterProviderRequest { root, provider_tid }, msg)
-            .context(DeserializeSnafu)?;
+            .context(SerdeSnafu)?;
         let response = send_request(self.pid, self.tid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
@@ -177,7 +177,7 @@ impl RegistryClient {
             .context(RpcSnafu)?
             .await;
         let payload = self.check_response(&response)?;
-        let r: LookupResponseBody = postcard::from_bytes(payload).context(DeserializeSnafu)?;
+        let r: LookupResponseBody = postcard::from_bytes(payload).context(SerdeSnafu)?;
         Ok(LookupResult {
             rel_path: path.split_at(r.rel_path_split_index).1,
             provider_pid: r.provider_pid,

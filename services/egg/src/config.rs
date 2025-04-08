@@ -18,8 +18,9 @@ pub struct BinariesPaths<'a> {
 pub struct DriverConfig<'a> {
     /// The binary path of the driver service.
     pub binary: &'a str,
-    /// The set of device tree "compatible" tags that this driver is compatible with.
-    pub compatible: HashSet<&'a str>,
+    /// The set of device tree "compatible" tags that this driver is compatible with, in order of
+    /// most to least specific.
+    pub compatible: Vec<&'a str>,
 }
 
 /// Configuration for a system supervisors.

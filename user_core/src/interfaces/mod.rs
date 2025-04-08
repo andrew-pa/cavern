@@ -4,6 +4,7 @@ use kernel_api::ErrorCode;
 use snafu::Snafu;
 
 pub mod registry;
+pub mod supervisor;
 
 /// Errors that can take place making RPC calls via a client in this module.
 #[derive(Debug, Snafu)]

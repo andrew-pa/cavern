@@ -12,9 +12,10 @@
 extern crate alloc;
 mod config;
 mod initramfs;
+mod setup;
 mod spawn;
 
-use alloc::{borrow::ToOwned, boxed::Box, string::String};
+use alloc::{boxed::Box, string::String};
 use bytemuck::{Contiguous, Pod, Zeroable};
 use config::Config;
 use kernel_api::{
@@ -24,7 +25,7 @@ use kernel_api::{
 use snafu::{OptionExt, ResultExt, Snafu};
 use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
-use user_core::interfaces::registry::RegistryClient;
+use user_core::interfaces::{registry::RegistryClient, supervisor::SupervisorClient};
 
 #[global_allocator]
 static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
@@ -87,6 +88,34 @@ pub enum Error {
         /// Underlying error
         source: spawn::Error,
     },
+    /// Registry RPC call failed.
+    #[snafu(display("Registry operation {what} failed"))]
+    Registry {
+        /// What operation was being performed.
+        what: String,
+        /// The underlying error.
+        source: user_core::interfaces::registry::Error,
+    },
+    /// Supervisor RPC call failed.
+    #[snafu(display("Supervisor operation {what} failed"))]
+    Supervisor {
+        /// What operation was being performed.
+        what: String,
+        /// The underlying error.
+        source: user_core::interfaces::supervisor::Error,
+    },
+}
+
+fn load_config<'a>(initramfs: &'a TarArchiveRef<'_>) -> Result<Config<'a>, Error> {
+    let config_file = initramfs
+        .entries()
+        .find(|e| e.filename().as_str().is_ok_and(|n| n == "config.json"))
+        .context(FileNotFoundSnafu {
+            name: "config.json",
+        })?;
+    serde_json_core::from_slice(config_file.data())
+        .context(ParseConfigSnafu)
+        .map(|(c, _)| c)
 }
 
 fn main() -> Result<(), Error> {
@@ -109,15 +138,7 @@ fn main() -> Result<(), Error> {
     ));
 
     // Read configuration from initramfs
-    let config_file = initramfs
-        .entries()
-        .find(|e| e.filename().as_str().is_ok_and(|n| n == "config.json"))
-        .context(FileNotFoundSnafu {
-            name: "config.json",
-        })?;
-    let config: Config = serde_json_core::from_slice(config_file.data())
-        .context(ParseConfigSnafu)?
-        .0;
+    let config = load_config(initramfs)?;
 
     // Spawn the root resource registry directly using the initramfs
     let registry_pid = spawn_root_process(initramfs, config.binaries.resource_registry).context(
@@ -133,6 +154,7 @@ fn main() -> Result<(), Error> {
         },
     )?;
 
+    // Create the Initramfs service object
     let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
     // this is implied because `tasks::run` always runs the service on the designated receiver thread.
@@ -141,17 +163,18 @@ fn main() -> Result<(), Error> {
     ) as u32)
     .unwrap();
 
+    // start the async executor, then finish setting things up
+    let registry = RegistryClient::new(registry_pid, None);
+    let supervisor = SupervisorClient::new(supervisor_pid, None);
     user_core::tasks::run(initramfs_service, async move {
-        let registry = RegistryClient::new(registry_pid, None);
-        // Register the initramfs service with the registry
-        registry
-            .register_provider(config.initramfs_root, initramfs_service_thread)
-            .await
-            .unwrap();
-        // Spawn log redistributor via root supervisor
-        // Spawn drivers
-        // Spawn sub-supervisors
-        // Watch root registry, supervisor and do something if they exit (probably crash)
+        match setup::setup(registry, supervisor, &config, initramfs_service_thread).await {
+            Ok(()) => {
+                write_log(3, "system setup complete!").unwrap();
+            }
+            Err(e) => {
+                panic!("system setup failed: {}", snafu::Report::from_error(e))
+            }
+        }
     })
 }
 

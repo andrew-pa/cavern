@@ -7,6 +7,7 @@ When a process exits, the supervisor executes one of the following policies:
 - ignores the exit
 - restarts the process, optionally up to a limit and with a configurable delay/debounce
 - exits itself, after making sure all other monitored processes have been killed
+- kills and restarts all supervised processes, up to a limit of counts set globally for the supervisor
 
 Different policies can be provided for different process exit reasons, both for all monitored processes and for individual processes.
 
@@ -20,7 +21,7 @@ It also optionally allows the caller to specify a file to load and interpret, re
 
 ### Spawn
 The Spawn method allows new processes to be spawned dynamically that will be monitored by this supervisor.
-Process specific exit policy can also be configured.
+Proess specific exit policy can also be configured.
 The supervisor takes care of reading and interpreting the executable from the file system.
 
 ### List Monitored Processes
