@@ -9,6 +9,9 @@
 //! Individual device drivers are expected to make sense of the exact structure of the information
 //! in their respective portion of the tree, but this module contains common structures and
 //! iterators to make that easier.
+#![no_std]
+extern crate alloc;
+
 use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
@@ -351,12 +354,14 @@ impl DeviceTree<'_> {
     ///
     pub unsafe fn from_memory<'a>(ptr: *mut u8) -> DeviceTree<'a> {
         use core::slice;
-        // discover the actual size of the tree from the header
-        let header = fdt::BlobHeader {
-            buf: slice::from_raw_parts(ptr, fdt::HEADER_SIZE),
-        };
-        let buf = slice::from_raw_parts(ptr, header.total_size() as usize);
-        Self::from_bytes_and_header(buf, header)
+        unsafe {
+            // discover the actual size of the tree from the header
+            let header = fdt::BlobHeader {
+                buf: slice::from_raw_parts(ptr, fdt::HEADER_SIZE),
+            };
+            let buf = slice::from_raw_parts(ptr, header.total_size() as usize);
+            Self::from_bytes_and_header(buf, header)
+        }
     }
 
     /// Returns the (start, length in bytes) memory region that is occupied by the device tree blob.
@@ -669,6 +674,10 @@ impl ParseError<'_> {
     }
 }
 
+#[cfg(all(test, not(target_os = "none")))]
+#[macro_use]
+extern crate std;
+
 #[cfg(test)]
 mod tests {
     use std::{string::ToString as _, vec::Vec};
@@ -680,7 +689,7 @@ mod tests {
     /// ```bash
     /// $ qemu-system-aarch64 -machine virt,dumpdtb=kernel_core/src/platform/device_tree/test-tree.fdt
     /// ```
-    const TEST_TREE_BLOB: &[u8] = include_bytes!("test-tree.fdt");
+    const TEST_TREE_BLOB: &[u8] = include_bytes!("../test-tree.fdt");
 
     fn test_tree() -> DeviceTree<'static> {
         DeviceTree::from_bytes(TEST_TREE_BLOB)

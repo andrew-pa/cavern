@@ -32,7 +32,7 @@ fix force_arg="" cargo_clippy_args=""  cargo_args="" clippy_args="":
 
 # Test Rust crates that are testable on the host.
 test cargo_args="":
-    cargo test -p kernel_core --target {{host_target_triple}} {{cargo_args}}
+    cargo test -p kernel_core -p device_tree --target {{host_target_triple}} {{cargo_args}}
 
 # Build Rust crates.
 build cargo_args="":
