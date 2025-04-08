@@ -22,6 +22,7 @@ use kernel_api::{
     ErrorCode, KERNEL_FAKE_PID, ThreadId, exit_current_thread, flags::ReceiveFlags, read_env_value,
     receive, write_log,
 };
+use setup::Setup;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
@@ -137,6 +138,13 @@ fn main() -> Result<(), Error> {
         TarArchiveRef::new(initramfs_slice).map_err(|cause| Error::InitramfsArchive { cause })?,
     ));
 
+    let device_tree_blob = unsafe {
+        device_tree::DeviceTree::from_bytes(core::slice::from_raw_parts(
+            init.device_tree_address as _,
+            init.device_tree_length,
+        ))
+    };
+
     // Read configuration from initramfs
     let config = load_config(initramfs)?;
 
@@ -164,10 +172,15 @@ fn main() -> Result<(), Error> {
     .unwrap();
 
     // start the async executor, then finish setting things up
-    let registry = RegistryClient::new(registry_pid, None);
-    let supervisor = SupervisorClient::new(supervisor_pid, None);
+    let s = Setup {
+        registry: RegistryClient::new(registry_pid, None),
+        supervisor: SupervisorClient::new(supervisor_pid, None),
+        config,
+        device_tree_blob,
+        initramfs_service_thread,
+    };
     user_core::tasks::run(initramfs_service, async move {
-        match setup::setup(registry, supervisor, &config, initramfs_service_thread).await {
+        match s.setup().await {
             Ok(()) => {
                 write_log(3, "system setup complete!").unwrap();
             }

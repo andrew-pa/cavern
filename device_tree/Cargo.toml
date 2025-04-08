@@ -7,6 +7,7 @@ edition = "2024"
 itertools = { version = "^0.13", default-features = false }
 log = { version = "^0.4", features = ["serde"] }
 snafu = { version = "^0.8", default-features = false, features = ["unstable-core-error"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
 
 byteorder = { version = "^1.5", default-features = false }
 bytemuck = { version = "^1", features = ["derive"] }
