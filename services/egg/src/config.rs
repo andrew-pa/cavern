@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use hashbrown::HashSet;
 use serde::Deserialize;
 
 /// Paths in initramfs that contain important binaries.

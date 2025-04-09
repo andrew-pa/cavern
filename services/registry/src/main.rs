@@ -46,7 +46,6 @@ pub extern "C" fn _start() {
             let _ = write_log(1, &s);
             exit_current_thread(match e {
                 Error::SysCall { source, .. } => source.into_integer() as u32 + 0x1000,
-                _ => 1,
             });
         }
     }

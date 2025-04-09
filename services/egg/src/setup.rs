@@ -1,20 +1,16 @@
-use crate::{Error, RegistrySnafu, SupervisorSnafu, SysCallSnafu, config::Config};
+use crate::{Error, RegistrySnafu, SupervisorSnafu, config::Config};
 use alloc::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 use device_tree::{DeviceTree, fdt::Token};
-use futures::future::Either;
 use hashbrown::HashMap;
-use kernel_api::{ThreadId, write_log};
+use kernel_api::{ThreadId, read_env_value, write_log};
 use snafu::ResultExt;
-use user_core::{
-    interfaces::{
-        registry::{Path, RegistryClient},
-        supervisor::{ExitPolicy, ProcessSpec, SupervisorClient, SupervisorConfig},
-    },
-    tasks::{WatchableId, watch_exit},
+use user_core::interfaces::{
+    registry::{Path, RegistryClient},
+    supervisor::{ExitPolicy, ProcessSpec, SupervisorClient, SupervisorConfig},
 };
 
 /// The setup worker state.
@@ -23,11 +19,11 @@ pub struct Setup<'c, 'dt> {
     pub supervisor: SupervisorClient,
     pub config: Config<'c>,
     pub device_tree_blob: DeviceTree<'dt>,
-    pub initramfs_service_thread: ThreadId,
 }
 
 impl Setup<'_, '_> {
     async fn spawn_drivers_for_devices_in_dtb(&self) -> Result<(), Error> {
+        // build an index from compatible strings to responsible driver paths
         let compat_index: HashMap<&[u8], (&Path, usize)> = self
             .config
             .drivers
@@ -50,6 +46,7 @@ impl Setup<'_, '_> {
                 m
             });
 
+        // iterate over device tree nodes and spawn a driver for them
         let results = process_root_children(
             &self.device_tree_blob,
             |name, compat| {
@@ -113,9 +110,15 @@ impl Setup<'_, '_> {
                 what: "configure root supervisor with default exit policy",
             })?;
 
+        // this is implied because `tasks::run` always runs the service on the designated receiver thread.
+        let initramfs_service_thread = ThreadId::new(read_env_value(
+            kernel_api::EnvironmentValue::DesignatedReceiverThreadId,
+        ) as u32)
+        .unwrap();
+
         // Register the initramfs service with the registry
         self.registry
-            .register_provider(self.config.initramfs_root, self.initramfs_service_thread)
+            .register_provider(self.config.initramfs_root, initramfs_service_thread)
             .await
             .context(RegistrySnafu {
                 what: "register initramfs provider with root registry",
@@ -137,12 +140,14 @@ impl Setup<'_, '_> {
         self.spawn_drivers_for_devices_in_dtb().await?;
 
         // Spawn sub-supervisors
-        for sup in self.config.supervisors.iter() {
+        for sup in &self.config.supervisors {
+            // TODO: what is the actual encoding?
+            let init_param = sup.config_path.as_bytes();
             self.supervisor
                 .spawn(&ProcessSpec {
                     bin_path: self.config.binaries.supervisor,
                     exit_policy: None,
-                    init_parameter: todo!("how do we make sure this is a Configure request?"),
+                    init_parameter: Some(init_param),
                 })
                 .await
                 .with_context(|_| SupervisorSnafu {
@@ -150,28 +155,11 @@ impl Setup<'_, '_> {
                 })?;
         }
 
-        // Watch root registry, supervisor and cascade the exit if they exit
-        let watch_registry =
-            watch_exit(WatchableId::Process(self.registry.process_id())).context(SysCallSnafu {
-                cause: "watch root registry",
-            })?;
-        let watch_supervisor = watch_exit(WatchableId::Process(self.supervisor.process_id()))
-            .context(SysCallSnafu {
-                cause: "watch root supervisor",
-            })?;
-
-        match futures::future::select(watch_registry, watch_supervisor).await {
-            Either::Left((registry_exit, _)) => {
-                panic!("root registry exited: {registry_exit:?}");
-            }
-            Either::Right((supervisor_exit, _)) => {
-                panic!("root supervisor exited: {supervisor_exit:?}");
-            }
-        }
+        Ok(())
     }
 }
 
-/// Collects all tokens (including nested ones) for a child node starting from its initial StartNode token.
+/// Collects all tokens (including nested ones) for a child node starting from its initial `StartNode` token.
 /// It tracks the first encountered "compatible" property and calls the `check` closure on its value.
 /// If `check` returns false, the remainder of the subtree is drained and `None` is returned,
 /// signaling that the child should be skipped.
@@ -179,13 +167,13 @@ impl Setup<'_, '_> {
 /// # Parameters
 ///
 /// - `iter`: The mutable iterator over device tree tokens.
-/// - `child_name`: The name of the child node (from its StartNode token).
+/// - `child_name`: The name of the child node (from its `StartNode` token).
 /// - `check`: A closure to validate the "compatible" property. If it returns false, the child is not further processed.
 ///
 /// # Returns
 ///
 /// If processing is allowed, returns `Some((tokens, compatible))`, where:
-/// - `tokens` is the vector of all tokens belonging to the child (including the initial StartNode)
+/// - `tokens` is the vector of all tokens belonging to the child (including the initial `StartNode`)
 /// - `compatible` is the a byte slice for the "compatible" property.
 ///   If `check` fails the first time the "compatible" property is encountered,
 ///   the function drains the rest of the subtree and returns `None`.
@@ -229,7 +217,7 @@ where
                                 match tok {
                                     Token::StartNode(_) => depth += 1,
                                     Token::EndNode => depth -= 1,
-                                    _ => {}
+                                    Token::Property { .. } => {}
                                 }
                             } else {
                                 break;
@@ -291,7 +279,8 @@ where
                 }
             }
             Token::EndNode => break,
-            _ => {}
+            // skip root properties
+            Token::Property { .. } => {}
         }
     }
 

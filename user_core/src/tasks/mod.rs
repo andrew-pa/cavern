@@ -20,6 +20,9 @@ pub use watch_exit::{WatchExitFuture, WatchableId, watch_exit};
 pub static EXECUTOR: Once<Executor> = Once::new();
 
 /// Spawn a future on the global executor.
+///
+/// # Panics
+/// Panics if the executor has not yet been initialized by [`run`].
 pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
     EXECUTOR
         .get()
@@ -37,7 +40,10 @@ fn task_thread_entry(_: usize) -> ! {
 /// Run the task executor with a root task and a service for handling RPC requests.
 ///
 /// The `service` will listen as the current thread, which is assumed to be the designated receiver.
-pub fn run(service: impl Service, root: impl Future<Output = ()> + Send + 'static) -> ! {
+///
+/// # Panics
+/// Panics if a second task thread cannot be spawned.
+pub fn run(service: &impl Service, root: impl Future<Output = ()> + Send + 'static) -> ! {
     let exec = EXECUTOR.call_once(Executor::default);
     exec.spawn(Box::new(root));
     spawn_thread(&kernel_api::ThreadCreateInfo {
@@ -66,7 +72,7 @@ impl<T> PendingResponseState<T> {
     pub fn become_ready(&mut self, val: T) {
         match core::mem::replace(self, Self::Ready(val)) {
             Self::Waiting(w) => w.wake(),
-            _ => panic!("received message twice for same id"),
+            Self::Ready(_) => panic!("received message twice for same id"),
         }
     }
 }

@@ -288,7 +288,7 @@ impl Message {
     /// Free this message's space in the inbox.
     #[cfg(feature = "wrappers")]
     pub fn free(self, flags: flags::FreeMessageFlags) {
-        free_message(flags, self).unwrap()
+        free_message(flags, self).unwrap();
     }
 }
 

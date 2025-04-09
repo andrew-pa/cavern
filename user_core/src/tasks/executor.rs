@@ -43,11 +43,11 @@ impl TaskWaker {
 
 impl Wake for TaskWaker {
     fn wake(self: Arc<Self>) {
-        self.wake_task()
+        self.wake_task();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.wake_task()
+        self.wake_task();
     }
 }
 
@@ -77,13 +77,14 @@ impl Executor {
         let task_id = self
             .next_task_id
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        #[allow(clippy::match_wild_err_arm)]
         match self.new_task_queue.push((task_id, task.into())) {
             Ok(()) => (),
             Err(_) => panic!("new task queue overflow"),
         }
     }
 
-    fn process_exit_notification(&self, msg: Message) {
+    fn process_exit_notification(&self, msg: &Message) {
         let e = from_bytes::<ExitMessage>(msg.payload());
         let wi = match e.source {
             kernel_api::ExitSource::Thread => WatchableId::Thread(ThreadId::new(e.id).unwrap()),
@@ -99,7 +100,7 @@ impl Executor {
 
     fn process_incoming_message_for_task_loop(&self, msg: Message) {
         if msg.header().sender_pid == KERNEL_FAKE_ID {
-            self.process_exit_notification(msg);
+            self.process_exit_notification(&msg);
             return;
         }
 
@@ -147,9 +148,8 @@ impl Executor {
 
             // find and poll all ready tasks
             while let Some(task_id) = self.ready_queue.pop() {
-                let task = match tasks.get_mut(&task_id) {
-                    Some(t) => t,
-                    None => continue,
+                let Some(task) = tasks.get_mut(&task_id) else {
+                    continue;
                 };
                 let waker = waker_cache
                     .entry(task_id)
@@ -167,11 +167,11 @@ impl Executor {
     }
 
     /// Run a receive only message loop to wake tasks waiting for responses and handle incoming requests.
-    pub fn designated_receiver_message_loop(&self, service: impl Service) -> ! {
+    pub fn designated_receiver_message_loop(&self, service: &impl Service) -> ! {
         loop {
             let msg = receive(ReceiveFlags::empty()).unwrap();
             if msg.header().sender_pid == KERNEL_FAKE_ID {
-                self.process_exit_notification(msg);
+                self.process_exit_notification(&msg);
                 continue;
             }
             let hdr: &MessageHeader =

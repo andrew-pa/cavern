@@ -49,6 +49,11 @@ impl Future for WatchExitFuture {
 /// Subscribe the current process/thread to the exit notification sent when the `object` exits
 /// using [`kernel_api::exit_notification_subscription`], and return a future that will resolve
 /// when the notification is received.
+///
+/// # Errors
+/// Returns an error if the `exit_notification_subscription` system call fails.
+#[allow(clippy::missing_panics_doc)]
+#[allow(clippy::cast_possible_truncation)]
 pub fn watch_exit(object: WatchableId) -> Result<WatchExitFuture, ErrorCode> {
     let current_thread_id =
         ThreadId::new(read_env_value(kernel_api::EnvironmentValue::CurrentThreadId) as _).unwrap();

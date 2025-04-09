@@ -1,3 +1,4 @@
+#![allow(unused)]
 use tar_no_std::TarArchiveRef;
 use user_core::rpc::Service;
 

@@ -1,7 +1,7 @@
 //! Async API for sending RPC requests and awaiting their responses.
 use core::{
     pin::Pin,
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
 use kernel_api::{ErrorCode, Message, ProcessId, SharedBufferCreateInfo, ThreadId, send};
@@ -40,6 +40,9 @@ impl Future for ResponseFuture {
 /// Send an RPC request to the destination, returning a future that resolves when the response is
 /// received. The bytes in `msg` must start with a [`MessageHeader`]. Also, the `correlation_id`
 /// must be unique.
+///
+/// # Errors
+/// Returns an error if the `send` call fails.
 pub fn send_request(
     dst_process_id: ProcessId,
     dst_thread_id: Option<ThreadId>,

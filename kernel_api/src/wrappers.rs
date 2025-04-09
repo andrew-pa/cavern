@@ -362,6 +362,7 @@ pub fn receive(flags: ReceiveFlags) -> Result<Message, ErrorCode> {
 /// # Errors
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer was null or invalid.
+#[allow(clippy::needless_pass_by_value)] // pass by value is important here for safety
 pub fn free_message(flags: FreeMessageFlags, message: Message) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {

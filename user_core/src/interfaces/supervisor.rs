@@ -1,6 +1,6 @@
 //! Supervisor service interface definitions.
-
-use core::num::NonZeroUsize;
+#![allow(unused)]
+#![allow(clippy::unused_async)]
 
 use super::{Error as RpcError, registry::Path};
 use alloc::vec::Vec;
@@ -82,27 +82,32 @@ pub struct SupervisorClient {
 
 impl SupervisorClient {
     /// Create a new client, connecting to the server at `pid`/`tid`.
+    #[must_use]
     pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> Self {
         Self { pid, tid }
     }
 
     /// Configure the supervisor directly with a configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn configure(&self, config: &SupervisorConfig<'_>) -> Result<(), Error> {
         todo!()
     }
 
     /// Instruct the supervisor to load and parse a configuration from a file.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn configure_from_file(&self, config_path: &Path) -> Result<(), Error> {
         todo!()
     }
 
     /// Cause the supervisor to spawn and supervise a new process.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn spawn(&self, req: &ProcessSpec<'_>) -> Result<ProcessId, Error> {
         todo!()
-    }
-
-    /// Get the process id of the supervisor.
-    pub fn process_id(&self) -> ProcessId {
-        self.pid
     }
 }

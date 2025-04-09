@@ -100,16 +100,12 @@ pub struct RegistryClient {
 
 impl RegistryClient {
     /// Create a new client, connecting to the server at `pid`/`tid`.
+    #[must_use]
     pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> Self {
         Self { pid, tid }
     }
 
-    /// Get the process id of the registry server.
-    pub fn process_id(&self) -> ProcessId {
-        self.pid
-    }
-
-    fn encode_path_msg(&self, op: OpCode, path: &Path) -> Vec<u8> {
+    fn encode_path_msg(op: OpCode, path: &Path) -> Vec<u8> {
         let header = MessageHeader::new(MessageType::Request, op);
         let mut msg = Vec::with_capacity(core::mem::size_of::<MessageHeader>() + path.len());
         msg.extend_from_slice(bytes_of(&header));
@@ -117,7 +113,7 @@ impl RegistryClient {
         msg
     }
 
-    fn check_response<'a>(&self, response: &'a Message) -> Result<&'a [u8], Error> {
+    fn check_response(response: &Message) -> Result<&[u8], Error> {
         let response_header = from_bytes::<MessageHeader>(
             &response.payload()[0..core::mem::size_of::<MessageHeader>()],
         );
@@ -146,6 +142,9 @@ impl RegistryClient {
     }
 
     /// Register the thread as a resource provider with the registry.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn register_provider(
         &self,
         root: &Path,
@@ -155,33 +154,39 @@ impl RegistryClient {
         let header = MessageHeader::new(MessageType::Request, op);
         let mut msg = Vec::new();
         msg.extend_from_slice(bytes_of(&header));
-        let msg = postcard::to_extend(&RegisterProviderRequest { root, provider_tid }, msg)
+        let msg = postcard::to_extend(&RegisterProviderRequest { provider_tid, root }, msg)
             .context(SerdeSnafu)?;
         let response = send_request(self.pid, self.tid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;
-        self.check_response(&response).map(|_| ())
+        Self::check_response(&response).map(|_| ())
     }
 
     /// Unregister this process/thread as a resource provider with the registry.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn unregister_provider(&self) -> Result<(), Error> {
         let header = MessageHeader::new(MessageType::Request, OpCode::UnregisterProvider);
         let response = send_request(self.pid, self.tid, bytes_of(&header), &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;
-        self.check_response(&response).map(|_| ())
+        Self::check_response(&response).map(|_| ())
     }
 
     /// Lookup a resource's provider given its path.
+    ///
+    /// # Errors
+    /// Returns an error if the RPC call fails or returns an error.
     pub async fn lookup<'p>(&self, path: &'p Path) -> Result<LookupResult<'p>, Error> {
-        let msg = self.encode_path_msg(OpCode::LookupResource, path);
+        let msg = Self::encode_path_msg(OpCode::LookupResource, path);
         let response = send_request(self.pid, self.tid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;
-        let payload = self.check_response(&response)?;
+        let payload = Self::check_response(&response)?;
         let r: LookupResponseBody = postcard::from_bytes(payload).context(SerdeSnafu)?;
         Ok(LookupResult {
             rel_path: path.split_at(r.rel_path_split_index).1,

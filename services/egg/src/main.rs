@@ -18,15 +18,19 @@ mod spawn;
 use alloc::{boxed::Box, string::String};
 use bytemuck::{Contiguous, Pod, Zeroable};
 use config::Config;
+use device_tree::DeviceTree;
+use futures::future::Either;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_ID, ThreadId, exit_current_thread, flags::ReceiveFlags, read_env_value,
-    receive, write_log,
+    ErrorCode, KERNEL_FAKE_ID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
 };
 use setup::Setup;
 use snafu::{OptionExt, ResultExt, Snafu};
 use spawn::spawn_root_process;
 use tar_no_std::TarArchiveRef;
-use user_core::interfaces::{registry::RegistryClient, supervisor::SupervisorClient};
+use user_core::{
+    interfaces::{registry::RegistryClient, supervisor::SupervisorClient},
+    tasks::{WatchableId, watch_exit},
+};
 
 #[global_allocator]
 static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
@@ -107,20 +111,8 @@ pub enum Error {
     },
 }
 
-fn load_config<'a>(initramfs: &'a TarArchiveRef<'_>) -> Result<Config<'a>, Error> {
-    let config_file = initramfs
-        .entries()
-        .find(|e| e.filename().as_str().is_ok_and(|n| n == "config.json"))
-        .context(FileNotFoundSnafu {
-            name: "config.json",
-        })?;
-    serde_json_core::from_slice(config_file.data())
-        .context(ParseConfigSnafu)
-        .map(|(c, _)| c)
-}
-
-fn main() -> Result<(), Error> {
-    write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
+fn receive_init_message()
+-> Result<(&'static mut TarArchiveRef<'static>, DeviceTree<'static>), Error> {
     let init_msg = receive(ReceiveFlags::empty()).context(SysCallSnafu {
         cause: "receive init msg",
     })?;
@@ -145,17 +137,38 @@ fn main() -> Result<(), Error> {
         ))
     };
 
+    Ok((initramfs, device_tree_blob))
+}
+
+fn load_config<'a>(initramfs: &'a TarArchiveRef<'_>) -> Result<Config<'a>, Error> {
+    let config_file = initramfs
+        .entries()
+        .find(|e| e.filename().as_str().is_ok_and(|n| n == "config.json"))
+        .context(FileNotFoundSnafu {
+            name: "config.json",
+        })?;
+    serde_json_core::from_slice(config_file.data())
+        .context(ParseConfigSnafu)
+        .map(|(c, _)| c)
+}
+
+fn main() -> Result<(), Error> {
+    write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
+
+    // Receive init message from kernel
+    let (initramfs, device_tree_blob) = receive_init_message()?;
+
     // Read configuration from initramfs
     let config = load_config(initramfs)?;
 
-    // Spawn the root resource registry directly using the initramfs
+    // Spawn the root resource registry directly from the initramfs
     let registry_pid = spawn_root_process(initramfs, config.binaries.resource_registry).context(
         SpawnRootProcessSnafu {
             name: "root resource registry",
         },
     )?;
 
-    // Spawn the root supervisor directly using the initramfs
+    // Spawn the root supervisor directly from the initramfs
     let supervisor_pid = spawn_root_process(initramfs, config.binaries.supervisor).context(
         SpawnRootProcessSnafu {
             name: "root supervisor",
@@ -165,25 +178,33 @@ fn main() -> Result<(), Error> {
     // Create the Initramfs service object
     let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
-    // this is implied because `tasks::run` always runs the service on the designated receiver thread.
-    let initramfs_service_thread = ThreadId::new(read_env_value(
-        kernel_api::EnvironmentValue::DesignatedReceiverThreadId,
-    ) as u32)
-    .unwrap();
-
     let s = Setup {
         registry: RegistryClient::new(registry_pid, None),
         supervisor: SupervisorClient::new(supervisor_pid, None),
         config,
         device_tree_blob,
-        initramfs_service_thread,
     };
 
-    // start the async executor, then finish setting things up
-    user_core::tasks::run(initramfs_service, async move {
+    // start the async executor, finish setting things up, and then monitor the root registry and supervisor
+    user_core::tasks::run(&initramfs_service, async move {
         match s.setup().await {
             Ok(()) => {
                 write_log(3, "system setup complete!").unwrap();
+
+                // Watch root registry, supervisor and cascade the exit if they exit
+                let watch_registry =
+                    watch_exit(WatchableId::Process(registry_pid)).expect("watch root registry");
+                let watch_supervisor = watch_exit(WatchableId::Process(supervisor_pid))
+                    .expect("watch root supervisor");
+
+                match futures::future::select(watch_registry, watch_supervisor).await {
+                    Either::Left((registry_exit, _)) => {
+                        panic!("root registry exited: {registry_exit:?}");
+                    }
+                    Either::Right((supervisor_exit, _)) => {
+                        panic!("root supervisor exited: {supervisor_exit:?}");
+                    }
+                }
             }
             Err(e) => {
                 panic!("system setup failed: {}", snafu::Report::from_error(e))

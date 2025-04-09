@@ -41,6 +41,8 @@ pub enum ResponseType {
 
 bitfield! {
     /// The header for an RPC message.
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    #[repr(C)]
     pub struct MessageHeader(u64);
     impl Debug;
     /// The type of this message.
@@ -51,16 +53,6 @@ bitfield! {
     /// This field is unspecified for Notifications and should be available for applications.
     pub u32, correlation_id, set_correlation_id: 64, 32;
 }
-
-impl Clone for MessageHeader {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for MessageHeader {}
-unsafe impl Zeroable for MessageHeader {}
-unsafe impl Pod for MessageHeader {}
 
 static NEXT_CORRELATION_ID: AtomicU32 = AtomicU32::new(0);
 
