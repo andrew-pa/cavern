@@ -5,7 +5,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use kernel_api::{
-    ExitMessage, ExitReasonTag, ExitSource, KERNEL_FAKE_PID, ProcessId, SharedBufferCreateInfo,
+    ExitMessage, ExitReasonTag, ExitSource, KERNEL_FAKE_ID, ProcessId, SharedBufferCreateInfo,
     ThreadCreateInfo, allocate_heap_pages, exit_current_thread, exit_notification_subscription,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags, SharedBufferFlags},
     free_heap_pages, free_message, receive, send, spawn_thread, transfer_from_shared_buffer,
@@ -83,7 +83,7 @@ pub extern "C" fn _start() {
     .expect("send message");
 
     let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
-    assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_PID);
+    assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_ID);
     assert_eq!(exit_msg.header().sender_tid, tid);
     let em: &ExitMessage = bytemuck::from_bytes(exit_msg.payload());
     assert_eq!(em.source, ExitSource::Thread);

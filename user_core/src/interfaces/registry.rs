@@ -104,6 +104,11 @@ impl RegistryClient {
         Self { pid, tid }
     }
 
+    /// Get the process id of the registry server.
+    pub fn process_id(&self) -> ProcessId {
+        self.pid
+    }
+
     fn encode_path_msg(&self, op: OpCode, path: &Path) -> Vec<u8> {
         let header = MessageHeader::new(MessageType::Request, op);
         let mut msg = Vec::with_capacity(core::mem::size_of::<MessageHeader>() + path.len());

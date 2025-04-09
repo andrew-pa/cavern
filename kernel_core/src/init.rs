@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
 use kernel_api::{
-    ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo, KERNEL_FAKE_PID,
+    ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo, KERNEL_FAKE_ID,
 };
 use log::{debug, trace};
 use snafu::{ResultExt, Snafu};
@@ -144,7 +144,7 @@ pub fn spawn_init_process(
     };
     init_process
         .send_message(
-            (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
+            (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
             None,
             bytemuck::bytes_of(&init_msg),
             core::iter::empty(),

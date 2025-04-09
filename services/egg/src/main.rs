@@ -19,7 +19,7 @@ use alloc::{boxed::Box, string::String};
 use bytemuck::{Contiguous, Pod, Zeroable};
 use config::Config;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_PID, ThreadId, exit_current_thread, flags::ReceiveFlags, read_env_value,
+    ErrorCode, KERNEL_FAKE_ID, ThreadId, exit_current_thread, flags::ReceiveFlags, read_env_value,
     receive, write_log,
 };
 use setup::Setup;
@@ -124,7 +124,7 @@ fn main() -> Result<(), Error> {
     let init_msg = receive(ReceiveFlags::empty()).context(SysCallSnafu {
         cause: "receive init msg",
     })?;
-    assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_PID);
+    assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_ID);
     let init: &InitMessage = bytemuck::from_bytes(init_msg.payload());
     assert!(init.initramfs_address > 0);
     assert!(init.initramfs_length > 0);
@@ -171,7 +171,6 @@ fn main() -> Result<(), Error> {
     ) as u32)
     .unwrap();
 
-    // start the async executor, then finish setting things up
     let s = Setup {
         registry: RegistryClient::new(registry_pid, None),
         supervisor: SupervisorClient::new(supervisor_pid, None),
@@ -179,6 +178,8 @@ fn main() -> Result<(), Error> {
         device_tree_blob,
         initramfs_service_thread,
     };
+
+    // start the async executor, then finish setting things up
     user_core::tasks::run(initramfs_service, async move {
         match s.setup().await {
             Ok(()) => {

@@ -156,6 +156,11 @@ pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
 /// | `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
 /// | `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
 ///
+/// # Notification Message
+/// When the exit occurs, the kernel will send a message with the sender process/thread ID [`super::KERNEL_FAKE_ID`].
+/// This message will contain an [`super::ExitMessage`] struct describing the process that exited
+/// and the reason for the exit.
+///
 /// # Errors
 /// - `NotFound`: the handle was unknown or invalid.
 /// - `InvalidFlags`: the flags value was invalid.

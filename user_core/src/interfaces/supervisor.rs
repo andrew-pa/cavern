@@ -100,4 +100,9 @@ impl SupervisorClient {
     pub async fn spawn(&self, req: &ProcessSpec<'_>) -> Result<ProcessId, Error> {
         todo!()
     }
+
+    /// Get the process id of the supervisor.
+    pub fn process_id(&self) -> ProcessId {
+        self.pid
+    }
 }

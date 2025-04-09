@@ -1,16 +1,20 @@
-use crate::{Error, RegistrySnafu, SupervisorSnafu, config::Config};
+use crate::{Error, RegistrySnafu, SupervisorSnafu, SysCallSnafu, config::Config};
 use alloc::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 use device_tree::{DeviceTree, fdt::Token};
+use futures::future::Either;
 use hashbrown::HashMap;
 use kernel_api::{ThreadId, write_log};
 use snafu::ResultExt;
-use user_core::interfaces::{
-    registry::{Path, RegistryClient},
-    supervisor::{ExitPolicy, ProcessSpec, SupervisorClient, SupervisorConfig},
+use user_core::{
+    interfaces::{
+        registry::{Path, RegistryClient},
+        supervisor::{ExitPolicy, ProcessSpec, SupervisorClient, SupervisorConfig},
+    },
+    tasks::{WatchableId, watch_exit},
 };
 
 /// The setup worker state.
@@ -138,7 +142,7 @@ impl Setup<'_, '_> {
                 .spawn(&ProcessSpec {
                     bin_path: self.config.binaries.supervisor,
                     exit_policy: None,
-                    init_parameter: todo!(),
+                    init_parameter: todo!("how do we make sure this is a Configure request?"),
                 })
                 .await
                 .with_context(|_| SupervisorSnafu {
@@ -146,9 +150,24 @@ impl Setup<'_, '_> {
                 })?;
         }
 
-        // Watch root registry, supervisor and do something if they exit (probably crash)
+        // Watch root registry, supervisor and cascade the exit if they exit
+        let watch_registry =
+            watch_exit(WatchableId::Process(self.registry.process_id())).context(SysCallSnafu {
+                cause: "watch root registry",
+            })?;
+        let watch_supervisor = watch_exit(WatchableId::Process(self.supervisor.process_id()))
+            .context(SysCallSnafu {
+                cause: "watch root supervisor",
+            })?;
 
-        Ok(())
+        match futures::future::select(watch_registry, watch_supervisor).await {
+            Either::Left((registry_exit, _)) => {
+                panic!("root registry exited: {registry_exit:?}");
+            }
+            Either::Right((supervisor_exit, _)) => {
+                panic!("root supervisor exited: {supervisor_exit:?}");
+            }
+        }
     }
 }
 

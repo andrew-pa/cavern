@@ -2,6 +2,9 @@
 //! This includes a task executor implementation and an async API for sending RPC calls.
 mod executor;
 mod msg;
+mod watch_exit;
+
+use core::task::Waker;
 
 use alloc::boxed::Box;
 use executor::Executor;
@@ -11,6 +14,7 @@ use spin::once::Once;
 use crate::rpc::Service;
 
 pub use msg::{ResponseFuture, send_request};
+pub use watch_exit::{WatchExitFuture, WatchableId, watch_exit};
 
 /// The global task executor instance.
 pub static EXECUTOR: Once<Executor> = Once::new();
@@ -46,4 +50,23 @@ pub fn run(service: impl Service, root: impl Future<Output = ()> + Send + 'stati
     // service thread needs to call `exec.designated_receiver_message_loop()` with that new service.
     // Otherwise receiving a request on a worker thread drops the message.
     exec.designated_receiver_message_loop(service)
+}
+
+/// The state of a future that is waiting to receive a value of type `T`.
+enum PendingResponseState<T> {
+    /// The future has been polled but we haven't received anything yet.
+    Waiting(Waker),
+    /// We have Received a message but haven't passed it back to the caller yet.
+    Ready(T),
+}
+
+unsafe impl<T> Sync for PendingResponseState<T> {}
+
+impl<T> PendingResponseState<T> {
+    pub fn become_ready(&mut self, val: T) {
+        match core::mem::replace(self, Self::Ready(val)) {
+            Self::Waiting(w) => w.wake(),
+            _ => panic!("received message twice for same id"),
+        }
+    }
 }

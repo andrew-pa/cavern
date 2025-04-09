@@ -1,5 +1,6 @@
 //! Async task executor that runs the poll and receive loops.
 use alloc::{boxed::Box, sync::Arc, task::Wake};
+use bytemuck::from_bytes;
 use core::{
     future::Future,
     pin::Pin,
@@ -8,7 +9,7 @@ use core::{
 };
 use crossbeam::queue::ArrayQueue;
 use kernel_api::{
-    ErrorCode, Message,
+    ErrorCode, ExitMessage, ExitReason, KERNEL_FAKE_ID, Message, ProcessId, ThreadId,
     flags::{FreeMessageFlags, ReceiveFlags},
     receive,
 };
@@ -18,7 +19,7 @@ use hashbrown::HashMap;
 
 use crate::rpc::{MessageHeader, MessageType, Service};
 
-use super::msg::PendingResponseState;
+use super::{PendingResponseState, watch_exit::WatchableId};
 
 type TaskId = u64;
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -55,7 +56,8 @@ pub struct Executor {
     new_task_queue: NewTaskQueue,
     next_task_id: Arc<AtomicU64>,
     // TODO: we could use a queue for this and reduce locking like the ready_queue, maybe?
-    pub(super) pending_responses: Mutex<HashMap<u32, PendingResponseState>>,
+    pub(super) pending_responses: Mutex<HashMap<u32, PendingResponseState<Message>>>,
+    pub(super) watched_exits: Mutex<HashMap<WatchableId, PendingResponseState<ExitReason>>>,
 }
 
 impl Default for Executor {
@@ -65,6 +67,7 @@ impl Default for Executor {
             new_task_queue: Arc::new(ArrayQueue::new(32)),
             next_task_id: Arc::new(AtomicU64::new(1)),
             pending_responses: Mutex::default(),
+            watched_exits: Mutex::default(),
         }
     }
 }
@@ -80,7 +83,26 @@ impl Executor {
         }
     }
 
+    fn process_exit_notification(&self, msg: Message) {
+        let e = from_bytes::<ExitMessage>(msg.payload());
+        let wi = match e.source {
+            kernel_api::ExitSource::Thread => WatchableId::Thread(ThreadId::new(e.id).unwrap()),
+            kernel_api::ExitSource::Process => WatchableId::Process(ProcessId::new(e.id).unwrap()),
+        };
+        let mut we = self.watched_exits.lock();
+        if let Some(p) = we.get_mut(&wi) {
+            p.become_ready(e.reason);
+        } else {
+            we.insert(wi, PendingResponseState::Ready(e.reason));
+        }
+    }
+
     fn process_incoming_message_for_task_loop(&self, msg: Message) {
+        if msg.header().sender_pid == KERNEL_FAKE_ID {
+            self.process_exit_notification(msg);
+            return;
+        }
+
         let hdr: &MessageHeader =
             bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
         match hdr.msg_type() {
@@ -148,6 +170,10 @@ impl Executor {
     pub fn designated_receiver_message_loop(&self, service: impl Service) -> ! {
         loop {
             let msg = receive(ReceiveFlags::empty()).unwrap();
+            if msg.header().sender_pid == KERNEL_FAKE_ID {
+                self.process_exit_notification(msg);
+                continue;
+            }
             let hdr: &MessageHeader =
                 bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
             match hdr.msg_type() {

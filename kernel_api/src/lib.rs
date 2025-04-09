@@ -110,21 +110,6 @@ pub enum EnvironmentValue {
     PageSizeInBytes,
 }
 
-/// The reason that a thread/process exited.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[repr(C)]
-pub enum ExitReasonOld {
-    /// The thread requested the exit with the given code.
-    /// The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed.
-    User(u32),
-    /// The thread accessed unmapped or protected virtual memory.
-    PageFault,
-    /// The thread made a system call with an invalid system call number.
-    InvalidSysCall,
-    /// Another thread/process caused this thread to exit prematurely.
-    Killed,
-}
-
 /// The unique ID of a thread.
 pub type ThreadId = NonZeroU32;
 
@@ -145,7 +130,7 @@ pub type ProcessId = NonZeroU32;
 
 /// The process id given as the sender for notifications originating from the kernel that have no
 /// other sender.
-pub const KERNEL_FAKE_PID: ProcessId = ProcessId::new(0xffff_ffff).unwrap();
+pub const KERNEL_FAKE_ID: ProcessId = ProcessId::new(0xffff_ffff).unwrap();
 
 /// Level of privilege granted to a process.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Contiguous, Default)]
@@ -414,8 +399,9 @@ pub enum ExitSource {
 pub struct ExitMessage {
     /// Indicates if the exit was for a thread or a process.
     pub source: ExitSource,
-    /// If the exit is for a process, this is the process ID; otherwise, it is ignored.
-    pub pid: u32,
+    /// If the exit is for a process, this is the process ID.
+    /// If the exit is for a thread, this is the thread ID.
+    pub id: u32,
     /// The reason for the exit.
     pub reason: ExitReason,
 }
@@ -424,20 +410,20 @@ unsafe impl Pod for ExitMessage {}
 impl ExitMessage {
     /// Create a message for a thread exit.
     #[must_use]
-    pub fn thread(reason: ExitReason) -> Self {
+    pub fn thread(tid: ThreadId, reason: ExitReason) -> Self {
         Self {
             source: ExitSource::Thread,
-            pid: 0,
+            id: tid.into(),
             reason,
         }
     }
 
     /// Create a message for a process exit.
     #[must_use]
-    pub fn process(pid: u32, reason: ExitReason) -> Self {
+    pub fn process(pid: ProcessId, reason: ExitReason) -> Self {
         Self {
             source: ExitSource::Process,
-            pid,
+            id: pid.into(),
             reason,
         }
     }

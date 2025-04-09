@@ -1,7 +1,7 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
 use itertools::Itertools;
-use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo, KERNEL_FAKE_PID};
+use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo, KERNEL_FAKE_ID};
 use kernel_core::{
     collections::HandleMap,
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
@@ -41,11 +41,11 @@ impl SystemProcessManager {
     ) -> Result<(), ProcessManagerError> {
         self.processes.remove(process.id);
 
-        let msg = ExitMessage::process(process.id.get(), reason);
+        let msg = ExitMessage::process(process.id, reason);
         for (pid, tid) in process.exit_subscribers.lock().iter() {
             if let Some(proc) = self.processes.get(*pid) {
                 proc.send_message(
-                    (KERNEL_FAKE_PID, KERNEL_FAKE_PID),
+                    (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
                     tid.and_then(|id| THREADS.get().unwrap().get(id)),
                     bytemuck::bytes_of(&msg),
                     core::iter::empty(),
@@ -182,7 +182,7 @@ impl ProcessManager for SystemProcessManager {
                 self.exit_process(parent, reason)?;
             } else {
                 // notify exit subscribers that a thread exited
-                let msg = ExitMessage::thread(reason);
+                let msg = ExitMessage::thread(thread.id, reason);
                 for (pid, tid) in thread.exit_subscribers.lock().iter() {
                     trace!(
                         "sending exit message {msg:?} to process #{}, thread #{:?}",
@@ -191,7 +191,7 @@ impl ProcessManager for SystemProcessManager {
                     );
                     if let Some(proc) = self.process_for_id(*pid) {
                         proc.send_message(
-                            (KERNEL_FAKE_PID, thread.id),
+                            (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
                             tid.and_then(|id| self.thread_for_id(id)),
                             bytemuck::bytes_of(&msg),
                             core::iter::empty(),
