@@ -212,7 +212,7 @@ mod tests {
     /// ```
     ///
     /// This blob should be identical to the [`TEST_TREE_BLOB`], but have 8 cores.
-    const TEST_TREE_BLOB_SMP8: &[u8] = include_bytes!("./device_tree/test-tree-smp8.fdt");
+    const TEST_TREE_BLOB_SMP8: &[u8] = include_bytes!("../../../device_tree/test-tree-smp8.fdt");
 
     fn test_tree_smp8() -> DeviceTree<'static> {
         DeviceTree::from_bytes(TEST_TREE_BLOB_SMP8)

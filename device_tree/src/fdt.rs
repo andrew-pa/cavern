@@ -1,6 +1,7 @@
 //! Flatted Device Tree format definitions.
 
 use byteorder::{BigEndian, ByteOrder as _};
+use serde::{Deserialize, Serialize};
 
 /// Values used to delimit structure in the flattened device tree.
 ///
@@ -117,7 +118,7 @@ impl core::fmt::Debug for BlobHeader<'_> {
 }
 
 /// A tree structural item.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Token<'dt> {
     /// The beginning of a node in the tree, with a particular name.
     StartNode(&'dt [u8]),

@@ -156,6 +156,11 @@ pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
 /// | `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
 /// | `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
 ///
+/// # Notification Message
+/// When the exit occurs, the kernel will send a message with the sender process/thread ID [`super::KERNEL_FAKE_ID`].
+/// This message will contain an [`super::ExitMessage`] struct describing the process that exited
+/// and the reason for the exit.
+///
 /// # Errors
 /// - `NotFound`: the handle was unknown or invalid.
 /// - `InvalidFlags`: the flags value was invalid.
@@ -313,7 +318,7 @@ pub fn send(
 /// - `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
-pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
+pub fn receive(flags: ReceiveFlags) -> Result<Message, ErrorCode> {
     let mut result: usize;
     let mut out_len = MaybeUninit::uninit();
     let mut out_msg = MaybeUninit::uninit();
@@ -357,7 +362,8 @@ pub fn receive<'a>(flags: ReceiveFlags) -> Result<&'a Message, ErrorCode> {
 /// # Errors
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer was null or invalid.
-pub fn free_message(flags: FreeMessageFlags, message: &Message) -> Result<(), ErrorCode> {
+#[allow(clippy::needless_pass_by_value)] // pass by value is important here for safety
+pub fn free_message(flags: FreeMessageFlags, message: Message) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
         asm!(
@@ -367,8 +373,8 @@ pub fn free_message(flags: FreeMessageFlags, message: &Message) -> Result<(), Er
             "svc {call_number}",
             "mov {res}, x0",
             f = in(reg) flags.bits(),
-            p = in(reg) core::ptr::from_ref::<Message>(message).cast::<u8>(),
-            l = in(reg) message.0.len(),
+            p = in(reg) message.ptr,
+            l = in(reg) message.len,
             res = out(reg) result,
             call_number = const CallNumber::FreeMessage.into_num()
         );

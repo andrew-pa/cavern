@@ -4,7 +4,7 @@ use core::ffi::CStr;
 
 use byteorder::{BigEndian, ByteOrder as _};
 
-use super::{fdt, Registers, Value};
+use super::{Registers, Value, fdt};
 
 fn pad_end_4b(num_bytes: usize) -> usize {
     num_bytes

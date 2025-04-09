@@ -1,0 +1,19 @@
+[package]
+name = "user_core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel_api = { path = "../kernel_api" }
+bitfield = "0.19"
+bytemuck = "1"
+hashbrown = "0.15"
+talc = "4"
+snafu = { version = "0.8", default-features = false, features=["unstable-core-error"] }
+
+futures = { version = "0.3", default-features=false, features=["alloc"] }
+crossbeam = { version = "0.8", default-features=false, features=["alloc"] }
+spin = "0.10"
+
+serde = { version = "1", default-features = false, features=["derive"] }
+postcard = { version = "1" }

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 bytemuck = { version = "^1", features = ["derive"] }
-bitfield = { version = "^0.17" }
+bitfield = { version = "^0.19" }
 bitflags = { version = "^2", default-features = false }
 
 [features]

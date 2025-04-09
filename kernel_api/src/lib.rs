@@ -53,6 +53,14 @@ pub enum ErrorCode {
     InsufficentPermissions,
 }
 
+impl core::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?} ({})", self.into_integer())
+    }
+}
+
+impl core::error::Error for ErrorCode {}
+
 /// System call numbers, one per call.
 /// See the specification for more details.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Contiguous)]
@@ -102,21 +110,6 @@ pub enum EnvironmentValue {
     PageSizeInBytes,
 }
 
-/// The reason that a thread/process exited.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[repr(C)]
-pub enum ExitReasonOld {
-    /// The thread requested the exit with the given code.
-    /// The code `0` implies the thread exited in a non-error/successful state, otherwise an error is assumed.
-    User(u32),
-    /// The thread accessed unmapped or protected virtual memory.
-    PageFault,
-    /// The thread made a system call with an invalid system call number.
-    InvalidSysCall,
-    /// Another thread/process caused this thread to exit prematurely.
-    Killed,
-}
-
 /// The unique ID of a thread.
 pub type ThreadId = NonZeroU32;
 
@@ -137,7 +130,7 @@ pub type ProcessId = NonZeroU32;
 
 /// The process id given as the sender for notifications originating from the kernel that have no
 /// other sender.
-pub const KERNEL_FAKE_PID: ProcessId = ProcessId::new(0xffff_ffff).unwrap();
+pub const KERNEL_FAKE_ID: ProcessId = ProcessId::new(0xffff_ffff).unwrap();
 
 /// Level of privilege granted to a process.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Contiguous, Default)]
@@ -223,8 +216,12 @@ pub struct MessageHeader {
 }
 
 /// A received message from another process.
-#[repr(C, align(8))]
-pub struct Message([u8]);
+pub struct Message {
+    ptr: *const u8,
+    len: usize,
+}
+
+unsafe impl Send for Message {}
 
 impl Message {
     /// Create a new message from a raw slice in the inbox.
@@ -235,11 +232,13 @@ impl Message {
     /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be
     /// aligned to an 8-byte boundary.
     #[allow(unused)]
-    unsafe fn new<'a>(ptr: *mut u8, len: usize) -> &'a Message {
-        unsafe {
-            let slice = core::slice::from_raw_parts(ptr, len);
-            Self::from_slice(slice)
-        }
+    unsafe fn new(ptr: *const u8, len: usize) -> Message {
+        debug_assert!(
+            len >= core::mem::size_of::<MessageHeader>(),
+            "message must be at least large enough for a message header"
+        );
+        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
+        Message { ptr, len }
     }
 
     /// Create a new message from a slice in the inbox.
@@ -248,17 +247,8 @@ impl Message {
     /// The caller ensures that this slice is valid: that it actually contains a message with a valid header.
     /// This means at a minimum that `len` must be greater than `size_of::<MessageHeader>()` and `ptr` must be aligned to an 8-byte boundary.
     #[must_use]
-    pub unsafe fn from_slice(slice: &[u8]) -> &Message {
-        debug_assert!(
-            slice.len() >= core::mem::size_of::<MessageHeader>(),
-            "message must be at least large enough for a message header"
-        );
-        let ptr = slice.as_ptr();
-        debug_assert!(ptr.is_aligned_to(8), "messages must be 8-byte aligned");
-        unsafe {
-            #[allow(clippy::cast_ptr_alignment)]
-            &*(core::ptr::from_ref(slice) as *const Message)
-        }
+    pub unsafe fn from_slice(slice: &[u8]) -> Message {
+        unsafe { Message::new(slice.as_ptr(), slice.len()) }
     }
 
     /// The message header written by the kernel.
@@ -267,11 +257,7 @@ impl Message {
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to start with a header.
             #[allow(clippy::cast_ptr_alignment)]
-            self.0
-                .as_ptr()
-                .cast::<MessageHeader>()
-                .as_ref()
-                .unwrap_unchecked()
+            self.ptr.cast::<MessageHeader>().as_ref().unwrap_unchecked()
         }
     }
 
@@ -282,8 +268,8 @@ impl Message {
             + self.header().num_buffers * core::mem::size_of::<SharedBufferInfo>();
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
-            let ptr = self.0.as_ptr().cast::<u8>().add(msg_hdr_size);
-            core::slice::from_raw_parts(ptr, self.0.len() - msg_hdr_size)
+            let ptr = self.ptr.add(msg_hdr_size);
+            core::slice::from_raw_parts(ptr, self.len - msg_hdr_size)
         }
     }
 
@@ -294,13 +280,15 @@ impl Message {
         unsafe {
             // SAFETY: a message is guarenteed (by the kernel) to have the payload after the header.
             #[allow(clippy::cast_ptr_alignment)]
-            let ptr = self
-                .0
-                .as_ptr()
-                .byte_add(msg_hdr_size)
-                .cast::<SharedBufferInfo>();
+            let ptr = self.ptr.byte_add(msg_hdr_size).cast::<SharedBufferInfo>();
             core::slice::from_raw_parts(ptr, self.header().num_buffers)
         }
+    }
+
+    /// Free this message's space in the inbox.
+    #[cfg(feature = "wrappers")]
+    pub fn free(self, flags: flags::FreeMessageFlags) {
+        free_message(flags, self).unwrap();
     }
 }
 
@@ -411,8 +399,9 @@ pub enum ExitSource {
 pub struct ExitMessage {
     /// Indicates if the exit was for a thread or a process.
     pub source: ExitSource,
-    /// If the exit is for a process, this is the process ID; otherwise, it is ignored.
-    pub pid: u32,
+    /// If the exit is for a process, this is the process ID.
+    /// If the exit is for a thread, this is the thread ID.
+    pub id: u32,
     /// The reason for the exit.
     pub reason: ExitReason,
 }
@@ -421,20 +410,20 @@ unsafe impl Pod for ExitMessage {}
 impl ExitMessage {
     /// Create a message for a thread exit.
     #[must_use]
-    pub fn thread(reason: ExitReason) -> Self {
+    pub fn thread(tid: ThreadId, reason: ExitReason) -> Self {
         Self {
             source: ExitSource::Thread,
-            pid: 0,
+            id: tid.into(),
             reason,
         }
     }
 
     /// Create a message for a process exit.
     #[must_use]
-    pub fn process(pid: u32, reason: ExitReason) -> Self {
+    pub fn process(pid: ProcessId, reason: ExitReason) -> Self {
         Self {
             source: ExitSource::Process,
-            pid,
+            id: pid.into(),
             reason,
         }
     }
