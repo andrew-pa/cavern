@@ -64,7 +64,7 @@ pub fn spawn_init_process(
 
     let Some(e) = archive
         .entries()
-        .inspect(|e| trace!("initrd entry: {:?}", e))
+        .inspect(|e| trace!("initrd entry: {e:?}"))
         .find(|e| e.filename().as_str().is_ok_and(|f| f == init_exec_name))
     else {
         panic!("could not find init binary \"{init_exec_name}\" in ram disk");
