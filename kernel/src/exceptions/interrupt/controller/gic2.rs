@@ -158,7 +158,7 @@ impl Controller for GenericV2 {
     /// Prepare the controller for handling interrupts generally.
     fn global_initialize(&self) {
         let dist_base = self.distributor_base.lock();
-        debug!("Initializing GICv2 Distributor @ {:x?}", dist_base);
+        debug!("Initializing GICv2 Distributor @ {dist_base:x?}");
         unsafe {
             dist_base.add(dist_regs::CTLR).write_volatile(0b11);
         }

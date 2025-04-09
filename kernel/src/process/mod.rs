@@ -184,11 +184,7 @@ impl ProcessManager for SystemProcessManager {
                 // notify exit subscribers that a thread exited
                 let msg = ExitMessage::thread(thread.id, reason);
                 for (pid, tid) in thread.exit_subscribers.lock().iter() {
-                    trace!(
-                        "sending exit message {msg:?} to process #{}, thread #{:?}",
-                        pid,
-                        tid
-                    );
+                    trace!("sending exit message {msg:?} to process #{pid}, thread #{tid:?}",);
                     if let Some(proc) = self.process_for_id(*pid) {
                         proc.send_message(
                             (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
