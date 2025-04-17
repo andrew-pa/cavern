@@ -14,7 +14,6 @@ use kernel_api::{
 
 fn thread2(arg: usize) -> ! {
     write_log(3, "hello from user space, thread 2!").unwrap();
-    let thread_id = kernel_api::read_env_value(kernel_api::EnvironmentValue::CurrentThreadId);
     let msg = receive(ReceiveFlags::empty()).expect("receive message");
     assert_eq!(msg.payload(), b"Hello!");
     let buf = msg.buffers().first().unwrap();
@@ -25,7 +24,7 @@ fn thread2(arg: usize) -> ! {
     data[0] = 0xef;
     transfer_to_shared_buffer(buf.buffer, 0, &data).expect("write byte");
     free_message(FreeMessageFlags::FREE_BUFFERS, msg).expect("free message");
-    exit_current_thread((thread_id + 1 + arg) as u32);
+    exit_current_thread(arg as u32);
 }
 
 /// The main entry point.
@@ -84,11 +83,12 @@ pub extern "C" fn _start() {
 
     let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
     assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_ID);
-    assert_eq!(exit_msg.header().sender_tid, tid);
+    assert_eq!(exit_msg.header().sender_tid, KERNEL_FAKE_ID);
     let em: &ExitMessage = bytemuck::from_bytes(exit_msg.payload());
     assert_eq!(em.source, ExitSource::Thread);
     assert_eq!(em.reason.tag, ExitReasonTag::User);
-    assert_eq!(em.reason.user_code, 7000 + tid.get() + 1);
+    assert_eq!(em.reason.user_code, 7000);
+    assert_eq!(em.id, tid.into());
     free_message(FreeMessageFlags::FREE_BUFFERS, exit_msg).expect("free message");
 
     unsafe {
@@ -99,7 +99,7 @@ pub extern "C" fn _start() {
 
     write_log(3, "init successful").unwrap();
 
-    exit_current_thread(7000 + process_id.get() + 1);
+    exit_current_thread(0);
 }
 
 /// The panic handler.

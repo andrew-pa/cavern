@@ -16,6 +16,7 @@ snafu = { version = "^0.8", default-features = false, features = ["unstable-core
 serde = { version = "^1", default-features = false }
 serde-json-core = { version = "^0.6" }
 kernel_api = { path = "../kernel_api", default-features = false, features = [] }
+qemu-exit = "3"
 
 [build-dependencies]
 vergen = { version = "^9", features = ["build", "cargo"]}

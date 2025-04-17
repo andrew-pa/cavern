@@ -124,6 +124,9 @@ run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
         bootm {{kernel_load_addr}} {{initrd_load_addr}} 40000000
     END
 
+# Run the kernel and execute the "check-syscalls" integration test as the root process.
+run-kernel-check: (run-qemu "-m 4G -smp 4" '{"log_level":"Trace", "init_exec_name":"check-syscalls"} ')
+
 # Create an `asciinema` recording of booting the system in QEMU.
 create-boot-video output_file="/tmp/bootvideo.cast" asciinema_args="--cols 160 --rows 40 --idle-time-limit 1" qemu_args="-m 4G -smp 2" boot_args="":
     asciinema rec --command='just run-qemu "{{qemu_args}}" "{{boot_args}}"' --title="cavern_boot@{{`git rev-parse --short=8 HEAD`}}" --overwrite {{asciinema_args}} {{output_file}}

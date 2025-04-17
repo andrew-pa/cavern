@@ -818,6 +818,7 @@ dependencies = [
  "kernel_api",
  "kernel_core",
  "log",
+ "qemu-exit",
  "serde",
  "serde-json-core",
  "snafu",
@@ -1085,6 +1086,12 @@ checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "qemu-exit"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bb0fd6580eeed0103c054e3fba2c2618ff476943762f28a645b63b8692b21c9"
 
 [[package]]
 name = "quote"

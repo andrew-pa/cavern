@@ -74,11 +74,15 @@ pub fn spawn_root_process(initramfs: &TarArchiveRef, name: &str) -> Result<Proce
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let self_pid =
+        ProcessId::new(read_env_value(kernel_api::EnvironmentValue::CurrentProcessId) as u32)
+            .unwrap();
+
     let info = ProcessCreateInfo {
         entry_point: bin.ehdr.e_entry as usize,
         num_sections: sections.len(),
         sections: sections.as_ptr(),
-        supervisor: None,
+        supervisor: Some(self_pid),
         privilege_level: PrivilegeLevel::Driver,
         notify_on_exit: false,
         inbox_size: 256,
