@@ -107,7 +107,7 @@ make-images mkimage_args="": (make-kernel-image mkimage_args) (make-initrd-image
 
 # Run the system in QEMU.
 run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
-    #!/bin/sh
+    #!/bin/bash
     set -euxo pipefail
     qemu-system-aarch64 \
         -machine virt -cpu cortex-a57 \
@@ -115,7 +115,7 @@ run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
         -bios {{vendor_tool_dir / "u-boot/u-boot.bin"}} \
         -nographic \
         -drive if=none,file=fat:rw:{{img_dir}},id=kboot,format=raw \
-        -device nvme,drive=kboot,serial=foo {{qemu_args}} \
+        -device nvme,drive=kboot,serial=foo,romfile="" {{qemu_args}} \
     <<-END
         nvme scan
         fatload nvme 0 0x{{kernel_load_addr}} kernel.img

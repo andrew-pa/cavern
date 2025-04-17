@@ -1,4 +1,4 @@
-name: Build and Upload Images
+name: Build, Checks and Tests Images
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
         - '**'
 
 jobs:
-  build:
+  build-and-check:
     runs-on: ubuntu-latest
 
     steps:
@@ -45,7 +45,7 @@ jobs:
       run: just test
 
     - name: Install target architecture binutils
-      run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+      run: sudo apt-get update -qq && sudo apt-get install -y binutils-aarch64-linux-gnu
 
     - name: Get U-boot commit hash
       run: git submodule init && echo "U_BOOT_COMMIT_HASH=$(git submodule status | grep u-boot | cut -d ' ' -f 1)" >> $GITHUB_ENV
@@ -72,3 +72,38 @@ jobs:
       with:
         name: images
         path: .build/image
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build-and-check
+    steps:
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install QEMU
+      run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends -o Dpkg::Options::="--no-triggers" qemu-system-arm ipxe-qemu
+
+    - name: Get U-boot commit hash
+      run: git submodule init && echo "U_BOOT_COMMIT_HASH=$(git submodule status | grep u-boot | cut -d ' ' -f 1)" >> $GITHUB_ENV
+
+    - name: Create .build directory
+      run: mkdir .build
+
+    - name: Cached U-boot build
+      id: cache-uboot
+      uses: actions/cache@v4
+      with:
+        path: .build/vendor/u-boot
+        key: u-boot${{ env.U_BOOT_COMMIT_HASH }}
+
+    - name: Download built image
+      uses: actions/download-artifact@v4
+      with:
+        name: images
+        path: .build/image
+
+    - name: Run kernel integration tests
+      run: just --no-deps run-qemu "-m 4G -smp 4" '{"log_level":"Trace", "init_exec_name":"check-syscalls"} '
