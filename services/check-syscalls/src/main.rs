@@ -27,9 +27,10 @@ where
     }
 }
 
+mod heap;
 mod read_env_value;
 
-const TESTS: &[(&str, &[&dyn Testable])] = &[read_env_value::TESTS];
+const TESTS: &[(&str, &[&dyn Testable])] = &[read_env_value::TESTS, heap::TESTS];
 
 /// The main entry point.
 ///
