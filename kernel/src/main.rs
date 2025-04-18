@@ -193,6 +193,7 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 #[cfg(not(test))]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     use kernel_core::exceptions::InterruptController;
+    use qemu_exit::QEMUExit;
 
     log::error!("{info}");
 
@@ -201,6 +202,5 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         ic.broadcast_sgi(0);
     }
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+    qemu_exit::AArch64::new().exit_failure()
 }
