@@ -1,4 +1,4 @@
-name: Build, Checks and Tests Images
+name: Build, Check and Test Image
 
 on:
   push:

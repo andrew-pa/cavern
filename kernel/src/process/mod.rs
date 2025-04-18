@@ -13,7 +13,7 @@ use kernel_core::{
         ThreadId, MAX_PROCESS_ID,
     },
 };
-use log::{debug, error, trace};
+use log::{debug, error, info, trace};
 use qemu_exit::QEMUExit;
 use snafu::OptionExt;
 use spin::Once;
@@ -170,7 +170,7 @@ impl ProcessManager for SystemProcessManager {
         thread: &Arc<Thread>,
         reason: ExitReason,
     ) -> Result<(), ProcessManagerError> {
-        debug!("thread #{} exited with reason {reason:?}", thread.id);
+        info!("thread #{} exited with reason {reason:?}", thread.id);
 
         // remove current thread from scheduler, set state to finished
         thread.set_state(State::Finished);

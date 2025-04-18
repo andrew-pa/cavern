@@ -201,6 +201,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "kernel_api",
+ "user_core",
 ]
 
 [[package]]

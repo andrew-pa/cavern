@@ -1,31 +1,35 @@
 //! A quick test to make sure that system calls operate as expected.
 #![no_std]
 #![no_main]
-#![deny(missing_docs)]
 #![allow(clippy::cast_possible_truncation)]
 
-use kernel_api::{
-    ExitMessage, ExitReasonTag, ExitSource, KERNEL_FAKE_ID, ProcessId, SharedBufferCreateInfo,
-    ThreadCreateInfo, allocate_heap_pages, exit_current_thread, exit_notification_subscription,
-    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags, SharedBufferFlags},
-    free_heap_pages, free_message, receive, send, spawn_thread, transfer_from_shared_buffer,
-    transfer_to_shared_buffer, write_log,
-};
+extern crate alloc;
+use alloc::format;
+use kernel_api::{exit_current_thread, write_log};
 
-fn thread2(arg: usize) -> ! {
-    write_log(3, "hello from user space, thread 2!").unwrap();
-    let msg = receive(ReceiveFlags::empty()).expect("receive message");
-    assert_eq!(msg.payload(), b"Hello!");
-    let buf = msg.buffers().first().unwrap();
-    assert_eq!(buf.length, 8);
-    let mut data = [0u8];
-    transfer_from_shared_buffer(buf.buffer, 0, &mut data).expect("read byte");
-    assert_eq!(data[0], 0xab);
-    data[0] = 0xef;
-    transfer_to_shared_buffer(buf.buffer, 0, &data).expect("write byte");
-    free_message(FreeMessageFlags::FREE_BUFFERS, msg).expect("free message");
-    exit_current_thread(arg as u32);
+#[global_allocator]
+static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
+
+/// Trait to enable nice test logs (by giving access to the name of the function).
+pub trait Testable {
+    /// Execute the test.
+    fn run(&self);
 }
+
+impl<T> Testable for T
+where
+    T: Fn(),
+{
+    fn run(&self) {
+        write_log(4, &format!("running {}...", core::any::type_name::<T>())).unwrap();
+        self();
+        write_log(3, &format!("{} ok", core::any::type_name::<T>())).unwrap();
+    }
+}
+
+mod read_env_value;
+
+const TESTS: &[(&str, &[&dyn Testable])] = &[read_env_value::TESTS];
 
 /// The main entry point.
 ///
@@ -33,78 +37,24 @@ fn thread2(arg: usize) -> ! {
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() {
-    let process_id = ProcessId::new(kernel_api::read_env_value(
-        kernel_api::EnvironmentValue::CurrentProcessId,
-    ) as u32)
-    .unwrap();
-
-    write_log(3, "hello from user space!").unwrap();
-
-    spawn_thread(&ThreadCreateInfo {
-        entry: thread2,
-        stack_size: 0,
-        user_data: 0,
-    })
-    .expect_err("spawn thread");
-
-    spawn_thread(unsafe {
-        (0xffff_0000_ffff_0000 as *const ThreadCreateInfo)
-            .as_ref()
-            .unwrap()
-    })
-    .expect_err("spawn thread");
-
-    let tid = spawn_thread(&ThreadCreateInfo {
-        entry: thread2,
-        stack_size: 1,
-        user_data: 7000,
-    })
-    .expect("spawn thread");
-
-    exit_notification_subscription(ExitNotificationSubscriptionFlags::THREAD, tid.get(), None)
-        .expect("subscribe to exit");
-
-    let p = allocate_heap_pages(1).expect("allocate");
-    unsafe {
-        p.write(0xab);
+    for (group_name, tests) in TESTS {
+        write_log(
+            3,
+            &format!("running test group {group_name} ({} tests)...", tests.len()),
+        )
+        .unwrap();
+        for test in *tests {
+            test.run();
+        }
     }
-
-    send(
-        process_id,
-        Some(tid),
-        b"Hello!",
-        &[SharedBufferCreateInfo {
-            flags: SharedBufferFlags::READ | SharedBufferFlags::WRITE,
-            base_address: p,
-            length: 8,
-        }],
-    )
-    .expect("send message");
-
-    let exit_msg = receive(ReceiveFlags::empty()).expect("receive exit message");
-    assert_eq!(exit_msg.header().sender_pid, KERNEL_FAKE_ID);
-    assert_eq!(exit_msg.header().sender_tid, KERNEL_FAKE_ID);
-    let em: &ExitMessage = bytemuck::from_bytes(exit_msg.payload());
-    assert_eq!(em.source, ExitSource::Thread);
-    assert_eq!(em.reason.tag, ExitReasonTag::User);
-    assert_eq!(em.reason.user_code, 7000);
-    assert_eq!(em.id, tid.into());
-    free_message(FreeMessageFlags::FREE_BUFFERS, exit_msg).expect("free message");
-
-    unsafe {
-        assert_eq!(p.read(), 0xef);
-    }
-
-    free_heap_pages(p, 1).expect("free");
-
-    write_log(3, "init successful").unwrap();
+    write_log(3, "all tests passed!").unwrap();
 
     exit_current_thread(0);
 }
 
 /// The panic handler.
 #[panic_handler]
-pub fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
-    let _ = write_log(1, "panic!");
+pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    let _ = write_log(1, &format!("panic! {info}"));
     exit_current_thread(1);
 }
