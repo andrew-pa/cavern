@@ -12,7 +12,7 @@ Finally, the kernel also takes care of handling interrupts from devices and noti
 A process is a collection of threads who share the same:
 
 - process ID
-- supervisor process ID
+- supervisor and resource registry queue IDs
 - role (process level and supervisor status)
 - memory address space
 - shared buffers
@@ -45,16 +45,13 @@ A thread is a single path of execution in a process, and has its own:
 
 - program counter/CPU state
 - stack
-- message queue
-- state: running, waiting for message
+- state: running, waiting for message on some queue
 
 Threads are scheduled by the kernel for execution on the available CPUs in the system.
 Each thread has a unique ID. Thread IDs start from 1.
-A single thread in each process is designated as the receiver thread for the process, and will receive messages from other processes who send messages to its process without a thread ID. By default, this is the main thread.
 
 When a thread is finished, it must call the `exit_current_thread` system call.
 Threads can also exit prematurely due to faults.
-When a thread exits, a message is sent to the process' designated receiver from the kernel containing the exit reason.
 
 All possible thread exit reasons:
 | Name         | Description                    |
@@ -80,22 +77,28 @@ TODO: can you share the same region of memory with two different processes?
 
 The kernel's own virtual address space contains an identity mapping to cover the entire physical range of the system RAM.
 
-## Messages
-The kernel distributes messages between threads.
-A message can be sent to any process, and optionally to a specific thread in that process.
-If no thread is specified, the designated receiver thread will recieve the message (this is initially the first thread in the process).
+## Messages and Message Queues
+A message queue is a distinct object with a system-global unique id.
+Message queues are owned by the process that created them.
+The kernel distributes messages between queues.
+A message can be sent to any queue by its id.
+Only the owner process can receive messages from a queue.
+
 Messages consist of bytes, and must be 8-byte aligned.
 The kernel has a configurable maximum message size.
 Messages should be small (<16KiB) to aid performance.
 Shared buffers can also be sent by attaching them to a message.
 
 The kernel must store messages that are in transit, having been sent but not yet received.
-To do this, the kernel provides, for each process, a region of memory called the "inbox" to hold received messages for all threads in the process.
+To do this, the kernel provides, for each process, a region of memory called the "inbox" to hold received messages for all queues owned by the process.
 The inbox is allocated in blocks of 64 bytes.
 The process does not actually need to know about this memory region, because it receives the necessary slices from the `receive` system call.
-Threads must inform the kernel when they are finished processing a message so that the memory in the inbox can be reused.
+Processes must inform the kernel when they are finished processing a message so that the memory in the inbox can be reused.
 
 When a message is received, the kernel writes a message header before the payload data that contains information about the sender and any attached shared buffers. This header counts for the total size of the message in the inbox.
+
+Each process when spawned is allocated an initial message queue.
+The ID of this queue is passed to the entry point of the process as an argument.
 
 ## Boot Process
 The kernel boot process looks something like:
@@ -145,40 +148,40 @@ There should be a crate that provides nice definitions for each system call, and
 (Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array, but the pointer is still only as wide as a machine pointer and the length is specified else where.)
 
 ### `send`
-The `send` system call allows a process to send a message to another process.
+The `send` system call allows a process to send a message to a queue.
 The kernel will inspect the message header and automatically process any associated memory operations while it generates the header on the receiver side.
 The message body will be copied to the receiver.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `dest_pid` | Process ID           | The ID of the process that will receive the message. |
-| `dest_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
+| `dest_qid` | Queue ID           | The ID of the queue that will receive the message. |
 | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
 | `msg_len`  | `usize` | Length of the message payload in bytes. |
 | `buffers`  | `*const [SharedBufferInfo]`| Pointer to array of shared buffers to send with this message. |
 | `buffers_len`| `usize`| Length of the buffers array in elements. |
 
 #### Errors
-- `NotFound`: the process/thread ID was unknown to the system.
+- `NotFound`: the queue ID was unknown to the system.
 - `InboxFull`: the receiving process has too many queued messages and cannot receive the message.
 - `InvalidLength`: the length of the message is invalid.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer was null or invalid.
 
 ### `receive`
-The `receive` system call allows a process to receive a message from another process.
+The `receive` system call allows a process to receive a message from a queue.
 By default, shared buffers are automatically given handles if attached, and their details relative to the receiver will be present in the received message header.
 The pointer returned by `receive` is valid until the message is marked for deletion.
 
 This call will by default set the thread to a waiting state if there are no messages.
-The thread will resume its running state when it receives a message.
+The thread will resume its running state when it receives a message on this queue.
 This can be disabled with the `Nonblocking` flag, which will return `WouldBlock` as an error instead if there are no messages.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `queue`    | Queue ID             | The ID of the queue to receive the message from. The caller process must own this queue. |
 | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
 | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
 
@@ -194,6 +197,7 @@ The `receive` call accepts the following flags:
 - `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+- `NotFound`: the queue ID was unknown to the system or not owned by this process.
 
 ### `free_message`
 Free a message, making its space in the inbox available for new messages.
@@ -280,6 +284,30 @@ If one of the handles does not exist, the rest will still be freed but `NotFound
 - `InvalidPointer`: the array pointer was null or invalid.
 - `InvalidLength`: the length value was invalid.
 
+### `create_message_queue`
+Creates a new message queue owned by the calling process.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `qid`      | `*mut Queue ID`| The destination for the ID of the newly created queue. |
+
+#### Errors
+- `InvalidPointer`: the destination ID pointer was invalid.
+- `OutOfHandles`: the system has run out of handles to use.
+
+### `free_message_queue`
+Frees a message queue owned by the calling process.
+Any pending messages in the queue are freed from the process' inbox.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `qid`      | `Queue ID`| The ID of the queue to free. |
+
+#### Errors
+- `NotFound`: the queue ID was not found or unowned by the caller.
+
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
 Unlike all other system calls, because this call is infallible, the value to be read is returned from the call instead of an error. If the discriminant passed as `value_to_read` is unknown, zero will be returned.
@@ -292,8 +320,8 @@ Unlike all other system calls, because this call is infallible, the value to be 
 #### Values
 - `CurrentProcessId`: the process ID of the calling process.
 - `CurrentThreadId`: the thread ID of the calling process.
-- `DesignatedReceiverThreadId`: the thread ID of the calling process' designated receiver thread.
-- `CurrentSupervisorId`: the process ID of the supervisor process for the calling process.
+- `CurrentSupervisorQueueId`: the queue ID of the supervisor process for the calling process.
+- `CurrentRegistryQueueId`: the queue ID of the registry process for the calling process.
 - `PageSizeInBytes`: the number of bytes per page of memory.
 
 ### `spawn_process`
@@ -304,6 +332,7 @@ Creates a new process. The calling process will become the parent process.
 |------------|----------------------|----------------------------------|
 | `info`  | `*const ProcessCreateInfo` | Parameters for spawining a new process, described below. |
 | `child_pid`| `*mut Process ID`    | If non-null, this pointer is the destination for the new process' ID. |
+| `child_init_qid`| `*mut Queue ID`    | If non-null, this pointer is the destination for the new process' first queue ID. |
 
 #### Types
 - `ProcessCreateInfo`
@@ -320,8 +349,8 @@ Creates a new process. The calling process will become the parent process.
     Also describes the following additional options for creating processes:
 
     + New privilege level for the child, which must be equal to or below that of the caller
-    + The supervisor PID for the child
-    + Whether to notify the parent via a message when the process exits.
+    + The queue IDs for the supervisor and resource registry of this process, or none to cause them to be inherited from the caller.
+    + An optional queue to send an exit notification to when the process exits (same rules as `exit_notification_subscription`).
 
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new process.
@@ -347,14 +376,15 @@ This function does not return to the caller.
 | `exit_code` |  u32   | Code to return to the parent indicating the reason for exiting. The value 0 indicates success. |
 
 ### `exit_notification_subscription`
-Subscribes the current process to the exit notification sent when another process or thread exits.
+Subscribes a queue to the exit notification sent when another process or thread exits.
+Only queue owners can subscribe queues to exit notifications.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-| `pid_or_tid` |  Process/Thread ID   | The ID to subscribe to. |
-| `receiver_tid` | Optional thread ID | The ID of the thread in this process that will receive the message. If `None`, then the designated receiver thread will get it. |
+| `pid_or_tid` |  Process/Thread ID   | The ID of the process or thread to subscribe to. |
+| `dst_qid` | Queue ID | The ID of the queue that will receive the message. |
 
 #### Flags
 The `exit_notification_subscription` call accepts the following flags:
@@ -363,10 +393,10 @@ The `exit_notification_subscription` call accepts the following flags:
 |----------------|------------------------------------------|
 | `PROCESS`      | The ID parameter is a process. Mutex with `THREAD`. |
 | `THREAD`       | The ID parameter is a thread. Mutex with `PROCESS`. |
-| `UNSUBSCRIBE`  | Unsubscribes the current process if it was already subscribed. |
+| `UNSUBSCRIBE`  | Unsubscribes the queue if it was already subscribed. |
 
 #### Errors
-- `NotFound`: the handle was unknown or invalid.
+- `NotFound`: the handle was unknown or invalid, or the queue ID was not found or unowned.
 - `InvalidFlags`: the flags value was invalid.
 
 ### `spawn_thread`
@@ -384,24 +414,13 @@ The `ThreadCreateInfo` struct contains:
 |------------|----------------------|----------------------------------|
 | `entry` | function pointer | The entry point function for the thread. |
 | `stack_size` | usize | Size in pages for the new stack allocated for the thread. |
-| `inbox_size` | usize | Size in pages for the new message inbox allocated for the thread. |
 | `user_data`  | usize | This value is passed verbatim to the entry point function. |
+| `exit_sub_qid` | optional Queue ID | If Some, subscribes the provided queue to the exit notification for this thread. (same rules as `exit_notification_subscription`) |
 
 #### Errors
 - `OutOfMemory`: the system does not have enough memory to create the new thread.
 - `InvalidLength`: the stack or inbox size is too small.
 - `InvalidPointer`: the entry or info pointer was null or invalid.
-
-### `set_designated_receiver`
-Designates a thread in the current process as the thread which will receive messages from other processes who do not specify a thread ID.
-
-#### Arguments
-| Name       | Type                 | Notes                            |
-|------------|----------------------|----------------------------------|
-| `tid`      | Thread ID            | The ID of the thread to designate. |
-
-#### Errors
-- `NotFound`: the thread ID was unknown to the system.
 
 ### `allocate_heap_pages`
 Allocates new system memory, mapping it into the current process' address space as a continuous region.
@@ -565,7 +584,7 @@ This table collects all possible errors returned from system calls.
 
 | Error            | Description                                                                                          |
 |------------------|------------------------------------------------------------------------------------------------------|
-| `NotFound`       | The specified process, thread, or handler ID was unknown or not found in the system.                 |
+| `NotFound`       | The specified process, thread, queue, or handler ID was unknown or not found in the system.                 |
 | `BadFormat`      | The provided data was incorrectly formatted (e.g., message header, process image, interrupt data).   |
 | `InboxFull`      | The receiving process's message queue is full, and it cannot accept additional messages.             |
 | `InvalidLength`  | The specified length was invalid, out of bounds, or not in the acceptable range.                     |
