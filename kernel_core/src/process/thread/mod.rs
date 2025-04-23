@@ -6,7 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use arc_swap::ArcSwapOption;
 use bytemuck::Contiguous;
 use crossbeam::queue::SegQueue;
-use kernel_api::{ExitReason, MessageHeader, ProcessId, SharedBufferInfo};
+use kernel_api::{ErrorCode, ExitReason, MessageHeader, ProcessId, SharedBufferInfo};
 use log::{error, trace};
 use spin::Mutex;
 
@@ -288,8 +288,17 @@ impl Thread {
     pub fn check_resume(&self) -> bool {
         debug_assert_eq!(self.state(), State::WaitingForMessage);
 
-        // TODO: what happens if the queue gets deleted while a thread is waiting to receive a message on it?
         let qu = self.pending_message_receive_queue.load();
+
+        if qu.as_ref().is_some_and(|q| q.dead.load(Ordering::AcqRel)) {
+            // the queue was freed while we waited, return an error.
+            self.pending_message_receive_queue.store(None);
+            self.pending_message_receive.lock().take();
+            self.processor_state.lock().registers.x[0] = ErrorCode::QueueFreed.into_integer();
+            self.set_state(State::Running);
+            return true;
+        }
+
         let Some(msg) = qu.as_ref().and_then(|qu| {
             qu.receive().map(|msg| {
                 self.pending_message_receive_queue.store(None);
@@ -308,11 +317,15 @@ impl Thread {
             self.pending_message_receive.lock().take().unwrap();
         let Some(delivery_addr) = pt.physical_address_of(user_delivery_address.cast()) else {
             error!("process #{}, user space message address pointer was unmapped: {user_delivery_address:?}", proc.id);
-            return false;
+            self.processor_state.lock().registers.x[0] = ErrorCode::InvalidPointer.into_integer();
+            self.set_state(State::Running);
+            return true;
         };
         let Some(delivery_len) = pt.physical_address_of(user_delivery_length.cast()) else {
             error!("process #{}, user space message length pointer was unmapped: {user_delivery_length:?}", proc.id);
-            return false;
+            self.processor_state.lock().registers.x[0] = ErrorCode::InvalidPointer.into_integer();
+            self.set_state(State::Running);
+            return true;
         };
         let delivery_addr: *mut VirtualAddress = delivery_addr.cast().into();
         let delivery_len: *mut usize = delivery_len.cast().into();
@@ -348,11 +361,7 @@ pub trait ThreadManager {
     ///
     /// # Errors
     /// Returns an error if the thread could not be cleaned up (which should be rare).
-    fn exit_thread(
-        &self,
-        thread: &Arc<Thread>,
-        reason: ExitReason,
-    ) -> Result<(), ManagerError>;
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<(), ManagerError>;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: Id) -> Option<Arc<Thread>>;

@@ -9,8 +9,8 @@ use kernel_core::{
     process::{
         system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
-        Id, OutOfHandlesSnafu, Process, ProcessManager, ManagerError, Properties, Thread,
-        ThreadId, MAX_PROCESS_ID,
+        Id, ManagerError, OutOfHandlesSnafu, Process, ProcessManager, Properties, Thread, ThreadId,
+        MAX_PROCESS_ID,
     },
 };
 use log::{debug, error, info, trace};
@@ -21,6 +21,7 @@ use thread::THREADS;
 
 use crate::memory::{page_allocator, PlatformPageAllocator};
 
+pub mod queue;
 pub mod thread;
 
 /// The system process manager instance.
@@ -31,15 +32,9 @@ pub struct SystemProcessManager {
     processes: HandleMap<Process>,
 }
 
-// TODO: if the designated receiver thread exits then we should just kill the whole process?
-
 impl SystemProcessManager {
     /// Handle a process exiting, from either being killed or from the last thread exiting.
-    fn exit_process(
-        &self,
-        process: &Arc<Process>,
-        reason: ExitReason,
-    ) -> Result<(), ManagerError> {
+    fn exit_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError> {
         self.processes.remove(process.id);
 
         let msg = ExitMessage::process(process.id, reason);
@@ -110,48 +105,6 @@ impl ProcessManager for SystemProcessManager {
         Ok(proc)
     }
 
-    fn spawn_thread(
-        &self,
-        parent_process: Arc<Process>,
-        entry_point: VirtualAddress,
-        stack_size: usize,
-        user_data: usize,
-    ) -> Result<Arc<Thread>, ManagerError> {
-        let threads = thread::THREADS.get().expect("threading initialized");
-        let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
-        trace!("spawning thread #{id}");
-        let stack = parent_process.allocate_memory(
-            page_allocator(),
-            stack_size,
-            MemoryProperties {
-                writable: true,
-                executable: false,
-                user_space_access: true,
-                ..MemoryProperties::default()
-            },
-        )?;
-        let stack_ptr = stack.byte_add(stack_size * page_allocator().page_size());
-        let pstate = ProcessorState::new_for_user_thread(entry_point, stack_ptr, user_data);
-        debug!("creating thread #{id} in process #{}, entry point @ {entry_point:?}, stack @ {stack_ptr:?}", parent_process.id);
-        let thread = Arc::new(Thread::new(
-            id,
-            Some(parent_process.clone()),
-            State::Running,
-            pstate,
-            (stack, stack_size),
-        ));
-        {
-            let mut ts = parent_process.threads.write();
-            ts.push(thread.clone());
-        }
-        threads.insert_with_handle(id, thread.clone());
-        thread::SCHEDULER
-            .get()
-            .expect("threading initialized")
-            .spawn_new_thread(thread.clone());
-        Ok(thread)
-    }
-
     fn kill_process(&self, process: &Arc<Process>) -> Result<(), ManagerError> {
         for t in process.threads.write().drain(..) {
             t.set_state(State::Finished);
@@ -163,64 +116,6 @@ impl ProcessManager for SystemProcessManager {
         }
         self.exit_process(process, ExitReason::killed())?;
         Ok(())
-    }
-
-    fn exit_thread(
-        &self,
-        thread: &Arc<Thread>,
-        reason: ExitReason,
-    ) -> Result<(), ManagerError> {
-        debug!("thread #{} exited with reason {reason:?}", thread.id);
-
-        // remove current thread from scheduler, set state to finished
-        thread.set_state(State::Finished);
-
-        // remove thread from parent process
-        if let Some(parent) = thread.parent.as_ref() {
-            let last_thread = {
-                let mut ts = parent.threads.write();
-                let (i, _) = ts
-                    .iter()
-                    .find_position(|t| t.id == thread.id)
-                    .expect("find thread in parent");
-                ts.swap_remove(i);
-                ts.is_empty()
-            };
-
-            // free thread stack
-            parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
-
-            if last_thread {
-                // if this was the last thread, the parent process is now also finished
-                debug!("last thread in process exited");
-                self.exit_process(parent, reason)?;
-            } else {
-                // notify exit subscribers that a thread exited
-                let msg = ExitMessage::thread(thread.id, reason);
-                for (pid, tid) in thread.exit_subscribers.lock().iter() {
-                    trace!("sending exit message {msg:?} to process #{pid}, thread #{tid:?}",);
-                    if let Some(proc) = self.process_for_id(*pid) {
-                        proc.send_message(
-                            (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
-                            tid.and_then(|id| self.thread_for_id(id)),
-                            bytemuck::bytes_of(&msg),
-                            core::iter::empty(),
-                        )?;
-                    }
-                }
-            }
-        }
-        // remove thread from handle table
-        thread::THREADS
-            .get()
-            .unwrap()
-            .remove(thread.id)
-            .expect("thread is in thread handle table");
-        Ok(())
-    }
-
-    fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {
-        thread::THREADS.get().unwrap().get(thread_id)
     }
 
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>> {
@@ -235,9 +130,19 @@ pub static SYS_CALL_POLICY: Once<
 
 /// Initialize processes/threading.
 pub fn init(cores: &[CoreInfo]) {
+    debug!("Initalizing processes...");
     thread::init(cores);
     let pm = PROCESS_MANAGER.call_once(|| SystemProcessManager {
         processes: HandleMap::new(MAX_PROCESS_ID),
     });
-    SYS_CALL_POLICY.call_once(|| SystemCalls::new(page_allocator(), pm));
+    queue::init();
+    SYS_CALL_POLICY.call_once(|| {
+        SystemCalls::new(
+            page_allocator(),
+            pm,
+            thread::THREAD_MANAGER.get().unwrap(),
+            queue::QUEUE_MANAGER.get().unwrap(),
+        )
+    });
+    info!("Processes initialized!");
 }

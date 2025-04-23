@@ -51,6 +51,9 @@ pub enum ErrorCode {
 
     /// The buffer was not shared with the permissions required for the operation.
     InsufficentPermissions,
+
+    /// The queue was freed while the `receive` call was blocked waiting for a message on the queue.
+    QueueFreed,
 }
 
 impl core::fmt::Display for ErrorCode {

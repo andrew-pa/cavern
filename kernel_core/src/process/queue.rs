@@ -1,18 +1,19 @@
 //! User space message queues.
 
+use core::sync::atomic::AtomicBool;
+
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use crossbeam::queue::SegQueue;
 use log::trace;
 
 use crate::memory::VirtualAddress;
 
-use super::{
-    Id as ProcessId, Process, ManagerError, SharedBuffer, SharedBufferId, ThreadId,
-};
+use super::{ManagerError, Process, SharedBuffer};
 
 /// The unique id for a message queue.
 pub type Id = crate::collections::Handle;
+/// The largest possible queue ID in the system.
+pub const MAX_QUEUE_ID: Id = Id::new(0xffff).unwrap();
 
 /// A message that is waiting in a queue to be received.
 #[derive(Debug)]
@@ -31,11 +32,23 @@ pub struct MessageQueue {
     /// The process that created the queue. Only this process can receive messages.
     pub owner: Arc<Process>,
 
+    /// Has the queue already been freed?
+    pub dead: AtomicBool,
+
     /// The queue of pointers to unreceived messages in the inbox.
-    pending: SegQueue<PendingMessage>,
+    pub(super) pending: SegQueue<PendingMessage>,
 }
 
 impl MessageQueue {
+    pub fn new(id: Id, owner: Arc<Process>) -> Self {
+        MessageQueue {
+            id,
+            owner,
+            pending: SegQueue::new(),
+            dead: AtomicBool::new(false),
+        }
+    }
+
     /// Send a message to this queue by delivering it to the owner mailbox and then enqueuing the
     /// message.
     ///
@@ -66,7 +79,7 @@ pub trait QueueManager {
     ///
     /// # Errors
     /// Returns an error if a new queue could not be created.
-    fn create_queue(&self) -> Result<Arc<MessageQueue>, ManagerError>;
+    fn create_queue(&self, owner: Arc<Process>) -> Result<Arc<MessageQueue>, ManagerError>;
 
     /// Frees a message queue, which frees all messages currently in the queue and also wakes all
     /// threads waiting on the queue with an error.

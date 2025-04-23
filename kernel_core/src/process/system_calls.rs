@@ -21,9 +21,9 @@ use crate::{
 };
 
 use super::{
-    queue::{MockQueueManager, MessageQueue, QueueManager}, 
-    thread::{MockThreadManager, Registers, ThreadManager}, 
-    ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError
+    queue::QueueManager,
+    thread::{Registers, ThreadManager},
+    ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError,
 };
 
 /// Errors that can arise during a system call.
@@ -136,21 +136,35 @@ pub enum SysCallEffect {
 }
 
 /// System call handler policy.
-pub struct SystemCalls<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager> {
+pub struct SystemCalls<
+    'pa,
+    'm,
+    PA: PageAllocator,
+    PM: ProcessManager,
+    TM: ThreadManager,
+    QM: QueueManager,
+> {
     page_allocator: &'pa PA,
     process_manager: &'m PM,
     thread_manager: &'m TM,
-    queue_manager: &'m QM
+    queue_manager: &'m QM,
 }
 
-impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager> SystemCalls<'pa, 'm, PA, PM, TM, QM> {
+impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
+    SystemCalls<'pa, 'm, PA, PM, TM, QM>
+{
     /// Create a new system call handler policy.
-    pub fn new(page_allocator: &'pa PA, process_manager: &'m PM, thread_manager: &'m TM, queue_manager: &'m QM) -> Self {
+    pub fn new(
+        page_allocator: &'pa PA,
+        process_manager: &'m PM,
+        thread_manager: &'m TM,
+        queue_manager: &'m QM,
+    ) -> Self {
         Self {
             page_allocator,
             process_manager,
             thread_manager,
-            queue_manager
+            queue_manager,
         }
     }
 
@@ -254,6 +268,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 self.syscall_write_log(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
             }
+            CallNumber::CreateMessageQueue => todo!(),
+            CallNumber::FreeMessageQueue => todo!(),
         }
     }
 
@@ -271,11 +287,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 .as_ref()
                 .map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::CurrentSupervisorQueueId => current_thread
-                .parent
-                .as_ref()
-                .and_then(|p| p.props.supervisor.as_ref())
-                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::CurrentSupervisorQueueId => todo!(),
+            EnvironmentValue::CurrentRegistryQueueId => todo!(),
             EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
         }
     }
@@ -793,8 +806,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
 
 #[cfg(test)]
 mod tests {
-    use core::{mem::MaybeUninit, num::NonZeroU32};
-    use std::{assert_matches::assert_matches, vec::Vec};
+    use core::{mem::MaybeUninit, num::NonZeroU32, ptr};
+    use std::assert_matches::assert_matches;
 
     use kernel_api::{
         flags::SharedBufferFlags, MessageHeader, ProcessCreateInfo, SharedBufferInfo,
@@ -834,7 +847,7 @@ mod tests {
     #[test]
     fn invalid_syscall_number() {
         let pa = MockPageAllocator::new();
-        let mut pm = MockProcessManager::new();
+        let pm = MockProcessManager::new();
         let mut tm = MockThreadManager::new();
         let qm = MockQueueManager::new();
 
@@ -928,7 +941,7 @@ mod tests {
             unreachable!()
         }
 
-        let mut pm = MockProcessManager::new();
+        let pm = MockProcessManager::new();
         let mut tm = MockThreadManager::new();
         let qm = MockQueueManager::new();
 
@@ -1013,11 +1026,10 @@ mod tests {
         .unwrap();
 
         // Create a message queue for the receiver process
-        let receiver_queue = Arc::new(MessageQueue {
-            id: QueueId::new(1).unwrap(),
-            owner: receiver_proc.clone(),
-            pending: SegQueue::new(),
-        });
+        let receiver_queue = Arc::new(MessageQueue::new(
+            QueueId::new(1).unwrap(),
+            receiver_proc.clone(),
+        ));
 
         let message = b"Hello, world!!";
         let buffers = &[SharedBufferCreateInfo {
@@ -1026,7 +1038,7 @@ mod tests {
             length: 1234,
         }];
 
-        let mut pm = MockProcessManager::new();
+        let pm = MockProcessManager::new();
         let tm = MockThreadManager::new();
         let mut qm = MockQueueManager::new();
 
@@ -1053,7 +1065,9 @@ mod tests {
         );
 
         // Check that the message arrived in the queue
-        let msg = receiver_queue.receive().expect("message should be in queue");
+        let msg = receiver_queue
+            .receive()
+            .expect("message should be in queue");
         assert_eq!(
             msg.data_length,
             message.len() + size_of::<MessageHeader>() + size_of::<SharedBufferInfo>()
@@ -1063,10 +1077,17 @@ mod tests {
         // We need to parse the message header to find the handle
         let mut header_data = [0u8; size_of::<MessageHeader>() + size_of::<SharedBufferInfo>()];
         unsafe {
-            receiver_proc.page_tables.read().copy_from_while_unmapped(msg.data_address, &mut header_data).unwrap();
+            receiver_proc
+                .page_tables
+                .read()
+                .copy_from_while_unmapped(msg.data_address, &mut header_data)
+                .unwrap();
         }
         let msg_parsed = unsafe { Message::from_slice(&header_data) }; // Only need header part
-        let buf_info = msg_parsed.buffers().first().expect("message has shared buffer");
+        let buf_info = msg_parsed
+            .buffers()
+            .first()
+            .expect("message has shared buffer");
         let buf_hdl = buf_info.buffer;
 
         let buf = receiver_proc
@@ -1106,11 +1127,7 @@ mod tests {
         .unwrap();
 
         // Create an empty message queue for the process
-        let queue = Arc::new(MessageQueue {
-            id: QueueId::new(1).unwrap(),
-            owner: proc.clone(),
-            pending: SegQueue::new(),
-        });
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
 
         let pm = MockProcessManager::new();
         let tm = MockThreadManager::new();
@@ -1151,11 +1168,7 @@ mod tests {
         .unwrap();
 
         // Create an empty message queue for the process
-        let queue = Arc::new(MessageQueue {
-            id: QueueId::new(1).unwrap(),
-            owner: proc.clone(),
-            pending: SegQueue::new(),
-        });
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
 
         let pm = MockProcessManager::new();
         let tm = MockThreadManager::new();
@@ -1183,9 +1196,18 @@ mod tests {
         );
 
         assert_eq!(th.state(), State::WaitingForMessage);
-        assert_eq!(th.pending_message_receive_queue.load().as_ref().unwrap().id, queue.id);
+        assert_eq!(
+            th.pending_message_receive_queue.load().as_ref().unwrap().id,
+            queue.id
+        );
         let pmr = th.pending_message_receive.lock();
-        assert_eq!(*pmr, Some((VirtualPointerMut::from(0xabcd), VirtualPointerMut::from(0xbcde))));
+        assert_eq!(
+            *pmr,
+            Some((
+                VirtualPointerMut::from(0xabcd),
+                VirtualPointerMut::from(0xbcde)
+            ))
+        );
     }
 
     #[test]
@@ -1202,11 +1224,7 @@ mod tests {
         let th = proc.threads.read().first().unwrap().clone();
 
         // Create a message queue and add a message to it
-        let queue = Arc::new(MessageQueue {
-            id: QueueId::new(1).unwrap(),
-            owner: proc.clone(),
-            pending: SegQueue::new(),
-        });
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
 
         let mut message = [0u8; 64];
 
@@ -1215,11 +1233,13 @@ mod tests {
             data_length: message.len(),
         };
         // Manually write a dummy header (sender info isn't stored in PendingMessage)
-        let header = MessageHeader {
-            num_buffers: 0,
-        };
+        let header = MessageHeader { num_buffers: 0 };
         unsafe {
-            ptr::copy_nonoverlapping(&header as *const _ as *const u8, message.as_mut_ptr(), size_of::<MessageHeader>());
+            ptr::copy_nonoverlapping(
+                &header as *const _ as *const u8,
+                message.as_mut_ptr(),
+                size_of::<MessageHeader>(),
+            );
         }
         queue.pending.push(pending_msg);
 
@@ -1261,6 +1281,8 @@ mod tests {
     #[test]
     fn normal_spawn_process() {
         let mut pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
         let parent_proc = crate::process::tests::create_test_process(
             ProcessId::new(10).unwrap(),
             Properties {
@@ -1304,7 +1326,7 @@ mod tests {
             .return_once(move |_, _| Ok(new_proc2));
 
         let pa = &*PAGE_ALLOCATOR;
-        let policy = SystemCalls::new(pa, &pm);
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut registers = Registers::default();
@@ -1587,45 +1609,6 @@ mod tests {
     }
 
     #[test]
-    fn normal_set_designated_receiver() {
-        let proc = crate::process::tests::create_test_process(
-            ProcessId::new(90).unwrap(),
-            Properties {
-                supervisor: None,
-                privilege: kernel_api::PrivilegeLevel::Privileged,
-            },
-            ThreadId::new(91).unwrap(),
-        )
-        .unwrap();
-
-        // Create an extra thread.
-        let extra_thread = fake_thread();
-        proc.threads.write().push(extra_thread.clone());
-
-        let current_thread = proc.threads.read().first().unwrap().clone();
-        let pm = MockProcessManager::new();
-        let tm = MockThreadManager::new();
-        let qm = MockQueueManager::new();
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
-        let mut registers = Registers::default();
-        registers.x[0] = extra_thread.id.get() as usize;
-        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
-
-        assert_matches!(
-            policy.dispatch_system_call(
-                CallNumber::SetDesignatedReceiver.into_integer(),
-                &current_thread,
-                &registers,
-                &usm
-            ),
-            Ok(SysCallEffect::Return(0))
-        );
-        // Verify the extra thread is now at the front.
-        let first_thread = proc.threads.read().first().unwrap().clone();
-        assert_eq!(first_thread.id, extra_thread.id);
-    }
-
-    #[test]
     fn normal_free_message_no_buffers() {
         let proc = crate::process::tests::create_test_process(
             ProcessId::new(100).unwrap(),
@@ -1639,7 +1622,9 @@ mod tests {
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
 
         let message = [0u8; 32];
@@ -1781,9 +1766,9 @@ mod tests {
         proc.threads.write().push(extra_thread.clone());
 
         let current_thread = proc.threads.read().first().unwrap().clone();
-        let mut pm = MockProcessManager::new();
+        let pm = MockProcessManager::new();
         let ex = extra_thread.clone();
-        let tm = MockThreadManager::new();
+        let mut tm = MockThreadManager::new();
         let qm = MockQueueManager::new();
         tm.expect_thread_for_id()
             .with(eq(extra_thread.id))

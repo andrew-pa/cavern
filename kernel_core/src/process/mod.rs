@@ -3,8 +3,8 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use kernel_api::{
-    flags::SharedBufferFlags, ImageSection, ImageSectionKind, MessageHeader,
-    PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
+    flags::SharedBufferFlags, ImageSection, ImageSectionKind, MessageHeader, PrivilegeLevel,
+    ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
 use queue::PendingMessage;
@@ -671,7 +671,7 @@ pub mod tests {
 
     use super::{
         thread::{ProcessorState, State},
-        Process, ManagerError, Properties, Thread, ThreadId,
+        ManagerError, Process, Properties, Thread, ThreadId,
     };
 
     /// "Global" page allocator.

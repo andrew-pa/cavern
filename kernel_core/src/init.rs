@@ -11,7 +11,7 @@ use tar_no_std::TarArchiveRef;
 
 use crate::{
     memory::{page_table::MemoryProperties, PageSize, PhysicalAddress, PhysicalPointer},
-    process::{ProcessManager, ManagerError},
+    process::{ManagerError, ProcessManager},
 };
 
 /// Errors that can occur while spawning the `init` process.
