@@ -21,7 +21,9 @@ use crate::{
 };
 
 use super::{
-    queue::QueueManager, thread::{Registers, ThreadManager}, ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError
+    queue::{MockQueueManager, MessageQueue, QueueManager}, 
+    thread::{MockThreadManager, Registers, ThreadManager}, 
+    ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError
 };
 
 /// Errors that can arise during a system call.
@@ -833,17 +835,19 @@ mod tests {
     fn invalid_syscall_number() {
         let pa = MockPageAllocator::new();
         let mut pm = MockProcessManager::new();
+        let mut tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
 
         let thread = fake_thread();
 
         // invalid syscall number -> thread fault
         let thread2 = thread.clone();
-        pm.expect_exit_thread()
+        tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::invalid_syscall())
             .returning(|_, _| Ok(()));
 
-        let policy = SystemCalls::new(&pa, &pm);
+        let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
         let usm = MockActiveUserSpaceTables::new();
 
@@ -865,10 +869,12 @@ mod tests {
     fn read_current_thread_id() {
         let pa = MockPageAllocator::new();
         let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
 
         let thread = fake_thread();
 
-        let policy = SystemCalls::new(&pa, &pm);
+        let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
         let usm = MockActiveUserSpaceTables::new();
 
@@ -885,18 +891,20 @@ mod tests {
     fn normal_exit_thread() {
         let pa = MockPageAllocator::new();
         let mut pm = MockProcessManager::new();
+        let mut tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
 
         let exit_code = 7;
 
         let thread = fake_thread();
 
         let thread2 = thread.clone();
-        pm.expect_exit_thread()
+        tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
             .returning(|_, _| Ok(()));
 
-        let policy = SystemCalls::new(&pa, &pm);
+        let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
         let usm = MockActiveUserSpaceTables::new();
 
@@ -921,6 +929,8 @@ mod tests {
         }
 
         let mut pm = MockProcessManager::new();
+        let mut tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
 
         let proc = crate::process::tests::create_test_process(
             ProcessId::new(7).unwrap(),
@@ -951,7 +961,7 @@ mod tests {
         let thread_id_ptr = &raw mut thread_id;
 
         let pid = proc.id;
-        pm.expect_spawn_thread()
+        tm.expect_spawn_thread()
             .with(
                 mockall::predicate::function(move |p: &Arc<Process>| p.id == pid),
                 eq(VirtualAddress::from(test_entry as usize)),
@@ -966,7 +976,7 @@ mod tests {
 
         let th = proc.threads.read().first().unwrap().clone();
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(
@@ -1002,6 +1012,13 @@ mod tests {
         )
         .unwrap();
 
+        // Create a message queue for the receiver process
+        let receiver_queue = Arc::new(MessageQueue {
+            id: QueueId::new(1).unwrap(),
+            owner: receiver_proc.clone(),
+            pending: SegQueue::new(),
+        });
+
         let message = b"Hello, world!!";
         let buffers = &[SharedBufferCreateInfo {
             flags: SharedBufferFlags::READ,
@@ -1010,43 +1027,48 @@ mod tests {
         }];
 
         let mut pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let mut qm = MockQueueManager::new();
 
-        let receiver_proc2 = receiver_proc.clone();
-        pm.expect_process_for_id()
-            .with(eq(receiver_proc.id))
-            .return_once(move |_| Some(receiver_proc2));
+        // Expect the queue manager to be queried for the destination queue
+        let receiver_queue_clone = receiver_queue.clone();
+        qm.expect_queue_for_id()
+            .with(eq(receiver_queue.id))
+            .return_once(move |_| Some(receiver_queue_clone));
 
         let mut registers = Registers::default();
-        registers.x[0] = receiver_proc.id.get() as usize;
-        registers.x[1] = 0; // use the designated receiver thread
-        registers.x[2] = message.as_ptr() as usize;
-        registers.x[3] = message.len();
-        registers.x[4] = buffers.as_ptr() as usize;
-        registers.x[5] = buffers.len();
+        registers.x[0] = receiver_queue.id.get() as usize; // Destination Queue ID
+        registers.x[1] = message.as_ptr() as usize;
+        registers.x[2] = message.len();
+        registers.x[3] = buffers.as_ptr() as usize;
+        registers.x[4] = buffers.len();
 
         let th = sender_proc.threads.read().first().unwrap().clone();
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(CallNumber::Send.into_integer(), &th, &registers, &usm),
             Ok(SysCallEffect::Return(0))
         );
 
-        let thread = receiver_proc.threads.read().first().cloned().unwrap();
-        let msg = thread.inbox_queue.pop().unwrap();
+        // Check that the message arrived in the queue
+        let msg = receiver_queue.receive().expect("message should be in queue");
         assert_eq!(
             msg.data_length,
             message.len() + size_of::<MessageHeader>() + size_of::<SharedBufferInfo>()
         );
-        assert_eq!(msg.sender_process_id, sender_proc.id);
-        assert_eq!(msg.sender_thread_id, th.id);
 
-        let buf_hdl = msg
-            .buffer_handles
-            .first()
-            .cloned()
-            .expect("message has shared buffer");
+        // Check the shared buffer was added to the receiver process
+        // We need to parse the message header to find the handle
+        let mut header_data = [0u8; size_of::<MessageHeader>() + size_of::<SharedBufferInfo>()];
+        unsafe {
+            receiver_proc.page_tables.read().copy_from_while_unmapped(msg.data_address, &mut header_data).unwrap();
+        }
+        let msg_parsed = unsafe { Message::from_slice(&header_data) }; // Only need header part
+        let buf_info = msg_parsed.buffers().first().expect("message has shared buffer");
+        let buf_hdl = buf_info.buffer;
+
         let buf = receiver_proc
             .shared_buffers
             .get(buf_hdl)
@@ -1083,16 +1105,32 @@ mod tests {
         )
         .unwrap();
 
+        // Create an empty message queue for the process
+        let queue = Arc::new(MessageQueue {
+            id: QueueId::new(1).unwrap(),
+            owner: proc.clone(),
+            pending: SegQueue::new(),
+        });
+
         let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let mut qm = MockQueueManager::new();
+
+        // Expect the queue manager to be queried
+        let queue_clone = queue.clone();
+        qm.expect_queue_for_id()
+            .with(eq(queue.id))
+            .return_once(move |_| Some(queue_clone));
 
         let mut registers = Registers::default();
         registers.x[0] = ReceiveFlags::NONBLOCKING.bits();
-        registers.x[1] = 0xabcd;
-        registers.x[2] = 0xbcde;
+        registers.x[1] = queue.id.get() as usize; // Queue ID
+        registers.x[2] = 0xabcd; // Output message ptr addr
+        registers.x[3] = 0xbcde; // Output message len ptr addr
 
         let th = proc.threads.read().first().unwrap().clone();
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
@@ -1112,16 +1150,32 @@ mod tests {
         )
         .unwrap();
 
+        // Create an empty message queue for the process
+        let queue = Arc::new(MessageQueue {
+            id: QueueId::new(1).unwrap(),
+            owner: proc.clone(),
+            pending: SegQueue::new(),
+        });
+
         let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let mut qm = MockQueueManager::new();
+
+        // Expect the queue manager to be queried
+        let queue_clone = queue.clone();
+        qm.expect_queue_for_id()
+            .with(eq(queue.id))
+            .return_once(move |_| Some(queue_clone));
 
         let mut registers = Registers::default();
         registers.x[0] = ReceiveFlags::empty().bits();
-        registers.x[1] = 0xabcd;
-        registers.x[2] = 0xbcde;
+        registers.x[1] = queue.id.get() as usize; // Queue ID
+        registers.x[2] = 0xabcd; // Output message ptr addr
+        registers.x[3] = 0xbcde; // Output message len ptr addr
 
         let th = proc.threads.read().first().unwrap().clone();
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
@@ -1129,8 +1183,9 @@ mod tests {
         );
 
         assert_eq!(th.state(), State::WaitingForMessage);
+        assert_eq!(th.pending_message_receive_queue.load().as_ref().unwrap().id, queue.id);
         let pmr = th.pending_message_receive.lock();
-        assert_eq!(*pmr, Some((0xabcd.into(), 0xbcde.into())));
+        assert_eq!(*pmr, Some((VirtualPointerMut::from(0xabcd), VirtualPointerMut::from(0xbcde))));
     }
 
     #[test]
@@ -1146,27 +1201,48 @@ mod tests {
         .unwrap();
         let th = proc.threads.read().first().unwrap().clone();
 
-        let mut message = [0u8; 64];
-
-        th.inbox_queue.push(PendingMessage {
-            data_address: VirtualPointerMut::from(message.as_mut_ptr()).cast(),
-            data_length: message.len(),
-            sender_process_id: ProcessId::new(123).unwrap(),
-            sender_thread_id: ProcessId::new(456).unwrap(),
-            buffer_handles: Vec::new(),
+        // Create a message queue and add a message to it
+        let queue = Arc::new(MessageQueue {
+            id: QueueId::new(1).unwrap(),
+            owner: proc.clone(),
+            pending: SegQueue::new(),
         });
 
+        let mut message = [0u8; 64];
+
+        let pending_msg = PendingMessage {
+            data_address: VirtualPointerMut::from(message.as_mut_ptr()).cast(),
+            data_length: message.len(),
+        };
+        // Manually write a dummy header (sender info isn't stored in PendingMessage)
+        let header = MessageHeader {
+            num_buffers: 0,
+        };
+        unsafe {
+            ptr::copy_nonoverlapping(&header as *const _ as *const u8, message.as_mut_ptr(), size_of::<MessageHeader>());
+        }
+        queue.pending.push(pending_msg);
+
         let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let mut qm = MockQueueManager::new();
+
+        // Expect the queue manager to be queried
+        let queue_clone = queue.clone();
+        qm.expect_queue_for_id()
+            .with(eq(queue.id))
+            .return_once(move |_| Some(queue_clone));
 
         let mut msg_ptr: MaybeUninit<*mut ()> = MaybeUninit::uninit();
         let mut msg_len: MaybeUninit<usize> = MaybeUninit::uninit();
 
         let mut registers = Registers::default();
         registers.x[0] = ReceiveFlags::empty().bits();
-        registers.x[1] = msg_ptr.as_mut_ptr() as usize;
-        registers.x[2] = msg_len.as_mut_ptr() as usize;
+        registers.x[1] = queue.id.get() as usize; // Queue ID
+        registers.x[2] = msg_ptr.as_mut_ptr() as usize; // Output message ptr addr
+        registers.x[3] = msg_len.as_mut_ptr() as usize; // Output message len ptr addr
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(CallNumber::Receive.into_integer(), &th, &registers, &usm),
@@ -1177,9 +1253,8 @@ mod tests {
             assert_eq!(msg_ptr.assume_init(), message.as_mut_ptr() as _);
             assert_eq!(msg_len.assume_init(), message.len());
         }
-        let msg = unsafe { Message::from_slice(&message) };
-        assert_eq!(msg.header().sender_pid.get(), 123);
-        assert_eq!(msg.header().sender_tid.get(), 456);
+        // Check header content (sender info isn't available here anymore)
+        let msg = unsafe { Message::from_slice(&message[..size_of::<MessageHeader>()]) };
         assert_eq!(msg.header().num_buffers, 0);
     }
 
@@ -1283,7 +1358,9 @@ mod tests {
             .return_once(|_| Ok(()));
 
         let pa = &*PAGE_ALLOCATOR;
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut registers = Registers::default();
@@ -1316,7 +1393,9 @@ mod tests {
 
         let current_thread = parent_proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let pages = 3;
@@ -1367,7 +1446,9 @@ mod tests {
 
         let current_thread = parent_proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut registers = Registers::default();
@@ -1422,7 +1503,9 @@ mod tests {
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let src_data = [1u8, 2, 3, 4];
@@ -1480,7 +1563,9 @@ mod tests {
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut dst_data = [0u8; 4];
@@ -1519,7 +1604,9 @@ mod tests {
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let mut registers = Registers::default();
         registers.x[0] = extra_thread.id.get() as usize;
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
@@ -1597,7 +1684,9 @@ mod tests {
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
-        let policy = SystemCalls::new(pa, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let buffer_ids = [buf];
@@ -1657,7 +1746,9 @@ mod tests {
         registers.x[1] = target_proc.id.get() as usize;
         registers.x[2] = receiver_tid.get() as usize;
 
-        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm);
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
             policy.dispatch_system_call(
@@ -1692,10 +1783,12 @@ mod tests {
         let current_thread = proc.threads.read().first().unwrap().clone();
         let mut pm = MockProcessManager::new();
         let ex = extra_thread.clone();
-        pm.expect_thread_for_id()
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        tm.expect_thread_for_id()
             .with(eq(extra_thread.id))
             .return_once(|_| Some(ex));
-        let policy = SystemCalls::new(pa, &pm);
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let receiver_tid = current_thread.id;
