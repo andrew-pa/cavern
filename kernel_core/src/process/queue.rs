@@ -32,7 +32,7 @@ pub struct MessageQueue {
     pub owner: Arc<Process>,
 
     /// The queue of pointers to unreceived messages in the inbox.
-    pub pending: SegQueue<PendingMessage>,
+    pending: SegQueue<PendingMessage>,
 }
 
 impl MessageQueue {
@@ -42,7 +42,7 @@ impl MessageQueue {
     /// # Errors
     /// Returns an error if the message could not be delivered, or something goes wrong with memory
     /// or page tables.
-    pub fn send_message(
+    pub fn send(
         &self,
         message: &[u8],
         buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
@@ -51,5 +51,10 @@ impl MessageQueue {
         trace!("enqueuing {msg:?} in queue #{}", self.id);
         self.pending.push(msg);
         Ok(())
+    }
+
+    /// Receive a message from the queue, if there is one pending.
+    pub fn receive(&self) -> Option<PendingMessage> {
+        self.pending.pop()
     }
 }

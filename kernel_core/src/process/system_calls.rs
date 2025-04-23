@@ -479,7 +479,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         if buffers.len() > 0 {
             trace!("sending buffers {buffers:?}");
         }
-        dst.send_message(
+        dst.send(
             message,
             buffers.iter().map(|b| {
                 Arc::new(SharedBuffer {
@@ -501,14 +501,15 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<SysCallEffect, Error> {
         let flag_bits: usize = registers.x[0];
-        let u_out_msg = registers.x[1].into();
+        let queue_id: Option<QueueId> = QueueId::new(registers.x[1] as _);
+        let u_out_msg = registers.x[2].into();
         let out_msg: &mut VirtualAddress =
             user_space_memory
                 .check_mut_ref(u_out_msg)
                 .context(InvalidAddressSnafu {
                     cause: "output message ptr",
                 })?;
-        let u_out_len = registers.x[2].into();
+        let u_out_len = registers.x[3].into();
         let out_len: &mut usize =
             user_space_memory
                 .check_mut_ref(u_out_len)
@@ -519,17 +520,20 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             reason: "invalid bits",
             bits: flag_bits,
         })?;
-        if let Some((msg_ptr, msg_len)) = unsafe {
-            // SAFETY: it is safe to call this for the current thread, because the its page tables are current.
-            current_thread.receive_message_immediately()
-        } {
-            *out_msg = msg_ptr;
-            *out_len = msg_len;
+        let qu = queue_id
+            .and_then(|qid| self.process_manager.queue_for_id(qid))
+            .context(NotFoundSnafu {
+                reason: "queue id",
+                id: queue_id.map_or(0, ProcessId::get) as usize,
+            })?;
+        if let Some(msg) = qu.receive() {
+            *out_msg = msg.data_address;
+            *out_len = msg.data_length;
             Ok(SysCallEffect::Return(0))
         } else if flags.contains(ReceiveFlags::NONBLOCKING) {
             Err(Error::WouldBlock)
         } else {
-            current_thread.wait_for_message(u_out_msg, u_out_len);
+            current_thread.wait_for_message(qu, u_out_msg, u_out_len);
             Ok(SysCallEffect::ScheduleNextThread)
         }
     }
