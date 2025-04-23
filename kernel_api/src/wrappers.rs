@@ -2,7 +2,7 @@
 use core::{arch::asm, mem::MaybeUninit, ptr};
 
 use crate::{
-    Message, SharedBufferCreateInfo, SharedBufferId,
+    Message, QueueId, SharedBufferCreateInfo, SharedBufferId,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
 };
 
@@ -93,25 +93,33 @@ pub fn spawn_thread(info: &ThreadCreateInfo) -> Result<ThreadId, ErrorCode> {
 /// - `BadFormat`: the process image is invalid.
 /// - `InvalidPointer`: a pointer was invalid or unexpectedly null.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
-pub fn spawn_process(info: &ProcessCreateInfo) -> Result<ProcessId, ErrorCode> {
+pub fn spawn_process(info: &ProcessCreateInfo) -> Result<(ProcessId, QueueId), ErrorCode> {
     let mut result: usize;
     let mut out_proc_id = MaybeUninit::uninit();
+    let mut out_qu_id = MaybeUninit::uninit();
     let oti_p: *mut u32 = out_proc_id.as_mut_ptr();
     assert!(!oti_p.is_null());
     unsafe {
         asm!(
             "mov x0, {i:x}",
             "mov x1, {p:x}",
+            "mov x2, {q:x}",
             "svc {call_number}",
             "mov {res}, x0",
             i = in(reg) ptr::from_ref(info),
             p = in(reg) oti_p,
+            q = in(reg) out_qu_id.as_mut_ptr(),
             res = out(reg) result,
             call_number = const CallNumber::SpawnProcess.into_num()
         );
     }
     if result == 0 {
-        unsafe { Ok(NonZeroU32::new_unchecked(out_proc_id.assume_init())) }
+        unsafe {
+            Ok((
+                NonZeroU32::new_unchecked(out_proc_id.assume_init()),
+                NonZeroU32::new_unchecked(out_qu_id.assume_init()),
+            ))
+        }
     } else {
         Err(ErrorCode::from_integer(result).expect("error code"))
     }
@@ -167,7 +175,7 @@ pub fn kill_process(pid: ProcessId) -> Result<(), ErrorCode> {
 pub fn exit_notification_subscription(
     flags: ExitNotificationSubscriptionFlags,
     pid_or_tid: u32,
-    receiver_tid: Option<ThreadId>,
+    receiver_qid: QueueId,
 ) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
@@ -179,7 +187,7 @@ pub fn exit_notification_subscription(
             "mov {res}, x0",
             f = in(reg) flags.bits(),
             p = in(reg) pid_or_tid,
-            r = in(reg) receiver_tid.map_or(0, ThreadId::get),
+            r = in(reg) receiver_qid.get(),
             res = out(reg) result,
             call_number = const CallNumber::ExitNotificationSubscription.into_num()
         );
@@ -248,38 +256,34 @@ pub fn free_heap_pages(ptr: *mut u8, size: usize) -> Result<(), ErrorCode> {
 /// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
-/// | `dst_pid` | Process ID           | The ID of the process that will receive the message. |
-/// | `dst_tid` | Thread ID or zero    | Optional ID of the thread that will receive the message, or zero to send to the receiver's designated thread. |
+/// | `dst_qid` | Queue ID           | The ID of the queue that will receive the message. |
 /// | `msg`      | `*const [u8]`| Pointer to the start of memory in user space that contains the message payload. |
 /// | `msg_len`  | `usize` | Length of the message payload in bytes. |
 /// | `buffers`  | `*const [SharedBufferDesc]`| Pointer to array of shared buffers to send with this message. |
 /// | `buffers_len`| `usize`| Length of the buffers array in elements. |
 ///
 /// # Errors
-/// - `NotFound`: the process/thread ID was unknown to the system.
+/// - `NotFound`: the queue ID was unknown to the system.
 /// - `InboxFull`: the receiving process has too many queued messages and cannot receive the message.
 /// - `InvalidLength`: the length of the message is invalid.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer was null or invalid.
 pub fn send(
-    dst_process_id: ProcessId,
-    dst_thread_id: Option<ThreadId>,
+    dst_qid: QueueId,
     message: &[u8],
     buffers: &[SharedBufferCreateInfo],
 ) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
         asm!(
-            "mov x0, {pid:x}",
-            "mov x1, {tid:x}",
-            "mov x2, {msg:x}",
-            "mov x3, {len:x}",
-            "mov x4, {bufs:x}",
-            "mov x5, {bufs_len:x}",
+            "mov x0, {qid:x}",
+            "mov x1, {msg:x}",
+            "mov x2, {len:x}",
+            "mov x3, {bufs:x}",
+            "mov x4, {bufs_len:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            pid = in(reg) dst_process_id.get(),
-            tid = in(reg) dst_thread_id.map_or(0, ThreadId::get),
+            qid = in(reg) dst_qid.get(),
             msg = in(reg) message.as_ptr(),
             len = in(reg) message.len(),
             bufs = in(reg) buffers.as_ptr(),
@@ -303,6 +307,7 @@ pub fn send(
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
 /// | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+/// | `queue`    | Queue ID             | The ID of the queue to receive the message from. The caller process must own this queue. |
 /// | `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
 /// | `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
 ///
@@ -318,18 +323,21 @@ pub fn send(
 /// - `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
 /// - `InvalidFlags`: an unknown or invalid flag combination was passed.
 /// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
-pub fn receive(flags: ReceiveFlags) -> Result<Message, ErrorCode> {
+/// - `NotFound`: the queue ID was unknown to the system or not owned by this process.
+pub fn receive(flags: ReceiveFlags, queue: QueueId) -> Result<Message, ErrorCode> {
     let mut result: usize;
     let mut out_len = MaybeUninit::uninit();
     let mut out_msg = MaybeUninit::uninit();
     unsafe {
         asm!(
-            "mov x1, {f:x}",
-            "mov x1, {m:x}",
-            "mov x2, {l:x}",
+            "mov x0, {f:x}",
+            "mov x1, {q:x}",
+            "mov x2, {m:x}",
+            "mov x3, {l:x}",
             "svc {call_number}",
             "mov {res}, x0",
             f = in(reg) flags.bits(),
+            q = in(reg) queue.get(),
             m = in(reg) out_msg.as_mut_ptr(),
             l = in(reg) out_len.as_mut_ptr(),
             res = out(reg) result,
@@ -494,20 +502,55 @@ pub fn free_shared_buffers(buffers: &[SharedBufferId]) -> Result<(), ErrorCode> 
     process_result(result)
 }
 
-/// Set a thread to be the designated receiver thread for the current process.
+/// ### `create_message_queue`
+/// Creates a new message queue owned by the calling process.
 ///
-/// # Errors
-/// - `NotFound`: the thread id was not found.
-pub fn set_designated_receiver(tid: ThreadId) -> Result<(), ErrorCode> {
+/// #### Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `qid`      | `*mut Queue ID`| The destination for the ID of the newly created queue. |
+///
+/// #### Errors
+/// - `InvalidPointer`: the destination ID pointer was invalid.
+/// - `OutOfHandles`: the system has run out of handles to use.
+pub fn create_message_queue() -> Result<QueueId, ErrorCode> {
+    let mut result: usize;
+    let mut out = MaybeUninit::uninit();
+    unsafe {
+        asm!(
+            "mov x0, {p:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            p = in(reg) out.as_mut_ptr(),
+            res = out(reg) result,
+            call_number = const CallNumber::CreateMessageQueue.into_num()
+        );
+    }
+    if result == 0 {
+        unsafe { Ok(out.assume_init()) }
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// ### `free_message_queue`
+/// Frees a message queue owned by the calling process.
+/// Any pending messages in the queue are freed from the process' inbox.
+///
+/// #### Arguments
+/// | Name       | Type                 | Notes                            |
+/// |------------|----------------------|----------------------------------|
+/// | `qid`      | `Queue ID`| The ID of the queue to free. |
+pub fn free_message_queue(queue: QueueId) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {
         asm!(
-            "mov x0, {i:x}",
+            "mov x0, {q:x}",
             "svc {call_number}",
             "mov {res}, x0",
-            i = in(reg) tid.get(),
+            q = in(reg) queue.get(),
             res = out(reg) result,
-            call_number = const CallNumber::SetDesignatedReceiver.into_num()
+            call_number = const CallNumber::FreeMessageQueue.into_num()
         );
     }
     process_result(result)

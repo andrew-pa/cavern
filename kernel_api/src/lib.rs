@@ -76,13 +76,14 @@ pub enum CallNumber {
     SpawnThread,
     ExitCurrentThread,
     KillProcess,
-    SetDesignatedReceiver,
     AllocateHeapPages,
     FreeHeapPages,
     FreeMessage,
     FreeSharedBuffers,
     ExitNotificationSubscription,
     WriteLogMessage,
+    CreateMessageQueue,
+    FreeMessageQueue,
 }
 
 impl CallNumber {
@@ -102,10 +103,10 @@ pub enum EnvironmentValue {
     CurrentProcessId = 1,
     /// The thread ID of the calling process.
     CurrentThreadId,
-    /// The thread ID of the calling process' designated receiver thread.
-    DesignatedReceiverThreadId,
-    /// The process ID of the supervisor process for the calling process.
-    CurrentSupervisorId,
+    /// The queue ID of the supervisor process associated with the calling process.
+    CurrentSupervisorQueueId,
+    /// The queue ID of the resource registry process associated with the calling process.
+    CurrentRegistryQueueId,
     /// The number of bytes per page of memory.
     PageSizeInBytes,
 }
@@ -207,10 +208,6 @@ pub const MESSAGE_BLOCK_SIZE: usize = 64;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(8))]
 pub struct MessageHeader {
-    /// The process id of the process that send this message.
-    pub sender_pid: ProcessId,
-    /// The thread id of the thread that send this message.
-    pub sender_tid: ThreadId,
     /// The number of shared buffers sent in this message.
     pub num_buffers: usize,
 }
@@ -428,6 +425,9 @@ impl ExitMessage {
         }
     }
 }
+
+/// The unique ID of a message queue.
+pub type QueueId = NonZeroU32;
 
 pub mod flags;
 
