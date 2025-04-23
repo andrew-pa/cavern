@@ -1,12 +1,9 @@
 //! Processes (and threads).
 
-use core::mem::transmute;
-
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use bytemuck::bytes_of;
 use kernel_api::{
-    flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
+    flags::SharedBufferFlags, ImageSection, ImageSectionKind, MessageHeader,
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
@@ -236,7 +233,7 @@ impl Process {
         props: Properties,
         image: &[ImageSection],
         inbox_size: usize,
-    ) -> Result<Self, ProcessManagerError> {
+    ) -> Result<Self, ManagerError> {
         // TODO: this function is huge, it should be decomposed
         trace!("creating new process object #{id}");
 
@@ -370,7 +367,7 @@ impl Process {
         base_addr: PhysicalAddress,
         size_in_pages: usize,
         props: &MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         let virt_addr = self
             .address_space_allocator
             .lock()
@@ -405,7 +402,7 @@ impl Process {
         page_allocator: &impl PageAllocator,
         size_in_pages: usize,
         mut properties: MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         let phys_addr = page_allocator
             .allocate(size_in_pages)
             .context(MemorySnafu {
@@ -432,7 +429,7 @@ impl Process {
         base_addr: PhysicalAddress,
         size_in_pages: usize,
         props: &MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         assert!(!props.owned);
         self.map_arbitrary(base_addr, size_in_pages, props)
     }
@@ -452,7 +449,7 @@ impl Process {
         page_allocator: &impl PageAllocator,
         base_address: VirtualAddress,
         size_in_pages: usize,
-    ) -> Result<(), ProcessManagerError> {
+    ) -> Result<(), ManagerError> {
         let paddr = self
             .page_tables
             .read()
@@ -493,7 +490,7 @@ impl Process {
         &self,
         message: &[u8],
         buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
-    ) -> Result<PendingMessage, ProcessManagerError> {
+    ) -> Result<PendingMessage, ManagerError> {
         let payload_start =
             size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
         let actual_message_size_in_bytes = message.len() + payload_start;
@@ -507,10 +504,10 @@ impl Process {
             {
                 Ok(r) => r.start,
                 Err(crate::memory::Error::OutOfMemory) => {
-                    return Err(ProcessManagerError::InboxFull)
+                    return Err(ManagerError::InboxFull)
                 }
                 Err(e) => {
-                    return Err(ProcessManagerError::Memory {
+                    return Err(ManagerError::Memory {
                         cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"),
                         source: e
                     })
@@ -560,7 +557,7 @@ impl Process {
     ///
     /// # Errors
     /// Returns an error if the memory could not be freed.
-    pub fn free_message(&self, ptr: VirtualAddress, len: usize) -> Result<(), ProcessManagerError> {
+    pub fn free_message(&self, ptr: VirtualAddress, len: usize) -> Result<(), ManagerError> {
         self.inbox_allocator
             .lock()
             .free(ptr, len.div_ceil(MESSAGE_BLOCK_SIZE))
@@ -577,7 +574,7 @@ impl Process {
     pub fn free_shared_buffers(
         &self,
         buffers: impl Iterator<Item = SharedBufferId>,
-    ) -> Result<(), ProcessManagerError> {
+    ) -> Result<(), ManagerError> {
         let mut not_found = false;
 
         for buffer in buffers {
@@ -601,10 +598,10 @@ impl core::fmt::Debug for Process {
     }
 }
 
-/// Errors arising from [`ProcessManager`] operations.
+/// Errors arising from [`ProcessManager`], [`ThreadManager`] or [`QueueManager`] operations.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
-pub enum ProcessManagerError {
+pub enum ManagerError {
     /// An error occurred during a memory operation.
     #[snafu(display("Memory error: {cause}"))]
     Memory {
@@ -634,7 +631,7 @@ pub enum ProcessManagerError {
     },
 }
 
-/// An interface for managing processes and threads.
+/// An interface for managing processes.
 #[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
     /// Spawn a new process.
@@ -646,46 +643,16 @@ pub trait ProcessManager {
         &self,
         parent: Option<Arc<Process>>,
         info: &ProcessCreateInfo,
-    ) -> Result<Arc<Process>, ProcessManagerError>;
-
-    /// Spawn a new thread with the given parent process.
-    /// The `stack_size` is in pages.
-    ///
-    /// # Errors
-    /// Returns an error if the thread could not be spawned due to resource requirements or
-    /// invalid inputs.
-    fn spawn_thread(
-        &self,
-        parent_process: Arc<Process>,
-        entry_point: VirtualAddress,
-        stack_size: usize,
-        user_data: usize,
-    ) -> Result<Arc<Thread>, ProcessManagerError>;
+    ) -> Result<Arc<Process>, ManagerError>;
 
     /// Kill a process.
     ///
     /// # Errors
     /// TODO
-    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError>;
-
-    /// Cause a thread to exit, with a given `reason`.
-    ///
-    /// # Errors
-    /// Returns an error if the thread could not be cleaned up (which should be rare).
-    fn exit_thread(
-        &self,
-        thread: &Arc<Thread>,
-        reason: ExitReason,
-    ) -> Result<(), ProcessManagerError>;
-
-    /// Get the thread associated with a thread ID.
-    fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ManagerError>;
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
-
-    /// Get the message queue associated with a queue ID.
-    fn queue_for_id(&self, queue_id: Id) -> Option<Arc<MessageQueue>>;
 }
 
 /// Unit tests
@@ -704,7 +671,7 @@ pub mod tests {
 
     use super::{
         thread::{ProcessorState, State},
-        Process, ProcessManagerError, Properties, Thread, ThreadId,
+        Process, ManagerError, Properties, Thread, ThreadId,
     };
 
     /// "Global" page allocator.
@@ -716,7 +683,7 @@ pub mod tests {
         pid: ProcessId,
         props: Properties,
         tid: ThreadId,
-    ) -> Result<Arc<Process>, ProcessManagerError> {
+    ) -> Result<Arc<Process>, ManagerError> {
         let proc = Arc::new(Process::new(&*PAGE_ALLOCATOR, pid, props, &[], 8)?);
         let thread = Arc::new(Thread::new(
             tid,

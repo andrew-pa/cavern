@@ -9,7 +9,7 @@ use kernel_core::{
     process::{
         system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
-        Id, OutOfHandlesSnafu, Process, ProcessManager, ProcessManagerError, Properties, Thread,
+        Id, OutOfHandlesSnafu, Process, ProcessManager, ManagerError, Properties, Thread,
         ThreadId, MAX_PROCESS_ID,
     },
 };
@@ -39,7 +39,7 @@ impl SystemProcessManager {
         &self,
         process: &Arc<Process>,
         reason: ExitReason,
-    ) -> Result<(), ProcessManagerError> {
+    ) -> Result<(), ManagerError> {
         self.processes.remove(process.id);
 
         let msg = ExitMessage::process(process.id, reason);
@@ -78,7 +78,7 @@ impl ProcessManager for SystemProcessManager {
         &self,
         parent: Option<Arc<Process>>,
         info: &ProcessCreateInfo,
-    ) -> Result<Arc<Process>, ProcessManagerError> {
+    ) -> Result<Arc<Process>, ManagerError> {
         let id = self
             .processes
             .preallocate_handle()
@@ -116,7 +116,7 @@ impl ProcessManager for SystemProcessManager {
         entry_point: VirtualAddress,
         stack_size: usize,
         user_data: usize,
-    ) -> Result<Arc<Thread>, ProcessManagerError> {
+    ) -> Result<Arc<Thread>, ManagerError> {
         let threads = thread::THREADS.get().expect("threading initialized");
         let id = threads.preallocate_handle().context(OutOfHandlesSnafu)?;
         trace!("spawning thread #{id}");
@@ -152,7 +152,7 @@ impl ProcessManager for SystemProcessManager {
         Ok(thread)
     }
 
-    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError> {
+    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ManagerError> {
         for t in process.threads.write().drain(..) {
             t.set_state(State::Finished);
             thread::THREADS
@@ -169,8 +169,8 @@ impl ProcessManager for SystemProcessManager {
         &self,
         thread: &Arc<Thread>,
         reason: ExitReason,
-    ) -> Result<(), ProcessManagerError> {
-        info!("thread #{} exited with reason {reason:?}", thread.id);
+    ) -> Result<(), ManagerError> {
+        debug!("thread #{} exited with reason {reason:?}", thread.id);
 
         // remove current thread from scheduler, set state to finished
         thread.set_state(State::Finished);
@@ -192,7 +192,6 @@ impl ProcessManager for SystemProcessManager {
 
             if last_thread {
                 // if this was the last thread, the parent process is now also finished
-                // the "parent" will then be the process that spawned this process.
                 debug!("last thread in process exited");
                 self.exit_process(parent, reason)?;
             } else {

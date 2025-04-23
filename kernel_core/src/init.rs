@@ -11,7 +11,7 @@ use tar_no_std::TarArchiveRef;
 
 use crate::{
     memory::{page_table::MemoryProperties, PageSize, PhysicalAddress, PhysicalPointer},
-    process::{ProcessManager, ProcessManagerError},
+    process::{ProcessManager, ManagerError},
 };
 
 /// Errors that can occur while spawning the `init` process.
@@ -25,7 +25,7 @@ pub enum SpawnInitError {
     /// Error occurred spawning the process.
     Process {
         /// Underlying cause.
-        source: ProcessManagerError,
+        source: ManagerError,
     },
     /// Error occurred parsing the init process binary file.
     Binary {

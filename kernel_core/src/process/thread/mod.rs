@@ -6,13 +6,13 @@ use alloc::{sync::Arc, vec::Vec};
 use arc_swap::ArcSwapOption;
 use bytemuck::Contiguous;
 use crossbeam::queue::SegQueue;
-use kernel_api::{MessageHeader, ProcessId, SharedBufferInfo};
+use kernel_api::{ExitReason, MessageHeader, ProcessId, SharedBufferInfo};
 use log::{error, trace};
 use spin::Mutex;
 
 use crate::memory::{VirtualAddress, VirtualPointerMut};
 
-use super::{MessageQueue, PendingMessage, Process};
+use super::{ManagerError, MessageQueue, PendingMessage, Process};
 
 pub mod scheduler;
 
@@ -325,6 +325,37 @@ impl Thread {
         self.set_state(State::Running);
         true
     }
+}
+
+/// An interface for managing threads.
+#[cfg_attr(test, mockall::automock)]
+pub trait ThreadManager {
+    /// Spawn a new thread with the given parent process.
+    /// The `stack_size` is in pages.
+    ///
+    /// # Errors
+    /// Returns an error if the thread could not be spawned due to resource requirements or
+    /// invalid inputs.
+    fn spawn_thread(
+        &self,
+        parent_process: Arc<Process>,
+        entry_point: VirtualAddress,
+        stack_size: usize,
+        user_data: usize,
+    ) -> Result<Arc<Thread>, ManagerError>;
+
+    /// Cause a thread to exit, with a given `reason`.
+    ///
+    /// # Errors
+    /// Returns an error if the thread could not be cleaned up (which should be rare).
+    fn exit_thread(
+        &self,
+        thread: &Arc<Thread>,
+        reason: ExitReason,
+    ) -> Result<(), ManagerError>;
+
+    /// Get the thread associated with a thread ID.
+    fn thread_for_id(&self, thread_id: Id) -> Option<Arc<Thread>>;
 }
 
 /// Abstract scheduler policy

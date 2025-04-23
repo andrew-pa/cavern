@@ -21,8 +21,7 @@ use crate::{
 };
 
 use super::{
-    thread::Registers, Process, ProcessManager, ProcessManagerError, SharedBufferId, Thread,
-    TransferError,
+    queue::QueueManager, thread::{Registers, ThreadManager}, ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError
 };
 
 /// Errors that can arise during a system call.
@@ -79,7 +78,7 @@ pub enum Error {
     /// Error occurred in the process manager mechanism.
     ProcessManager {
         /// Underlying error.
-        source: ProcessManagerError,
+        source: ManagerError,
     },
     /// Receiving a message would otherwise block the thread.
     WouldBlock,
@@ -103,18 +102,18 @@ impl Error {
             Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock => ErrorCode::WouldBlock,
             Error::ProcessManager { source } => match source {
-                ProcessManagerError::Memory { source, .. } => match source {
+                ManagerError::Memory { source, .. } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
                     crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
                 },
-                ProcessManagerError::PageTables { .. } => ErrorCode::InvalidPointer,
-                ProcessManagerError::Missing { cause } => {
+                ManagerError::PageTables { .. } => ErrorCode::InvalidPointer,
+                ManagerError::Missing { cause } => {
                     error!("Missing value in process manager: {cause}");
                     ErrorCode::NotFound
                 }
-                ProcessManagerError::OutOfHandles => ErrorCode::OutOfHandles,
-                ProcessManagerError::InboxFull => ErrorCode::InboxFull,
+                ManagerError::OutOfHandles => ErrorCode::OutOfHandles,
+                ManagerError::InboxFull => ErrorCode::InboxFull,
             },
             Error::Transfer { source } => match source {
                 TransferError::OutOfBounds => ErrorCode::OutOfBounds,
@@ -135,17 +134,21 @@ pub enum SysCallEffect {
 }
 
 /// System call handler policy.
-pub struct SystemCalls<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> {
+pub struct SystemCalls<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager> {
     page_allocator: &'pa PA,
-    process_manager: &'pm PM,
+    process_manager: &'m PM,
+    thread_manager: &'m TM,
+    queue_manager: &'m QM
 }
 
-impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, PM> {
+impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager> SystemCalls<'pa, 'm, PA, PM, TM, QM> {
     /// Create a new system call handler policy.
-    pub fn new(page_allocator: &'pa PA, process_manager: &'pm PM) -> Self {
+    pub fn new(page_allocator: &'pa PA, process_manager: &'m PM, thread_manager: &'m TM, queue_manager: &'m QM) -> Self {
         Self {
             page_allocator,
             process_manager,
+            thread_manager,
+            queue_manager
         }
     }
 
@@ -172,7 +175,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 "invalid system call number {} provided by thread #{}",
                 syscall_number, current_thread.id
             );
-            self.process_manager
+            self.thread_manager
                 .exit_thread(current_thread, ExitReason::invalid_syscall())
                 .expect("kill thread that made invalid system call");
             return Ok(SysCallEffect::ScheduleNextThread);
@@ -233,10 +236,6 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 self.syscall_transfer_from(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
             }
-            CallNumber::SetDesignatedReceiver => {
-                self.syscall_set_designated_receiver(current_thread, registers)?;
-                Ok(SysCallEffect::Return(0))
-            }
             CallNumber::FreeMessage => {
                 self.syscall_free_message(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
@@ -270,11 +269,6 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .as_ref()
                 .map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::DesignatedReceiverThreadId => current_thread
-                .parent
-                .as_ref()
-                .and_then(|p| p.threads.read().first().map(|t| t.id.get()))
-                .unwrap_or(0) as usize,
             EnvironmentValue::CurrentSupervisorQueueId => current_thread
                 .parent
                 .as_ref()
@@ -287,7 +281,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
         let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
-        self.process_manager
+        self.thread_manager
             .exit_thread(current_thread, ExitReason::user(code))
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
@@ -330,7 +324,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         debug!("spawning thread {info:?} in process #{}", parent.id);
 
         let thread = self
-            .process_manager
+            .thread_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
             .context(ProcessManagerSnafu)?;
 
@@ -466,7 +460,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             .check_slice(registers.x[3].into(), registers.x[4])
             .context(InvalidAddressSnafu { cause: "buffers" })?;
         let dst = dst_queue_id
-            .and_then(|qid| self.process_manager.queue_for_id(qid))
+            .and_then(|qid| self.queue_manager.queue_for_id(qid))
             .context(NotFoundSnafu {
                 reason: "destination queue id",
                 id: dst_queue_id.map_or(0, ProcessId::get) as usize,
@@ -521,7 +515,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             bits: flag_bits,
         })?;
         let qu = queue_id
-            .and_then(|qid| self.process_manager.queue_for_id(qid))
+            .and_then(|qid| self.queue_manager.queue_for_id(qid))
             .context(NotFoundSnafu {
                 reason: "queue id",
                 id: queue_id.map_or(0, ProcessId::get) as usize,
@@ -741,7 +735,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
             process_subscription(&mut s);
         } else if flags.contains(ExitNotificationSubscriptionFlags::THREAD) {
             let thread = ThreadId::new(registers.x[1] as u32)
-                .and_then(|id| self.process_manager.thread_for_id(id))
+                .and_then(|id| self.thread_manager.thread_for_id(id))
                 .context(InvalidHandleSnafu {
                     reason: "thread id unknown",
                     handle: registers.x[1] as u32,
