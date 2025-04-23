@@ -205,7 +205,7 @@ pub struct ProcessCreateInfo {
 pub const MESSAGE_BLOCK_SIZE: usize = 64;
 
 /// The header containing information about a received message.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C, align(8))]
 pub struct MessageHeader {
     /// The number of shared buffers sent in this message.
@@ -296,12 +296,12 @@ pub type SharedBufferId = NonZeroU32;
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct SharedBufferCreateInfo {
-    /// Flags for this buffer.
-    pub flags: flags::SharedBufferFlags,
     /// Base address of the buffer.
     pub base_address: *mut u8,
     /// Length in bytes of this buffer.
     pub length: usize,
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
 }
 
 /// Description of a shared buffer on the receiving side.

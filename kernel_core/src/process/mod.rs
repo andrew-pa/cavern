@@ -1,18 +1,24 @@
 //! Processes (and threads).
 
+use core::mem::transmute;
+
 use alloc::{string::String, sync::Arc, vec::Vec};
 
+use bytemuck::bytes_of;
 use kernel_api::{
     flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
+use queue::PendingMessage;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
-pub use thread::{Id as ThreadId, Thread};
 
 pub mod system_calls;
 pub mod thread;
+pub use thread::{Id as ThreadId, Thread};
+pub mod queue;
+pub use queue::{Id as QueueId, MessageQueue};
 
 use crate::{
     collections::HandleMap,
@@ -34,21 +40,6 @@ pub type SharedBufferId = crate::collections::Handle;
 
 /// The largest possible shared buffer ID in the system.
 pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
-
-/// A message that is waiting in a thread's inbox queue to be received.
-#[derive(Debug)]
-pub struct PendingMessage {
-    /// The address of the message in the process' virtual address space.
-    data_address: VirtualAddress,
-    /// The length of the message in bytes.
-    data_length: usize,
-    /// The process id of the sender.
-    sender_process_id: Id,
-    /// The thread id of the sender.
-    sender_thread_id: ThreadId,
-    /// The attached buffers to this message.
-    buffer_handles: Vec<SharedBufferId>,
-}
 
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
 #[must_use]
@@ -489,45 +480,25 @@ impl Process {
         Ok(())
     }
 
-    /// Send a message to this process, and optionally to a specific thread within this process.
-    /// If no thread is specified, the designated receiver thread will receive the message.
-    /// This method **assumes** that the sender ids are valid!
+    /// Insert a message into this process' inbox, returning the [`PendingMessage`] that can be
+    /// enqueued.
+    ///
+    /// The message will never be received unless the [`PendingMessage`] is added to some
+    /// [`MessageQueue`]. See [`MessageQueue::send_message`].
     ///
     /// # Errors
     /// Returns an error if the message could not be delivered, or something goes wrong with memory
     /// or page tables.
-    pub fn send_message(
+    pub fn deliver_message(
         &self,
-        sender: (Id, ThreadId),
-        receiver_thread: Option<Arc<Thread>>,
         message: &[u8],
         buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
-    ) -> Result<(), ProcessManagerError> {
-        // TODO: check message length against max?
-        let thread = if let Some(th) = receiver_thread {
-            ensure!(
-                th.parent.as_ref().is_some_and(|p| p.id == self.id),
-                MissingSnafu {
-                    cause: "provided thread not in process"
-                }
-            );
-            th
-        } else {
-            let ths = self.threads.read();
-            ths.first()
-                .context(MissingSnafu {
-                    cause: "process has no threads",
-                })?
-                .clone()
-        };
+    ) -> Result<PendingMessage, ProcessManagerError> {
         let payload_start =
             size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
         let actual_message_size_in_bytes = message.len() + payload_start;
-        trace!(
-            "sending message of size {actual_message_size_in_bytes} to thread #{}",
-            thread.id
-        );
-        trace!("{message:?}");
+
+        // allocate new memory for the message in the inbox
         let ptr = {
             match self
                 .inbox_allocator
@@ -538,34 +509,51 @@ impl Process {
                 Err(crate::memory::Error::OutOfMemory) => {
                     return Err(ProcessManagerError::InboxFull)
                 }
-                Err(e) => return Err(ProcessManagerError::Memory { cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"), source: e }),
+                Err(e) => {
+                    return Err(ProcessManagerError::Memory {
+                        cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"),
+                        source: e
+                    })
+                },
             }
         };
+
+        // encode and write the message header to the inbox
+        let mut header_enc: Vec<usize> = Vec::with_capacity(payload_start / size_of::<usize>());
+
+        // start with the number of shared buffers
+        header_enc.push(buffers.len());
+
+        // create `SharedBufferInfo` in the header for each shared buffer
+        for b in buffers {
+            let flags = b.flags;
+            let len = b.length;
+            let handle = self
+                .shared_buffers
+                .insert(b)
+                .context(OutOfHandlesSnafu)?
+                .get() as usize;
+            // encode a `SharedBufferInfo`
+            // TODO: this is messy/brittle
+            header_enc.push(handle << 32 | flags.bits() as usize);
+            header_enc.push(len);
+        }
+
         unsafe {
             // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
-            self.page_tables
-                .read()
-                .copy_to_while_unmapped(ptr.byte_add(payload_start), message)
+            let pt = self.page_tables.read();
+            // copy the header into the inbox
+            pt.copy_to_while_unmapped(ptr, bytemuck::cast_slice(header_enc.as_slice()))
+                .context(PageTablesSnafu)?;
+            // copy the message into the inbox
+            pt.copy_to_while_unmapped(ptr.byte_add(payload_start), message)
                 .context(PageTablesSnafu)?;
         }
 
-        let buffer_handles = buffers
-            .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
-            .collect::<Result<_, _>>()?;
-
-        let msg = PendingMessage {
+        Ok(PendingMessage {
             data_address: ptr,
             data_length: actual_message_size_in_bytes,
-            sender_process_id: sender.0,
-            sender_thread_id: sender.1,
-            buffer_handles,
-        };
-
-        trace!("enqueuing {msg:?}");
-
-        thread.inbox_queue.push(msg);
-
-        Ok(())
+        })
     }
 
     /// Frees a message from the inbox.
@@ -695,6 +683,9 @@ pub trait ProcessManager {
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
+
+    /// Get the message queue associated with a queue ID.
+    fn queue_for_id(&self, queue_id: Id) -> Option<Arc<MessageQueue>>;
 }
 
 /// Unit tests

@@ -5,7 +5,7 @@ use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, QueueId,
     SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
@@ -275,7 +275,7 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
                 .as_ref()
                 .and_then(|p| p.threads.read().first().map(|t| t.id.get()))
                 .unwrap_or(0) as usize,
-            EnvironmentValue::CurrentSupervisorId => current_thread
+            EnvironmentValue::CurrentSupervisorQueueId => current_thread
                 .parent
                 .as_ref()
                 .and_then(|p| p.props.supervisor.as_ref())
@@ -458,29 +458,28 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
         registers: &Registers,
         user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        let dst_process_id: Option<ProcessId> = ProcessId::new(registers.x[0] as _);
-        let dst_thread_id: Option<ThreadId> = ThreadId::new(registers.x[1] as _);
+        let dst_queue_id: Option<QueueId> = QueueId::new(registers.x[0] as _);
         let message = user_space_memory
-            .check_slice(registers.x[2].into(), registers.x[3])
+            .check_slice(registers.x[1].into(), registers.x[2])
             .context(InvalidAddressSnafu { cause: "message" })?;
         let buffers: &[SharedBufferCreateInfo] = user_space_memory
-            .check_slice(registers.x[4].into(), registers.x[5])
+            .check_slice(registers.x[3].into(), registers.x[4])
             .context(InvalidAddressSnafu { cause: "buffers" })?;
-        trace!("sending buffers {buffers:?}");
-        let dst = dst_process_id
-            .and_then(|pid| self.process_manager.process_for_id(pid))
+        let dst = dst_queue_id
+            .and_then(|qid| self.process_manager.queue_for_id(qid))
             .context(NotFoundSnafu {
-                reason: "destination process id",
-                id: dst_process_id.map_or(0, ProcessId::get) as usize,
+                reason: "destination queue id",
+                id: dst_queue_id.map_or(0, ProcessId::get) as usize,
             })?;
-        let dst_thread = dst_thread_id.and_then(|tid| self.process_manager.thread_for_id(tid));
         let current_proc = current_thread.parent.as_ref().unwrap();
+        debug!(
+            "process #{} sending message to queue #{}",
+            current_proc.id, dst.id
+        );
+        if buffers.len() > 0 {
+            trace!("sending buffers {buffers:?}");
+        }
         dst.send_message(
-            (
-                current_thread.parent.as_ref().unwrap().id,
-                current_thread.id,
-            ),
-            dst_thread,
             message,
             buffers.iter().map(|b| {
                 Arc::new(SharedBuffer {

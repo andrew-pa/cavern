@@ -203,9 +203,6 @@ pub struct Thread {
     /// (Stack base address, stack size in pages).
     pub stack: (VirtualAddress, usize),
 
-    /// The queue of pointers to unreceived messages for this thread.
-    pub inbox_queue: SegQueue<PendingMessage>,
-
     /// Threads/processes that will be notified when this thread exits.
     pub exit_subscribers: Mutex<Vec<(ProcessId, Option<Id>)>>,
 
@@ -231,7 +228,6 @@ impl Thread {
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
             stack,
-            inbox_queue: SegQueue::new(),
             exit_subscribers: Mutex::default(),
             pending_message_receive: Mutex::default(),
         }
