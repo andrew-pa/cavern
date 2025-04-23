@@ -15,9 +15,10 @@ use kernel_core::{
 };
 use log::{debug, error, info, trace};
 use qemu_exit::QEMUExit;
+use queue::SystemQueueManager;
 use snafu::OptionExt;
 use spin::Once;
-use thread::THREADS;
+use thread::{PlatformScheduler, SystemThreadManager};
 
 use crate::memory::{page_allocator, PlatformPageAllocator};
 
@@ -94,14 +95,6 @@ impl ProcessManager for SystemProcessManager {
         )?);
         self.processes.insert_with_handle(id, proc.clone());
 
-        // spawn the main thread with an 8 MiB stack
-        self.spawn_thread(
-            proc.clone(),
-            info.entry_point.into(),
-            8 * 1024 * 1024 / page_allocator().page_size(),
-            0,
-        )?;
-
         Ok(proc)
     }
 
@@ -125,7 +118,14 @@ impl ProcessManager for SystemProcessManager {
 
 /// The global system call handler policy instance.
 pub static SYS_CALL_POLICY: Once<
-    SystemCalls<'static, 'static, PlatformPageAllocator, SystemProcessManager>,
+    SystemCalls<
+        'static,
+        'static,
+        PlatformPageAllocator,
+        SystemProcessManager,
+        SystemThreadManager<PlatformScheduler>,
+        SystemQueueManager,
+    >,
 > = Once::new();
 
 /// Initialize processes/threading.

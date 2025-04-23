@@ -634,7 +634,7 @@ pub enum ManagerError {
 /// An interface for managing processes.
 #[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
-    /// Spawn a new process.
+    /// Spawn a new process. This does *not* create a main thread!
     ///
     /// # Errors
     /// Returns an error if the process could not be spawned due to resource requirements or

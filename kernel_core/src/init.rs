@@ -2,16 +2,14 @@
 
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
-use kernel_api::{
-    ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo, KERNEL_FAKE_ID,
-};
+use kernel_api::{ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
 use log::{debug, trace};
 use snafu::{ResultExt, Snafu};
 use tar_no_std::TarArchiveRef;
 
 use crate::{
     memory::{page_table::MemoryProperties, PageSize, PhysicalAddress, PhysicalPointer},
-    process::{ManagerError, ProcessManager},
+    process::{queue::QueueManager, thread::ThreadManager, ManagerError, ProcessManager},
 };
 
 /// Errors that can occur while spawning the `init` process.
@@ -53,6 +51,8 @@ pub fn spawn_init_process(
     (init_ramdisk_ptr, init_ramdisk_len): (PhysicalPointer<u8>, usize),
     init_exec_name: &str,
     proc_man: &impl ProcessManager,
+    thread_man: &impl ThreadManager,
+    qu_man: &impl QueueManager,
     page_size: PageSize,
     (devicetree_ptr, devicetree_len): (PhysicalAddress, usize),
 ) -> Result<(), SpawnInitError> {
@@ -113,6 +113,10 @@ pub fn spawn_init_process(
     let init_process = proc_man.spawn_process(None, &info).context(ProcessSnafu)?;
     debug!("spawned init process #{}", init_process.id);
 
+    let init_queue = qu_man
+        .create_queue(init_process.clone())
+        .context(ProcessSnafu)?;
+
     // setup mapping for initrd and device tree and send it to the init process
     let init_shared_memprops = MemoryProperties {
         user_space_access: true,
@@ -142,12 +146,17 @@ pub fn spawn_init_process(
         device_tree_address: virt_dtb_addr.into(),
         device_tree_length: devicetree_len,
     };
-    init_process
-        .send_message(
-            (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
-            None,
-            bytemuck::bytes_of(&init_msg),
-            core::iter::empty(),
+    init_queue
+        .send(bytemuck::bytes_of(&init_msg), core::iter::empty())
+        .context(ProcessSnafu)?;
+
+    // spawn the main init thread
+    thread_man
+        .spawn_thread(
+            init_process.clone(),
+            info.entry_point.into(),
+            8 * 1024 * 1024 / page_size,
+            init_queue.id.get() as usize,
         )
         .context(ProcessSnafu)?;
 

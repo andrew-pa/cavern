@@ -290,7 +290,7 @@ impl Thread {
 
         let qu = self.pending_message_receive_queue.load();
 
-        if qu.as_ref().is_some_and(|q| q.dead.load(Ordering::AcqRel)) {
+        if qu.as_ref().is_some_and(|q| q.dead.load(Ordering::Acquire)) {
             // the queue was freed while we waited, return an error.
             self.pending_message_receive_queue.store(None);
             self.pending_message_receive.lock().take();

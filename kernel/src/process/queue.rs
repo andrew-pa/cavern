@@ -1,10 +1,16 @@
 //! Message queue mechanisms
 
+use alloc::sync::Arc;
 use kernel_core::{
     collections::HandleMap,
-    process::{queue::MAX_QUEUE_ID, ManagerError, MessageQueue, MissingSnafu, OutOfHandlesSnafu},
+    process::{
+        queue::{QueueManager, MAX_QUEUE_ID},
+        ManagerError, MessageQueue, MissingSnafu, OutOfHandlesSnafu, Process, QueueId,
+    },
 };
 use log::warn;
+use snafu::OptionExt;
+use spin::Once;
 
 /// The system message queue manager.
 pub struct SystemQueueManager {
@@ -14,10 +20,11 @@ pub struct SystemQueueManager {
 /// The system message queue manager instance.
 pub static QUEUE_MANAGER: Once<SystemQueueManager> = Once::new();
 
+/// Initialize the message queue manager.
 pub fn init() {
     QUEUE_MANAGER.call_once(|| SystemQueueManager {
         queues: HandleMap::new(MAX_QUEUE_ID),
-    })
+    });
 }
 
 impl QueueManager for SystemQueueManager {
@@ -37,12 +44,12 @@ impl QueueManager for SystemQueueManager {
             cause: "freeing queue not in table",
         })?;
 
-        /// Make sure any waiting threads know that this queue is dead.
-        q.dead.store(true);
+        // Make sure any waiting threads know that this queue is dead.
+        q.dead.store(true, core::sync::atomic::Ordering::Release);
 
         // Drain any remaining messages
         while let Some(m) = q.receive() {
-            if Err(e) = q.owner.free_message(m.data_address, m.data_length) {
+            if let Err(e) = q.owner.free_message(m.data_address, m.data_length) {
                 warn!(
                     "failed to free message {m:?} while freeing queue #{}: {}",
                     q.id,
@@ -54,7 +61,7 @@ impl QueueManager for SystemQueueManager {
         Ok(())
     }
 
-    fn queue_for_id(&self, queue_id: Id) -> Option<Arc<MessageQueue>> {
+    fn queue_for_id(&self, queue_id: QueueId) -> Option<Arc<MessageQueue>> {
         self.queues.get(queue_id)
     }
 }

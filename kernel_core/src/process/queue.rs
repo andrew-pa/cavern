@@ -40,6 +40,7 @@ pub struct MessageQueue {
 }
 
 impl MessageQueue {
+    /// Create a new message queue object.
     pub fn new(id: Id, owner: Arc<Process>) -> Self {
         MessageQueue {
             id,

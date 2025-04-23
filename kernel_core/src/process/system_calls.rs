@@ -77,8 +77,8 @@ pub enum Error {
         /// The missing id value.
         id: usize,
     },
-    /// Error occurred in the process manager mechanism.
-    ProcessManager {
+    /// Error occurred in a manager mechanism.
+    Manager {
         /// Underlying error.
         source: ManagerError,
     },
@@ -103,7 +103,7 @@ impl Error {
             }
             Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock => ErrorCode::WouldBlock,
-            Error::ProcessManager { source } => match source {
+            Error::Manager { source } => match source {
                 ManagerError::Memory { source, .. } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
@@ -268,8 +268,14 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 self.syscall_write_log(current_thread, registers, user_space_memory)?;
                 Ok(SysCallEffect::Return(0))
             }
-            CallNumber::CreateMessageQueue => todo!(),
-            CallNumber::FreeMessageQueue => todo!(),
+            CallNumber::CreateMessageQueue => {
+                self.syscall_create_msg_queue(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeMessageQueue => {
+                self.syscall_free_msg_queue(registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
         }
     }
 
@@ -341,7 +347,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         let thread = self
             .thread_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
-            .context(ProcessManagerSnafu)?;
+            .context(ManagerSnafu)?;
 
         *out_thread_id = thread.id;
 
@@ -360,17 +366,52 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 .context(InvalidAddressSnafu {
                     cause: "process info",
                 })?;
+
         let out_process_id = user_space_memory
             .check_mut_ref(registers.x[1].into())
             .context(InvalidAddressSnafu {
                 cause: "output process id",
             })?;
+
+        let out_queue_id = if registers.x[2] > 0 {
+            Some(
+                user_space_memory
+                    .check_mut_ref(registers.x[2].into())
+                    .context(InvalidAddressSnafu {
+                        cause: "output queue id",
+                    })?,
+            )
+        } else {
+            None
+        };
+
         debug!("spawning process {info:?}, parent #{}", parent.id);
         let proc = self
             .process_manager
             .spawn_process(Some(parent), info)
-            .context(ProcessManagerSnafu)?;
+            .context(ManagerSnafu)?;
+
+        // create the initial queue
+        let qu = self
+            .queue_manager
+            .create_queue(proc.clone())
+            .context(ManagerSnafu)?;
+
+        // spawn the main thread with an 8 MiB stack
+        self.thread_manager
+            .spawn_thread(
+                proc.clone(),
+                info.entry_point.into(),
+                8 * 1024 * 1024 / self.page_allocator.page_size(),
+                qu.id.get() as usize,
+            )
+            .context(ManagerSnafu)?;
+
         *out_process_id = proc.id;
+        if let Some(oqi) = out_queue_id {
+            *oqi = qu.id;
+        }
+
         Ok(())
     }
 
@@ -397,7 +438,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
 
         self.process_manager
             .kill_process(&proc)
-            .context(ProcessManagerSnafu)?;
+            .context(ManagerSnafu)?;
 
         Ok(())
     }
@@ -431,7 +472,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                     ..Default::default()
                 },
             )
-            .context(ProcessManagerSnafu)?;
+            .context(ManagerSnafu)?;
 
         *dst = addr.into();
 
@@ -458,7 +499,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         );
         current_process
             .free_memory(self.page_allocator, ptr, size)
-            .context(ProcessManagerSnafu)
+            .context(ManagerSnafu)
     }
 
     fn syscall_send<T: ActiveUserSpaceTables>(
@@ -499,7 +540,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 })
             }),
         )
-        .context(ProcessManagerSnafu)
+        .context(ManagerSnafu)
     }
 
     #[allow(clippy::unused_self)]
@@ -606,30 +647,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
     }
 
     #[allow(clippy::unused_self)]
-    fn syscall_set_designated_receiver(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-    ) -> Result<(), Error> {
-        let target_thread_id =
-            ThreadId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
-                reason: "thread id",
-                handle: registers.x[0] as u32,
-            })?;
-        let proc = current_thread.parent.as_ref().unwrap();
-        let mut threads = proc.threads.write();
-        let i = threads
-            .iter()
-            .position(|t| t.id == target_thread_id)
-            .context(InvalidHandleSnafu {
-                reason: "thread not in process",
-                handle: target_thread_id.get(),
-            })?;
-        threads.swap(0, i);
-        Ok(())
-    }
-
-    #[allow(clippy::unused_self)]
     fn syscall_free_message<AUST: ActiveUserSpaceTables>(
         &self,
         current_thread: &Arc<Thread>,
@@ -652,10 +669,10 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 .context(InvalidAddressSnafu { cause: "message" })?;
             let msg = unsafe { Message::from_slice(msg) };
             proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
-                .context(ProcessManagerSnafu)?;
+                .context(ManagerSnafu)?;
         }
 
-        proc.free_message(ptr, len).context(ProcessManagerSnafu)?;
+        proc.free_message(ptr, len).context(ManagerSnafu)?;
 
         Ok(())
     }
@@ -676,7 +693,45 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         let proc = current_thread.parent.as_ref().unwrap();
 
         proc.free_shared_buffers(buffers.iter().copied())
-            .context(ProcessManagerSnafu)
+            .context(ManagerSnafu)
+    }
+
+    fn syscall_create_msg_queue<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let dst: &mut QueueId = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output pointer",
+            })?;
+
+        let q = self
+            .queue_manager
+            .create_queue(current_thread.parent.clone().unwrap())
+            .context(ManagerSnafu)?;
+
+        *dst = q.id;
+
+        Ok(())
+    }
+
+    fn syscall_free_msg_queue(&self, registers: &Registers) -> Result<(), Error> {
+        let queue_id = QueueId::new(registers.x[0] as _).context(InvalidHandleSnafu {
+            reason: "queue id zero",
+            handle: 0u32,
+        })?;
+        let qu = self
+            .queue_manager
+            .queue_for_id(queue_id)
+            .context(NotFoundSnafu {
+                reason: "queue id",
+                id: queue_id.get() as usize,
+            })?;
+        debug!("freeing message queue #{}", qu.id);
+        self.queue_manager.free_queue(&qu).context(ManagerSnafu)
     }
 
     fn syscall_exit_notification_subscription(
@@ -822,8 +877,9 @@ mod tests {
             MockPageAllocator, VirtualAddress, VirtualPointerMut,
         },
         process::{
+            queue::{MessageQueue, MockQueueManager},
             tests::PAGE_ALLOCATOR,
-            thread::{ProcessorState, State},
+            thread::{MockThreadManager, ProcessorState, State},
             MockProcessManager, PendingMessage, Properties,
         },
     };

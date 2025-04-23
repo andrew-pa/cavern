@@ -129,6 +129,8 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         initrd_slice,
         config.init_exec_name,
         process::PROCESS_MANAGER.get().unwrap(),
+        process::thread::THREAD_MANAGER.get().unwrap(),
+        process::queue::QUEUE_MANAGER.get().unwrap(),
         memory::page_allocator().page_size(),
         (
             device_tree_blob.cast(),
