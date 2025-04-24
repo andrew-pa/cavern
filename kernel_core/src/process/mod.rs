@@ -667,7 +667,7 @@ pub mod tests {
 
     use test_case::test_case;
 
-    use crate::memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress};
+    use crate::{memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress}, process::{MessageQueue, QueueId}};
 
     use super::{
         thread::{ProcessorState, State},
@@ -722,21 +722,16 @@ pub mod tests {
             ThreadId::new(1).unwrap(),
         )
         .expect("create process");
-        let thread = proc.threads.read().first().cloned().unwrap();
 
-        let sender_pid = ProcessId::new(333).unwrap();
-        let sender_tid = ProcessId::new(999).unwrap();
+        let qu = MessageQueue::new(QueueId::new(1).unwrap(), proc.clone());
 
         let message = b"Hello, world!!";
 
-        proc.send_message((sender_pid, sender_tid), None, message, core::iter::empty())
+        qu.send(message, core::iter::empty())
             .expect("send message");
 
-        let msg = thread.inbox_queue.pop().unwrap();
-        assert_eq!(msg.data_length, 14 + size_of::<MessageHeader>());
-        assert_eq!(msg.sender_process_id, sender_pid);
-        assert_eq!(msg.sender_thread_id, sender_tid);
-        assert!(msg.buffer_handles.is_empty());
+        let msg = qu.receive().unwrap();
+        assert_eq!(msg.data_length, message.len() + size_of::<MessageHeader>());
 
         let mut message_data_check = [0u8; 14];
         unsafe {

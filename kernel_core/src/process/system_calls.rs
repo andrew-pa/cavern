@@ -867,7 +867,7 @@ mod tests {
     use kernel_api::{
         flags::SharedBufferFlags, MessageHeader, ProcessCreateInfo, SharedBufferInfo,
     };
-    use mockall::predicate::eq;
+    use mockall::predicate::{eq, function};
 
     use crate::{
         memory::{
@@ -880,7 +880,7 @@ mod tests {
             queue::{MessageQueue, MockQueueManager},
             tests::PAGE_ALLOCATOR,
             thread::{MockThreadManager, ProcessorState, State},
-            MockProcessManager, PendingMessage, Properties,
+            MockProcessManager, PendingMessage, Properties, QueueId,
         },
     };
 
@@ -959,7 +959,7 @@ mod tests {
     #[test]
     fn normal_exit_thread() {
         let pa = MockPageAllocator::new();
-        let mut pm = MockProcessManager::new();
+        let pm = MockProcessManager::new();
         let mut tm = MockThreadManager::new();
         let qm = MockQueueManager::new();
 
@@ -1337,8 +1337,8 @@ mod tests {
     #[test]
     fn normal_spawn_process() {
         let mut pm = MockProcessManager::new();
-        let tm = MockThreadManager::new();
-        let qm = MockQueueManager::new();
+        let mut tm = MockThreadManager::new();
+        let mut qm = MockQueueManager::new();
         let parent_proc = crate::process::tests::create_test_process(
             ProcessId::new(10).unwrap(),
             Properties {
@@ -1361,11 +1361,14 @@ mod tests {
         let info_ptr = &dummy_info as *const _;
         let mut process_id: u32 = 0;
         let process_id_ptr = &mut process_id as *mut u32;
+        let mut queue_id: u32 = 0;
+        let queue_id_ptr = &mut queue_id as *mut u32;
 
         let parent_thread = parent_proc.threads.read().first().unwrap().clone();
         // Create a new process that will be returned by spawn_process.
+        let new_proc_id = ProcessId::new(20).unwrap();
         let new_proc = crate::process::tests::create_test_process(
-            ProcessId::new(20).unwrap(),
+            new_proc_id,
             Properties {
                 supervisor: None,
                 privilege: kernel_api::PrivilegeLevel::Privileged,
@@ -1381,6 +1384,16 @@ mod tests {
             .withf(move |p, _| p.as_ref().is_some_and(|p| p.id == parent_clone.id))
             .return_once(move |_, _| Ok(new_proc2));
 
+        let new_queue_id = QueueId::new(34).unwrap();
+        qm.expect_create_queue()
+            .withf(move |o| o.id == new_proc_id)
+            .return_once(move |o| Ok(Arc::new(MessageQueue::new(new_queue_id, o))));
+
+        let new_thread_id = ThreadId::new(234).unwrap();
+        tm.expect_spawn_thread()
+            .with(function(move |p: &Arc<Process>| p.id == new_proc_id), eq(VirtualAddress::from(dummy_info.entry_point)), eq(2048), eq(new_queue_id.get() as usize))
+            .return_once(move |p,entry,stack_size,user_data| Ok(Arc::new(Thread::new(new_thread_id, Some(p), State::Running, ProcessorState::new_for_user_thread(entry, VirtualAddress::null(), user_data), (VirtualAddress::null(), stack_size)))));
+
         let pa = &*PAGE_ALLOCATOR;
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
@@ -1388,6 +1401,7 @@ mod tests {
         let mut registers = Registers::default();
         registers.x[0] = info_ptr as usize;
         registers.x[1] = process_id_ptr as usize;
+        registers.x[2] = queue_id_ptr as usize;
 
         // The current thread (from parent_proc) is used so that its parent is set.
         assert_matches!(
@@ -1399,7 +1413,8 @@ mod tests {
             ),
             Ok(SysCallEffect::Return(0))
         );
-        assert_eq!(process_id, new_proc.id.get());
+        assert_eq!(process_id, new_proc_id.get());
+        assert_eq!(queue_id, new_queue_id.get());
     }
 
     #[test]
