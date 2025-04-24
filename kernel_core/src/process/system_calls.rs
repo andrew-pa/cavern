@@ -89,6 +89,12 @@ pub enum Error {
         /// Underlying error.
         source: TransferError,
     },
+    /// The operation was not permitted due to insufficent access rights.
+    #[snafu(display("Operation not permitted: {reason}"))]
+    NotPermitted {
+        /// The reason/operation attempted.
+        reason: String,
+    },
 }
 
 impl Error {
@@ -119,9 +125,10 @@ impl Error {
             },
             Error::Transfer { source } => match source {
                 TransferError::OutOfBounds => ErrorCode::OutOfBounds,
-                TransferError::InsufficentPermissions => ErrorCode::InsufficentPermissions,
+                TransferError::InsufficentPermissions => ErrorCode::NotAllowed,
                 TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
             },
+            Error::NotPermitted { .. } => ErrorCode::NotAllowed,
         }
     }
 }
@@ -270,7 +277,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitNotificationSubscription => {
-                self.syscall_exit_notification_subscription(registers)?;
+                self.syscall_exit_notification_subscription(current_thread, registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::WriteLogMessage => {
@@ -599,6 +606,12 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 reason: "queue id",
                 id: queue_id.map_or(0, ProcessId::get) as usize,
             })?;
+        ensure!(
+            qu.owner.id == current_thread.parent.as_ref().unwrap().id,
+            NotPermittedSnafu {
+                reason: "queue not owned by current process"
+            }
+        );
         if let Some(msg) = qu.receive() {
             *out_msg = msg.data_address;
             *out_len = msg.data_length;
@@ -757,7 +770,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         self.queue_manager.free_queue(&qu).context(ManagerSnafu)
     }
 
-    fn syscall_exit_notification_subscription(&self, registers: &Registers) -> Result<(), Error> {
+    fn syscall_exit_notification_subscription(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
         let flags = ExitNotificationSubscriptionFlags::from_bits(registers.x[0]).context(
             InvalidFlagsSnafu {
                 reason: "invalid flag bits",
@@ -787,6 +804,13 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                     id: qid.get() as usize,
                 })
             })?;
+
+        ensure!(
+            receiver_queue.id == current_thread.parent.as_ref().unwrap().id,
+            NotPermittedSnafu {
+                reason: "must own queue to subscribe it to exit notifications"
+            }
+        );
 
         let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
             if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {

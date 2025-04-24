@@ -49,8 +49,9 @@ pub enum ErrorCode {
     /// The requested resource or memory region is already in use by another process or driver.
     InUse,
 
-    /// The buffer was not shared with the permissions required for the operation.
-    InsufficentPermissions,
+    /// The buffer was not shared with the permissions required for the operation, or a receive was
+    /// attempted on an unowned queue.
+    NotAllowed,
 
     /// The queue was freed while the `receive` call was blocked waiting for a message on the queue.
     QueueFreed,
