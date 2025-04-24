@@ -1,7 +1,7 @@
 use alloc::{string::String, vec::Vec};
 use kernel_api::{
     ErrorCode, ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo, ProcessId,
-    read_env_value, spawn_process,
+    QueueId, read_env_value, spawn_process,
 };
 use snafu::{OptionExt, ResultExt, Snafu};
 use tar_no_std::TarArchiveRef;
@@ -38,7 +38,10 @@ pub fn split(page_size: usize, addr: impl Into<usize>) -> (usize, usize) {
     (addr & !mask, addr & mask)
 }
 
-pub fn spawn_root_process(initramfs: &TarArchiveRef, name: &str) -> Result<ProcessId, Error> {
+pub fn spawn_root_process(
+    initramfs: &TarArchiveRef,
+    name: &str,
+) -> Result<(ProcessId, QueueId), Error> {
     let entry = initramfs
         .entries()
         .find(|e| e.filename().as_str().is_ok_and(|n| n == name))

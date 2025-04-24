@@ -21,7 +21,8 @@ use config::Config;
 use device_tree::DeviceTree;
 use futures::future::Either;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_ID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
+    ErrorCode, KERNEL_FAKE_ID, QueueId, exit_current_thread, flags::ReceiveFlags, receive,
+    write_log,
 };
 use setup::Setup;
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -152,7 +153,7 @@ fn load_config<'a>(initramfs: &'a TarArchiveRef<'_>) -> Result<Config<'a>, Error
         .map(|(c, _)| c)
 }
 
-fn main() -> Result<(), Error> {
+fn main(main_queue: QueueId) -> Result<(), Error> {
     write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
 
     // Receive init message from kernel
@@ -162,31 +163,33 @@ fn main() -> Result<(), Error> {
     let config = load_config(initramfs)?;
 
     // Spawn the root resource registry directly from the initramfs
-    let registry_pid = spawn_root_process(initramfs, config.binaries.resource_registry).context(
-        SpawnRootProcessSnafu {
-            name: "root resource registry",
-        },
-    )?;
+    let (registry_pid, registry_qid) =
+        spawn_root_process(initramfs, config.binaries.resource_registry).context(
+            SpawnRootProcessSnafu {
+                name: "root resource registry",
+            },
+        )?;
 
     // Spawn the root supervisor directly from the initramfs
-    let supervisor_pid = spawn_root_process(initramfs, config.binaries.supervisor).context(
-        SpawnRootProcessSnafu {
-            name: "root supervisor",
-        },
-    )?;
+    let (supervisor_pid, supervisor_qid) =
+        spawn_root_process(initramfs, config.binaries.supervisor).context(
+            SpawnRootProcessSnafu {
+                name: "root supervisor",
+            },
+        )?;
 
     // Create the Initramfs service object
     let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
     let s = Setup {
-        registry: RegistryClient::new(registry_pid, None),
-        supervisor: SupervisorClient::new(supervisor_pid, None),
+        registry: RegistryClient::new(registry_qid),
+        supervisor: SupervisorClient::new(supervisor_qid),
         config,
         device_tree_blob,
     };
 
     // start the async executor, finish setting things up, and then monitor the root registry and supervisor
-    user_core::tasks::run(&initramfs_service, async move {
+    user_core::tasks::run(main_queue, &initramfs_service, async move {
         match s.setup().await {
             Ok(()) => {
                 write_log(3, "system setup complete!").unwrap();
@@ -218,8 +221,8 @@ fn main() -> Result<(), Error> {
 /// # Panics
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() {
-    match main() {
+pub extern "C" fn _start(main_queue_id_raw: usize) {
+    match main(QueueId::new(main_queue_id_raw as u32).unwrap()) {
         Ok(()) => exit_current_thread(0),
         Err(e) => {
             let s = alloc::format!("{}", snafu::Report::from_error(&e));
