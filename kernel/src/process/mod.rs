@@ -13,7 +13,8 @@ use kernel_core::{
         ThreadId, MAX_PROCESS_ID,
     },
 };
-use log::{debug, trace};
+use log::{debug, error, info, trace};
+use qemu_exit::QEMUExit;
 use snafu::OptionExt;
 use spin::Once;
 use thread::THREADS;
@@ -50,6 +51,20 @@ impl SystemProcessManager {
                     bytemuck::bytes_of(&msg),
                     core::iter::empty(),
                 )?;
+            }
+        }
+
+        // if this process has no supervisor than it must be the root
+        // NOTE: this is only true if the root process makes sure to set itself as the supervisor
+        // for all of its children!
+        if process.props.supervisor.is_none() {
+            error!("root process exited! {reason:?}");
+
+            // if we're running in QEMU, propagate the exit to the host
+            let exit = qemu_exit::AArch64::new();
+            match reason.tag {
+                kernel_api::ExitReasonTag::User => exit.exit(reason.user_code),
+                _ => exit.exit_failure(),
             }
         }
 
@@ -155,7 +170,7 @@ impl ProcessManager for SystemProcessManager {
         thread: &Arc<Thread>,
         reason: ExitReason,
     ) -> Result<(), ProcessManagerError> {
-        debug!("thread #{} exited with reason {reason:?}", thread.id);
+        info!("thread #{} exited with reason {reason:?}", thread.id);
 
         // remove current thread from scheduler, set state to finished
         thread.set_state(State::Finished);

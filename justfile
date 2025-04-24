@@ -107,7 +107,7 @@ make-images mkimage_args="": (make-kernel-image mkimage_args) (make-initrd-image
 
 # Run the system in QEMU.
 run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
-    #!/bin/sh
+    #!/bin/bash
     set -euxo pipefail
     qemu-system-aarch64 \
         -machine virt -cpu cortex-a57 \
@@ -115,7 +115,7 @@ run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
         -bios {{vendor_tool_dir / "u-boot/u-boot.bin"}} \
         -nographic \
         -drive if=none,file=fat:rw:{{img_dir}},id=kboot,format=raw \
-        -device nvme,drive=kboot,serial=foo {{qemu_args}} \
+        -device nvme,drive=kboot,serial=foo,romfile="" {{qemu_args}} \
     <<-END
         nvme scan
         fatload nvme 0 0x{{kernel_load_addr}} kernel.img
@@ -123,6 +123,9 @@ run-qemu qemu_args="-m 4G -smp 8" boot_args="": make-images
         env set bootargs '{{boot_args}}'
         bootm {{kernel_load_addr}} {{initrd_load_addr}} 40000000
     END
+
+# Run the kernel and execute the "check-syscalls" integration test as the root process.
+run-kernel-check: (run-qemu "-m 4G -smp 4" '{"log_level":"Trace", "init_exec_name":"check-syscalls"} ')
 
 # Create an `asciinema` recording of booting the system in QEMU.
 create-boot-video output_file="/tmp/bootvideo.cast" asciinema_args="--cols 160 --rows 40 --idle-time-limit 1" qemu_args="-m 4G -smp 2" boot_args="":

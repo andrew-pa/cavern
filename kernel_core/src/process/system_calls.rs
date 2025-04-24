@@ -436,6 +436,13 @@ impl<'pa, 'pm, PA: PageAllocator, PM: ProcessManager> SystemCalls<'pa, 'pm, PA, 
     ) -> Result<(), Error> {
         let ptr: VirtualAddress = registers.x[0].into();
         let size: usize = registers.x[1];
+        ensure!(
+            size > 0,
+            InvalidLengthSnafu {
+                reason: "number of pages is zero",
+                length: 0usize
+            }
+        );
         debug!(
             "freeing {size} pages @ {ptr:?} for process #{}",
             current_process.id
