@@ -17,7 +17,7 @@ use crate::{
         page_table::MemoryProperties,
         PageAllocator, VirtualAddress, VirtualPointer,
     },
-    process::SharedBuffer,
+    process::{MessageQueue, SharedBuffer},
 };
 
 use super::{
@@ -191,9 +191,18 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 "invalid system call number {} provided by thread #{}",
                 syscall_number, current_thread.id
             );
-            self.thread_manager
+            if self
+                .thread_manager
                 .exit_thread(current_thread, ExitReason::invalid_syscall())
-                .expect("kill thread that made invalid system call");
+                .expect("kill thread that made invalid system call")
+            {
+                self.process_manager
+                    .kill_process(
+                        current_thread.parent.as_ref().unwrap(),
+                        ExitReason::invalid_syscall(),
+                    )
+                    .expect("kill process that made invalid system call");
+            }
             return Ok(SysCallEffect::ScheduleNextThread);
         };
         let user_space_memory = user_space_memory.into();
@@ -261,7 +270,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::ExitNotificationSubscription => {
-                self.syscall_exit_notification_subscription(current_thread, registers)?;
+                self.syscall_exit_notification_subscription(registers)?;
                 Ok(SysCallEffect::Return(0))
             }
             CallNumber::WriteLogMessage => {
@@ -302,10 +311,17 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
     fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
         let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
-        self.thread_manager
-            .exit_thread(current_thread, ExitReason::user(code))
+        let reason = ExitReason::user(code);
+        let last = self
+            .thread_manager
+            .exit_thread(current_thread, reason)
             // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
             .expect("failed to kill thread");
+        if last {
+            self.process_manager
+                .kill_process(current_thread.parent.as_ref().unwrap(), reason)
+                .expect("exit proces");
+        }
     }
 
     fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
@@ -436,8 +452,15 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         // TODO: access control?
         debug!("process #{} killing process #{pid}", current_process.id);
 
+        let threads = proc.threads.read().clone();
+        for t in threads {
+            self.thread_manager
+                .exit_thread(&t, ExitReason::killed())
+                .context(ManagerSnafu)?;
+        }
+
         self.process_manager
-            .kill_process(&proc)
+            .kill_process(&proc, ExitReason::killed())
             .context(ManagerSnafu)?;
 
         Ok(())
@@ -734,11 +757,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         self.queue_manager.free_queue(&qu).context(ManagerSnafu)
     }
 
-    fn syscall_exit_notification_subscription(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-    ) -> Result<(), Error> {
+    fn syscall_exit_notification_subscription(&self, registers: &Registers) -> Result<(), Error> {
         let flags = ExitNotificationSubscriptionFlags::from_bits(registers.x[0]).context(
             InvalidFlagsSnafu {
                 reason: "invalid flag bits",
@@ -757,35 +776,24 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
 
-        let current_proc = current_thread.parent.as_ref().unwrap();
-
-        let receiver_tid = if let Some(tid) = ThreadId::new(registers.x[2] as u32) {
-            ensure!(
-                current_proc.threads.read().iter().any(|t| t.id == tid),
-                NotFoundSnafu {
-                    reason: "receiver thread not in process",
-                    id: registers.x[2]
-                }
-            );
-            Some(tid)
-        } else {
-            None
-        };
+        let receiver_queue = QueueId::new(registers.x[2] as u32)
+            .context(InvalidHandleSnafu {
+                reason: "queue id is zero",
+                handle: 0u32,
+            })
+            .and_then(|qid| {
+                self.queue_manager.queue_for_id(qid).context(NotFoundSnafu {
+                    reason: "queue id not found",
+                    id: qid.get() as usize,
+                })
+            })?;
 
         let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
             if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {
-                exit_subs.retain_mut(|(pid, tid)| {
-                    *pid != current_proc.id
-                        && match (tid, receiver_tid) {
-                            (Some(a), Some(b)) => *a != b,
-                            (None, None) => false,
-                            _ => true,
-                        }
-                });
+                exit_subs.retain_mut(|q: &mut Arc<MessageQueue>| q.id != receiver_queue.id);
             } else {
-                let sub = (current_proc.id, receiver_tid);
-                if !exit_subs.contains(&sub) {
-                    exit_subs.push(sub);
+                if !exit_subs.iter().any(|q| q.id == receiver_queue.id) {
+                    exit_subs.push(receiver_queue.clone());
                 }
             }
         };
@@ -798,8 +806,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                     handle: registers.x[1] as u32,
                 })?;
             debug!(
-                "subscribing process #{}, thread #{:?} to exit of process #{}",
-                current_proc.id, receiver_tid, proc.id
+                "subscribing queue #{} to exit of process #{}",
+                receiver_queue.id, proc.id
             );
             let mut s = proc.exit_subscribers.lock();
             process_subscription(&mut s);
@@ -811,8 +819,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                     handle: registers.x[1] as u32,
                 })?;
             debug!(
-                "subscribing process #{}, thread #{:?} to exit of thread #{}",
-                current_proc.id, receiver_tid, thread.id
+                "subscribing queue #{} to exit of thread #{}",
+                receiver_queue.id, thread.id
             );
             let mut s = thread.exit_subscribers.lock();
             process_subscription(&mut s);
@@ -914,7 +922,7 @@ mod tests {
         tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::invalid_syscall())
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| Ok(false));
 
         let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
@@ -971,6 +979,62 @@ mod tests {
         tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
+            .returning(|_, _| Ok(false));
+
+        let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
+
+        let usm = MockActiveUserSpaceTables::new();
+
+        let mut registers = Registers::default();
+        registers.x[0] = exit_code as usize;
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::ExitCurrentThread.into_integer(),
+                &thread,
+                &registers,
+                &usm
+            ),
+            Ok(SysCallEffect::ScheduleNextThread)
+        );
+    }
+
+    #[test]
+    fn exit_thread_exits_process() {
+        let pa = MockPageAllocator::new();
+        let mut pm = MockProcessManager::new();
+        let mut tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+
+        let exit_code = 7;
+
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(7).unwrap(),
+            crate::process::Properties {
+                supervisor: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(8).unwrap(),
+        )
+        .unwrap();
+
+        let thread = Arc::new(Thread::new(
+            ThreadId::new(9).unwrap(),
+            Some(proc.clone()),
+            State::Running,
+            ProcessorState::new_for_user_thread(VirtualAddress::null(), VirtualAddress::null(), 0),
+            (VirtualAddress::null(), 0),
+        ));
+
+        let thread2 = thread.clone();
+        tm.expect_exit_thread()
+            .once()
+            .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
+            .returning(|_, _| Ok(true));
+
+        pm.expect_kill_process()
+            .once()
+            .withf(move |p, r| p.id == proc.id && *r == ExitReason::user(exit_code))
             .returning(|_, _| Ok(()));
 
         let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
@@ -1391,8 +1455,21 @@ mod tests {
 
         let new_thread_id = ThreadId::new(234).unwrap();
         tm.expect_spawn_thread()
-            .with(function(move |p: &Arc<Process>| p.id == new_proc_id), eq(VirtualAddress::from(dummy_info.entry_point)), eq(2048), eq(new_queue_id.get() as usize))
-            .return_once(move |p,entry,stack_size,user_data| Ok(Arc::new(Thread::new(new_thread_id, Some(p), State::Running, ProcessorState::new_for_user_thread(entry, VirtualAddress::null(), user_data), (VirtualAddress::null(), stack_size)))));
+            .with(
+                function(move |p: &Arc<Process>| p.id == new_proc_id),
+                eq(VirtualAddress::from(dummy_info.entry_point)),
+                eq(2048),
+                eq(new_queue_id.get() as usize),
+            )
+            .return_once(move |p, entry, stack_size, user_data| {
+                Ok(Arc::new(Thread::new(
+                    new_thread_id,
+                    Some(p),
+                    State::Running,
+                    ProcessorState::new_for_user_thread(entry, VirtualAddress::null(), user_data),
+                    (VirtualAddress::null(), stack_size),
+                )))
+            });
 
         let pa = &*PAGE_ALLOCATOR;
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
@@ -1420,6 +1497,7 @@ mod tests {
     #[test]
     fn normal_kill_process() {
         let mut pm = MockProcessManager::new();
+        let mut tm = MockThreadManager::new();
 
         let parent_proc = crate::process::tests::create_test_process(
             ProcessId::new(30).unwrap(),
@@ -1431,13 +1509,14 @@ mod tests {
         )
         .unwrap();
 
+        let target_thread_id = ThreadId::new(41).unwrap();
         let target_proc = crate::process::tests::create_test_process(
             ProcessId::new(40).unwrap(),
             Properties {
                 supervisor: None,
                 privilege: kernel_api::PrivilegeLevel::Privileged,
             },
-            ThreadId::new(41).unwrap(),
+            target_thread_id,
         )
         .unwrap();
         let target_proc2 = target_proc.clone();
@@ -1447,11 +1526,14 @@ mod tests {
             .with(eq(target_proc_id))
             .return_once(move |_| Some(target_proc2));
         pm.expect_kill_process()
-            .withf(move |p| p.id == target_proc_id)
-            .return_once(|_| Ok(()));
+            .withf(move |p, r| p.id == target_proc_id && *r == ExitReason::killed())
+            .return_once(|_, _| Ok(()));
+
+        tm.expect_exit_thread()
+            .withf(move |t, r| t.id == target_thread_id && *r == ExitReason::killed())
+            .return_once(|_, _| Ok(true));
 
         let pa = &*PAGE_ALLOCATOR;
-        let tm = MockThreadManager::new();
         let qm = MockQueueManager::new();
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
@@ -1777,6 +1859,9 @@ mod tests {
 
         let current_thread = current_proc.threads.read().first().unwrap().clone();
 
+        let queue_id = QueueId::new(1234).unwrap();
+        let queue = Arc::new(MessageQueue::new(queue_id, current_proc.clone()));
+
         // Create a target process for exit subscription.
         let target_proc = crate::process::tests::create_test_process(
             ProcessId::new(130).unwrap(),
@@ -1794,16 +1879,19 @@ mod tests {
             .with(eq(target_proc.id))
             .return_once(move |_| Some(tp2));
 
-        let receiver_tid = current_thread.id;
+        let mut qm = MockQueueManager::new();
+        qm.expect_queue_for_id()
+            .with(eq(queue_id))
+            .return_once(|_| Some(queue));
+
         let flags = ExitNotificationSubscriptionFlags::PROCESS;
 
         let mut registers = Registers::default();
         registers.x[0] = flags.bits();
         registers.x[1] = target_proc.id.get() as usize;
-        registers.x[2] = receiver_tid.get() as usize;
+        registers.x[2] = queue_id.get() as usize;
 
         let tm = MockThreadManager::new();
-        let qm = MockQueueManager::new();
         let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
         assert_matches!(
@@ -1816,7 +1904,7 @@ mod tests {
             Ok(SysCallEffect::Return(0))
         );
         let subs = target_proc.exit_subscribers.lock();
-        assert!(subs.contains(&(current_proc.id, Some(receiver_tid))));
+        assert!(subs.iter().any(|q| q.id == queue_id));
     }
 
     #[test]
@@ -1836,14 +1924,20 @@ mod tests {
         let extra_thread = fake_thread();
         proc.threads.write().push(extra_thread.clone());
 
+        let queue_id = QueueId::new(1234).unwrap();
+        let queue = Arc::new(MessageQueue::new(queue_id, proc.clone()));
+
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
         let ex = extra_thread.clone();
         let mut tm = MockThreadManager::new();
-        let qm = MockQueueManager::new();
         tm.expect_thread_for_id()
             .with(eq(extra_thread.id))
             .return_once(|_| Some(ex));
+        let mut qm = MockQueueManager::new();
+        qm.expect_queue_for_id()
+            .with(eq(queue_id))
+            .return_once(|_| Some(queue));
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
@@ -1853,7 +1947,7 @@ mod tests {
         let mut registers = Registers::default();
         registers.x[0] = flags.bits();
         registers.x[1] = extra_thread.id.get() as usize;
-        registers.x[2] = receiver_tid.get() as usize;
+        registers.x[2] = queue_id.get() as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -1865,6 +1959,6 @@ mod tests {
             Ok(SysCallEffect::Return(0))
         );
         let subs = extra_thread.exit_subscribers.lock();
-        assert!(subs.contains(&(proc.id, Some(receiver_tid))));
+        assert!(subs.iter().any(|q| q.id == queue_id));
     }
 }

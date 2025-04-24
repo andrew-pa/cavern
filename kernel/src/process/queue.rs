@@ -47,6 +47,8 @@ impl QueueManager for SystemQueueManager {
         // Make sure any waiting threads know that this queue is dead.
         q.dead.store(true, core::sync::atomic::Ordering::Release);
 
+        // TODO: might be good to unsubscribe from any processes/threads?
+
         // Drain any remaining messages
         while let Some(m) = q.receive() {
             if let Err(e) = q.owner.free_message(m.data_address, m.data_length) {

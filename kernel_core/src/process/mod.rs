@@ -3,8 +3,8 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use kernel_api::{
-    flags::SharedBufferFlags, ImageSection, ImageSectionKind, MessageHeader, PrivilegeLevel,
-    ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
+    flags::SharedBufferFlags, ExitReason, ImageSection, ImageSectionKind, MessageHeader,
+    PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
 use queue::PendingMessage;
@@ -216,7 +216,7 @@ pub struct Process {
     pub shared_buffers: HandleMap<SharedBuffer>,
 
     /// Threads/processes that will be notified when this process exits.
-    pub exit_subscribers: Mutex<Vec<(Id, Option<ThreadId>)>>,
+    pub exit_subscribers: Mutex<Vec<Arc<MessageQueue>>>,
 }
 
 impl Process {
@@ -646,10 +646,11 @@ pub trait ProcessManager {
     ) -> Result<Arc<Process>, ManagerError>;
 
     /// Kill a process.
+    /// The process must not have any threads, ie the caller must exit them first.
     ///
     /// # Errors
     /// TODO
-    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ManagerError>;
+    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError>;
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
@@ -667,7 +668,10 @@ pub mod tests {
 
     use test_case::test_case;
 
-    use crate::{memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress}, process::{MessageQueue, QueueId}};
+    use crate::{
+        memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress},
+        process::{MessageQueue, QueueId},
+    };
 
     use super::{
         thread::{ProcessorState, State},
@@ -727,8 +731,7 @@ pub mod tests {
 
         let message = b"Hello, world!!";
 
-        qu.send(message, core::iter::empty())
-            .expect("send message");
+        qu.send(message, core::iter::empty()).expect("send message");
 
         let msg = qu.receive().unwrap();
         assert_eq!(msg.data_length, message.len() + size_of::<MessageHeader>());

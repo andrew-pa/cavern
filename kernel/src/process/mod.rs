@@ -33,42 +33,6 @@ pub struct SystemProcessManager {
     processes: HandleMap<Process>,
 }
 
-impl SystemProcessManager {
-    /// Handle a process exiting, from either being killed or from the last thread exiting.
-    fn exit_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError> {
-        self.processes.remove(process.id);
-
-        let msg = ExitMessage::process(process.id, reason);
-        for (pid, tid) in process.exit_subscribers.lock().iter() {
-            if let Some(proc) = self.processes.get(*pid) {
-                proc.send_message(
-                    (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
-                    tid.and_then(|id| THREADS.get().unwrap().get(id)),
-                    bytemuck::bytes_of(&msg),
-                    core::iter::empty(),
-                )?;
-            }
-        }
-
-        // if this process has no supervisor than it must be the root
-        // NOTE: this is only true if the root process makes sure to set itself as the supervisor
-        // for all of its children!
-        if process.props.supervisor.is_none() {
-            error!("root process exited! {reason:?}");
-
-            // if we're running in QEMU, propagate the exit to the host
-            let exit = qemu_exit::AArch64::new();
-            match reason.tag {
-                kernel_api::ExitReasonTag::User => exit.exit(reason.user_code),
-                _ => exit.exit_failure(),
-            }
-        }
-
-        // the process will free all owned memory (including thread stacks) when dropped
-        Ok(())
-    }
-}
-
 impl ProcessManager for SystemProcessManager {
     fn spawn_process(
         &self,
@@ -98,16 +62,18 @@ impl ProcessManager for SystemProcessManager {
         Ok(proc)
     }
 
-    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ManagerError> {
-        for t in process.threads.write().drain(..) {
-            t.set_state(State::Finished);
-            thread::THREADS
-                .get()
-                .unwrap()
-                .remove(t.id)
-                .expect("thread is in thread handle table");
+    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError> {
+        assert!(process.threads.read().is_empty());
+        self.processes.remove(process.id);
+
+        let msg = ExitMessage::process(process.id, reason);
+        for qu in process.exit_subscribers.lock().iter() {
+            qu.send(bytemuck::bytes_of(&msg), core::iter::empty())?;
         }
-        self.exit_process(process, ExitReason::killed())?;
+
+        // TODO: we need to delete all owned queues
+
+        // the process will free all owned memory (including thread stacks) when dropped
         Ok(())
     }
 

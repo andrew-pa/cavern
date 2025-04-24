@@ -12,7 +12,7 @@ use spin::Mutex;
 
 use crate::memory::{VirtualAddress, VirtualPointerMut};
 
-use super::{ManagerError, MessageQueue, PendingMessage, Process};
+use super::{queue::QueueManager, ManagerError, MessageQueue, PendingMessage, Process, QueueId};
 
 pub mod scheduler;
 
@@ -204,8 +204,8 @@ pub struct Thread {
     /// (Stack base address, stack size in pages).
     pub stack: (VirtualAddress, usize),
 
-    /// Threads/processes that will be notified when this thread exits.
-    pub exit_subscribers: Mutex<Vec<(ProcessId, Option<Id>)>>,
+    /// Message queues that will be notified when this thread exits.
+    pub exit_subscribers: Mutex<Vec<Arc<MessageQueue>>>,
 
     /// If the thread is [`State::WaitingForMessage`], then this contains the user space locations
     /// that need to be written when a message is received.
@@ -358,10 +358,11 @@ pub trait ThreadManager {
     ) -> Result<Arc<Thread>, ManagerError>;
 
     /// Cause a thread to exit, with a given `reason`.
+    /// Returns true if this was the last thread in the process.
     ///
     /// # Errors
     /// Returns an error if the thread could not be cleaned up (which should be rare).
-    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<(), ManagerError>;
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<bool, ManagerError>;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: Id) -> Option<Arc<Thread>>;

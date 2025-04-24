@@ -1,13 +1,19 @@
 //! Thread switching mechanism.
 
 use alloc::{sync::Arc, vec::Vec};
+use itertools::Itertools;
+use kernel_api::{ExitMessage, ExitReason};
 use kernel_core::{
     collections::HandleMap,
     memory::{AddressSpaceIdPool, VirtualAddress},
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
-    process::thread::{
-        scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus, Scheduler,
-        State, Thread, ThreadManager, MAX_THREAD_ID,
+    process::{
+        queue::QueueManager,
+        thread::{
+            scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus,
+            Scheduler, State, Thread, ThreadManager, MAX_THREAD_ID,
+        },
+        ManagerError,
     },
 };
 use log::{debug, info, trace};
@@ -276,45 +282,40 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
         Ok(thread)
     }
 
-    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<(), ManagerError> {
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<bool, ManagerError> {
         debug!("thread #{} exited with reason {reason:?}", thread.id);
 
         // remove current thread from scheduler, set state to finished
         thread.set_state(State::Finished);
 
         // remove thread from parent process
-        if let Some(parent) = thread.parent.as_ref() {
-            let last_thread = {
-                let mut ts = parent.threads.write();
-                let (i, _) = ts
-                    .iter()
-                    .find_position(|t| t.id == thread.id)
-                    .expect("find thread in parent");
-                ts.swap_remove(i);
-                ts.is_empty()
-            };
+        let parent = thread
+            .parent
+            .as_ref()
+            .expect("kernel idle threads don't exit");
+        let last_thread = {
+            let mut ts = parent.threads.write();
+            let (i, _) = ts
+                .iter()
+                .find_position(|t| t.id == thread.id)
+                .expect("find thread in parent");
+            ts.swap_remove(i);
+            ts.is_empty()
+        };
 
-            // free thread stack
-            parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
+        // free thread stack
+        parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
 
-            if last_thread {
-                // if this was the last thread, the parent process is now also finished
-                debug!("last thread in process exited");
-                self.exit_process(parent, reason)?;
-            } else {
-                // notify exit subscribers that a thread exited
-                let msg = ExitMessage::thread(thread.id, reason);
-                for (pid, tid) in thread.exit_subscribers.lock().iter() {
-                    trace!("sending exit message {msg:?} to process #{pid}, thread #{tid:?}",);
-                    if let Some(proc) = self.process_for_id(*pid) {
-                        proc.send_message(
-                            (KERNEL_FAKE_ID, KERNEL_FAKE_ID),
-                            tid.and_then(|id| self.thread_for_id(id)),
-                            bytemuck::bytes_of(&msg),
-                            core::iter::empty(),
-                        )?;
-                    }
-                }
+        if last_thread {
+            // if this was the last thread, the parent process is now also finished
+            debug!("last thread in process exited");
+            self.exit_process(parent, reason)?;
+        } else {
+            // notify exit subscribers that a thread exited
+            let msg = ExitMessage::thread(thread.id, reason);
+            for qu in thread.exit_subscribers.lock().iter() {
+                trace!("sending exit message {msg:?} to queue #{}", qu.id);
+                qu.send(bytemuck::bytes_of(&msg), core::iter::empty())?;
             }
         }
 
@@ -322,7 +323,8 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
         self.threads
             .remove(thread.id)
             .expect("thread is in thread handle table");
-        Ok(())
+
+        Ok(last_thread)
     }
 
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {
