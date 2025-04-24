@@ -5,21 +5,21 @@ use itertools::Itertools;
 use kernel_api::{ExitMessage, ExitReason};
 use kernel_core::{
     collections::HandleMap,
-    memory::{AddressSpaceIdPool, VirtualAddress},
+    memory::{page_table::MemoryProperties, AddressSpaceIdPool, PageAllocator, VirtualAddress},
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
     process::{
-        queue::QueueManager,
         thread::{
             scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus,
             Scheduler, State, Thread, ThreadManager, MAX_THREAD_ID,
         },
-        ManagerError,
+        ManagerError, OutOfHandlesSnafu, Process, ThreadId,
     },
 };
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
+use snafu::OptionExt;
 use spin::once::Once;
 
-use crate::memory::switch_el0_context;
+use crate::memory::{page_allocator, switch_el0_context};
 
 /// Implementation of [`CpuIdReader`] that reads the real system registers.
 pub struct SystemCpuIdReader;
@@ -108,7 +108,7 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
 }
 
 pub struct SystemThreadManager<S: Scheduler> {
-    scheduler: PlatformScheduler,
+    scheduler: S,
     threads: HandleMap<Thread>,
     asid_pool: AddressSpaceIdPool,
 }
@@ -152,7 +152,7 @@ pub fn init(cores: &[CoreInfo]) {
     info!("Threads initialized!");
 }
 
-impl SystemThreadManager<S: Scheduler> {
+impl<S: Scheduler> SystemThreadManager<S> {
     /// Save the currently executing thread state.
     /// Returns a reference to the current thread.
     ///
@@ -252,6 +252,7 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
             .threads
             .preallocate_handle()
             .context(OutOfHandlesSnafu)?;
+
         trace!("spawning thread #{id}");
         let stack = parent_process.allocate_memory(
             page_allocator(),
@@ -304,25 +305,26 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
         };
 
         // free thread stack
-        parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1)?;
+        if let Err(e) = parent.free_memory(page_allocator(), thread.stack.0, thread.stack.1) {
+            error!(
+                "failed to free thread stack for thread #{}, process #{}: {}",
+                thread.id,
+                parent.id,
+                snafu::Report::from_error(e)
+            );
+        }
 
-        if last_thread {
-            // if this was the last thread, the parent process is now also finished
-            debug!("last thread in process exited");
-            self.exit_process(parent, reason)?;
-        } else {
-            // notify exit subscribers that a thread exited
-            let msg = ExitMessage::thread(thread.id, reason);
-            for qu in thread.exit_subscribers.lock().iter() {
-                trace!("sending exit message {msg:?} to queue #{}", qu.id);
-                if let Err(e) = qu.send(bytemuck::bytes_of(&msg), core::iter::empty()) {
-                    warn!(
-                        "failed to send exit notification {:?} to queue #{}: {}",
-                        msg,
-                        qu.id,
-                        snafu::Report::from_error(e)
-                    );
-                }
+        // notify exit subscribers that a thread exited
+        let msg = ExitMessage::thread(thread.id, reason);
+        for qu in thread.exit_subscribers.lock().iter() {
+            trace!("sending exit message {msg:?} to queue #{}", qu.id);
+            if let Err(e) = qu.send(bytemuck::bytes_of(&msg), core::iter::empty()) {
+                warn!(
+                    "failed to send exit notification {:?} to queue #{}: {}",
+                    msg,
+                    qu.id,
+                    snafu::Report::from_error(e)
+                );
             }
         }
 

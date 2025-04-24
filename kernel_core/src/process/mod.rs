@@ -7,12 +7,13 @@ use kernel_api::{
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
-use queue::PendingMessage;
+use queue::{PendingMessage, QueueManager};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 
 pub mod system_calls;
 pub mod thread;
+use thread::ThreadManager;
 pub use thread::{Id as ThreadId, Thread};
 pub mod queue;
 pub use queue::{Id as QueueId, MessageQueue};
@@ -657,6 +658,27 @@ pub trait ProcessManager {
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
+}
+
+/// Helper to entirely kill a thread, making sure to clean up the rest of the process if it was the last
+/// one, cascading the exit.
+pub fn kill_thread_entirely(
+    pm: &impl ProcessManager,
+    tm: &impl ThreadManager,
+    qm: &impl QueueManager,
+    thread: &Arc<Thread>,
+    reason: ExitReason,
+) {
+    if tm.exit_thread(thread, reason) {
+        // that was the last thread, so we need to kill the entire process
+        let proc = thread.parent.as_ref().unwrap();
+        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+        let queues = proc.owned_queues.lock().clone();
+        for qu in queues {
+            qm.free_queue(&qu);
+        }
+        pm.kill_process(proc, reason);
+    }
 }
 
 /// Unit tests

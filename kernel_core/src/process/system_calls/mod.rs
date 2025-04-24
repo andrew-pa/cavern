@@ -17,7 +17,7 @@ use crate::{
         page_table::MemoryProperties,
         PageAllocator, VirtualAddress, VirtualPointer,
     },
-    process::{MessageQueue, SharedBuffer},
+    process::{kill_thread_entirely, MessageQueue, SharedBuffer},
 };
 
 use super::{
@@ -198,16 +198,13 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 "invalid system call number {} provided by thread #{}",
                 syscall_number, current_thread.id
             );
-            if self
-                .thread_manager
-                .exit_thread(current_thread, ExitReason::invalid_syscall())
-            {
-                // that was the last thread, so we need to kill the entire process
-                let proc = current_thread.parent.as_ref().unwrap();
-                self.free_owned_queues(proc);
-                self.process_manager
-                    .kill_process(proc, ExitReason::invalid_syscall());
-            }
+            kill_thread_entirely(
+                self.process_manager,
+                self.thread_manager,
+                self.queue_manager,
+                current_thread,
+                ExitReason::invalid_syscall(),
+            );
             return Ok(SysCallEffect::ScheduleNextThread);
         };
         let user_space_memory = user_space_memory.into();
@@ -316,13 +313,13 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
     fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
         let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
-        let reason = ExitReason::user(code);
-        let last = self.thread_manager.exit_thread(current_thread, reason);
-        if last {
-            let proc = current_thread.parent.as_ref().unwrap();
-            self.free_owned_queues(&proc);
-            self.process_manager.kill_process(proc, reason);
-        }
+        kill_thread_entirely(
+            self.process_manager,
+            self.thread_manager,
+            self.queue_manager,
+            current_thread,
+            ExitReason::user(code),
+        );
     }
 
     fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
@@ -432,14 +429,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         Ok(())
     }
 
-    fn free_owned_queues(&self, proc: &Arc<Process>) {
-        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
-        let queues = proc.owned_queues.lock().clone();
-        for qu in queues {
-            self.queue_manager.free_queue(&qu);
-        }
-    }
-
     fn syscall_kill_process(
         &self,
         current_process: &Arc<Process>,
@@ -467,7 +456,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             self.thread_manager.exit_thread(&t, ExitReason::killed());
         }
 
-        self.free_owned_queues(&proc);
+        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+        let queues = proc.owned_queues.lock().clone();
+        for qu in queues {
+            self.queue_manager.free_queue(&qu);
+        }
 
         self.process_manager
             .kill_process(&proc, ExitReason::killed());

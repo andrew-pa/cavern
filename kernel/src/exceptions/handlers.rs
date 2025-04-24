@@ -6,15 +6,14 @@ use log::{debug, error};
 
 use crate::{
     memory::{page_allocator, SystemActiveUserSpaceTables},
-    process::{thread::THREAD_MANAGER, PROCESS_MANAGER, SYS_CALL_POLICY},
+    process::{thread::THREAD_MANAGER, SYS_CALL_POLICY},
 };
 use kernel_core::{
     exceptions::ExceptionSyndromeRegister,
     memory::PageAllocator,
     process::{
         system_calls::SysCallEffect,
-        thread::{Registers, Scheduler},
-        ProcessManager,
+        thread::{Registers, ThreadManager},
     },
 };
 
@@ -42,7 +41,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
     let regs = regs
         .as_mut()
         .expect("asm exception vector code passes non-null ptr to registers object");
-    let current_thread = save_current_thread_state(regs);
+    let current_thread = thread_manager.save_current_thread_state(regs);
 
     if esr.ec().is_system_call() {
         let user_space_mem = SystemActiveUserSpaceTables::new(page_allocator().page_size());
@@ -66,7 +65,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                     current_thread.id,
                     snafu::Report::from_error(&e)
                 );
-                thread_manage.restore_current_thread_state(regs, e.to_code().into_integer());
+                thread_manager.restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }
     } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_kernel_data_page_fault() {
@@ -78,11 +77,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             regs
         );
 
-        PROCESS_MANAGER
-            .get()
-            .unwrap()
-            .exit_thread(&current_thread, ExitReason::page_fault())
-            .expect("kill thread");
+        thread_manager.exit_thread(&current_thread, ExitReason::page_fault());
 
         thread_manager.next_time_slice();
         thread_manager.restore_current_thread_state(regs, None);
@@ -106,7 +101,7 @@ unsafe extern "C" fn handle_interrupt(regs: *mut Registers, _esr: usize, _far: u
         .expect("interrupt handler policy to be initialized before interrupts are enabled")
         .process_interrupts()
         .expect("interrupt handlers to complete successfully");
-    thread_manage.restore_current_thread_state(regs, None);
+    thread_manager.restore_current_thread_state(regs, None);
 }
 
 #[no_mangle]

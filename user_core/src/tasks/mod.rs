@@ -31,11 +31,6 @@ pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
 }
 
 /// Run the task executor with a root task and a service for handling RPC requests.
-///
-/// The `service` will listen as the current thread, which is assumed to be the designated receiver.
-///
-/// # Panics
-/// Panics if a second task thread cannot be spawned.
 pub fn run(
     msg_queue: QueueId,
     service: &impl Service,
