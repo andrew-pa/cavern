@@ -28,39 +28,44 @@ pub fn init() {
 }
 
 impl QueueManager for SystemQueueManager {
-    fn create_queue(&self, owner: Arc<Process>) -> Result<Arc<MessageQueue>, ManagerError> {
+    fn create_queue(&self, owner: &Arc<Process>) -> Result<Arc<MessageQueue>, ManagerError> {
         let id = self
             .queues
             .preallocate_handle()
             .context(OutOfHandlesSnafu)?;
         let q = Arc::new(MessageQueue::new(id, owner));
         self.queues.insert_with_handle(id, q.clone());
+        owner.owned_queues.lock().push(q.clone());
         Ok(q)
     }
 
-    fn free_queue(&self, queue: &Arc<MessageQueue>) -> Result<(), ManagerError> {
+    fn free_queue(&self, queue: &Arc<MessageQueue>) {
         // Remove the queue from the table. This will cause any future sends to fail.
-        let q = self.queues.remove(queue.id).context(MissingSnafu {
-            cause: "freeing queue not in table",
-        })?;
+        let queue = self
+            .queues
+            .remove(queue.id)
+            .expect("freed queue is in table");
 
         // Make sure any waiting threads know that this queue is dead.
-        q.dead.store(true, core::sync::atomic::Ordering::Release);
+        queue
+            .dead
+            .store(true, core::sync::atomic::Ordering::Release);
 
         // TODO: might be good to unsubscribe from any processes/threads?
 
         // Drain any remaining messages
-        while let Some(m) = q.receive() {
-            if let Err(e) = q.owner.free_message(m.data_address, m.data_length) {
-                warn!(
-                    "failed to free message {m:?} while freeing queue #{}: {}",
-                    q.id,
-                    snafu::Report::from_error(e)
-                );
+        if let Some(owner) = queue.owner.upgrade() {
+            owner.owned_queues.lock().retain(|qu| qu.id != queue.id);
+            while let Some(m) = queue.receive() {
+                if let Err(e) = owner.free_message(m.data_address, m.data_length) {
+                    warn!(
+                        "failed to free message {m:?} while freeing queue #{}: {}",
+                        queue.id,
+                        snafu::Report::from_error(e)
+                    );
+                }
             }
         }
-
-        Ok(())
     }
 
     fn queue_for_id(&self, queue_id: QueueId) -> Option<Arc<MessageQueue>> {

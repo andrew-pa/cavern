@@ -2,11 +2,12 @@
 
 use core::sync::atomic::AtomicBool;
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use crossbeam::queue::SegQueue;
 use log::trace;
+use snafu::OptionExt;
 
-use crate::memory::VirtualAddress;
+use crate::{memory::VirtualAddress, process::MissingSnafu};
 
 use super::{ManagerError, Process, SharedBuffer};
 
@@ -30,7 +31,7 @@ pub struct MessageQueue {
     pub id: Id,
 
     /// The process that created the queue. Only this process can receive messages.
-    pub owner: Arc<Process>,
+    pub owner: Weak<Process>,
 
     /// Has the queue already been freed?
     pub dead: AtomicBool,
@@ -41,10 +42,10 @@ pub struct MessageQueue {
 
 impl MessageQueue {
     /// Create a new message queue object.
-    pub fn new(id: Id, owner: Arc<Process>) -> Self {
+    pub fn new(id: Id, owner: &Arc<Process>) -> Self {
         MessageQueue {
             id,
-            owner,
+            owner: Arc::downgrade(owner),
             pending: SegQueue::new(),
             dead: AtomicBool::new(false),
         }
@@ -61,7 +62,13 @@ impl MessageQueue {
         message: &[u8],
         buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
     ) -> Result<(), ManagerError> {
-        let msg = self.owner.deliver_message(message, buffers)?;
+        let msg = self
+            .owner
+            .upgrade()
+            .context(MissingSnafu {
+                cause: "queue owner process already dead",
+            })?
+            .deliver_message(message, buffers)?;
         trace!("enqueuing {msg:?} in queue #{}", self.id);
         self.pending.push(msg);
         Ok(())
@@ -80,14 +87,11 @@ pub trait QueueManager {
     ///
     /// # Errors
     /// Returns an error if a new queue could not be created.
-    fn create_queue(&self, owner: Arc<Process>) -> Result<Arc<MessageQueue>, ManagerError>;
+    fn create_queue(&self, owner: &Arc<Process>) -> Result<Arc<MessageQueue>, ManagerError>;
 
     /// Frees a message queue, which frees all messages currently in the queue and also wakes all
     /// threads waiting on the queue with an error.
-    ///
-    /// # Errors
-    /// Returns an error if the queue could not be deleted.
-    fn free_queue(&self, queue: &Arc<MessageQueue>) -> Result<(), ManagerError>;
+    fn free_queue(&self, queue: &Arc<MessageQueue>);
 
     /// Get the message queue object associated with a queue ID.
     fn queue_for_id(&self, queue_id: Id) -> Option<Arc<MessageQueue>>;

@@ -7,7 +7,7 @@ use kernel_api::{
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
-use queue::PendingMessage;
+use queue::{PendingMessage, QueueManager};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 
@@ -212,6 +212,9 @@ pub struct Process {
     /// Allocator for message blocks in this process' inbox.
     pub inbox_allocator: Mutex<FreeListAllocator>,
 
+    /// Message queues that are owned by this process.
+    pub owned_queues: Mutex<Vec<Arc<MessageQueue>>>,
+
     /// Buffers that have been shared with this process from other processes.
     pub shared_buffers: HandleMap<SharedBuffer>,
 
@@ -331,6 +334,7 @@ impl Process {
                 inbox_size_in_pages,
                 MESSAGE_BLOCK_SIZE,
             )),
+            owned_queues: Mutex::default(),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
             exit_subscribers: Mutex::default(),
         })
@@ -646,11 +650,10 @@ pub trait ProcessManager {
     ) -> Result<Arc<Process>, ManagerError>;
 
     /// Kill a process.
-    /// The process must not have any threads, ie the caller must exit them first.
+    /// The process must not have any threads or owned queues, ie the caller must exit them first.
     ///
-    /// # Errors
-    /// TODO
-    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError>;
+    /// Killing a process must be infailable.
+    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason);
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
@@ -727,7 +730,7 @@ pub mod tests {
         )
         .expect("create process");
 
-        let qu = MessageQueue::new(QueueId::new(1).unwrap(), proc.clone());
+        let qu = MessageQueue::new(QueueId::new(1).unwrap(), &proc);
 
         let message = b"Hello, world!!";
 

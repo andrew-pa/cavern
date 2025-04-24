@@ -16,7 +16,7 @@ use kernel_core::{
         ManagerError,
     },
 };
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use spin::once::Once;
 
 use crate::memory::switch_el0_context;
@@ -282,7 +282,7 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
         Ok(thread)
     }
 
-    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<bool, ManagerError> {
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> bool {
         debug!("thread #{} exited with reason {reason:?}", thread.id);
 
         // remove current thread from scheduler, set state to finished
@@ -315,7 +315,14 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
             let msg = ExitMessage::thread(thread.id, reason);
             for qu in thread.exit_subscribers.lock().iter() {
                 trace!("sending exit message {msg:?} to queue #{}", qu.id);
-                qu.send(bytemuck::bytes_of(&msg), core::iter::empty())?;
+                if let Err(e) = qu.send(bytemuck::bytes_of(&msg), core::iter::empty()) {
+                    warn!(
+                        "failed to send exit notification {:?} to queue #{}: {}",
+                        msg,
+                        qu.id,
+                        snafu::Report::from_error(e)
+                    );
+                }
             }
         }
 
@@ -324,7 +331,7 @@ impl<S: Scheduler> ThreadManager for SystemThreadManager<S> {
             .remove(thread.id)
             .expect("thread is in thread handle table");
 
-        Ok(last_thread)
+        last_thread
     }
 
     fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>> {

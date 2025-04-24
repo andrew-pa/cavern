@@ -201,14 +201,12 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             if self
                 .thread_manager
                 .exit_thread(current_thread, ExitReason::invalid_syscall())
-                .expect("kill thread that made invalid system call")
             {
+                // that was the last thread, so we need to kill the entire process
+                let proc = current_thread.parent.as_ref().unwrap();
+                self.free_owned_queues(proc);
                 self.process_manager
-                    .kill_process(
-                        current_thread.parent.as_ref().unwrap(),
-                        ExitReason::invalid_syscall(),
-                    )
-                    .expect("kill process that made invalid system call");
+                    .kill_process(proc, ExitReason::invalid_syscall());
             }
             return Ok(SysCallEffect::ScheduleNextThread);
         };
@@ -319,15 +317,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         let code: u32 = registers.x[0] as _;
         debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
         let reason = ExitReason::user(code);
-        let last = self
-            .thread_manager
-            .exit_thread(current_thread, reason)
-            // It's very unlikely `kill_thread` will fail, and if it does the system is probably corrupt.
-            .expect("failed to kill thread");
+        let last = self.thread_manager.exit_thread(current_thread, reason);
         if last {
-            self.process_manager
-                .kill_process(current_thread.parent.as_ref().unwrap(), reason)
-                .expect("exit proces");
+            let proc = current_thread.parent.as_ref().unwrap();
+            self.free_owned_queues(&proc);
+            self.process_manager.kill_process(proc, reason);
         }
     }
 
@@ -417,7 +411,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         // create the initial queue
         let qu = self
             .queue_manager
-            .create_queue(proc.clone())
+            .create_queue(&proc)
             .context(ManagerSnafu)?;
 
         // spawn the main thread with an 8 MiB stack
@@ -436,6 +430,14 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         }
 
         Ok(())
+    }
+
+    fn free_owned_queues(&self, proc: &Arc<Process>) {
+        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+        let queues = proc.owned_queues.lock().clone();
+        for qu in queues {
+            self.queue_manager.free_queue(&qu);
+        }
     }
 
     fn syscall_kill_process(
@@ -459,16 +461,16 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         // TODO: access control?
         debug!("process #{} killing process #{pid}", current_process.id);
 
+        // Make a copy of the threads in the process. Exiting the thread will remove it from the parent process.
         let threads = proc.threads.read().clone();
         for t in threads {
-            self.thread_manager
-                .exit_thread(&t, ExitReason::killed())
-                .context(ManagerSnafu)?;
+            self.thread_manager.exit_thread(&t, ExitReason::killed());
         }
 
+        self.free_owned_queues(&proc);
+
         self.process_manager
-            .kill_process(&proc, ExitReason::killed())
-            .context(ManagerSnafu)?;
+            .kill_process(&proc, ExitReason::killed());
 
         Ok(())
     }
@@ -607,7 +609,9 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 id: queue_id.map_or(0, ProcessId::get) as usize,
             })?;
         ensure!(
-            qu.owner.id == current_thread.parent.as_ref().unwrap().id,
+            qu.owner
+                .upgrade()
+                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
             NotPermittedSnafu {
                 reason: "queue not owned by current process"
             }
@@ -746,7 +750,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
 
         let q = self
             .queue_manager
-            .create_queue(current_thread.parent.clone().unwrap())
+            .create_queue(current_thread.parent.as_ref().unwrap())
             .context(ManagerSnafu)?;
 
         *dst = q.id;
@@ -767,7 +771,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 id: queue_id.get() as usize,
             })?;
         debug!("freeing message queue #{}", qu.id);
-        self.queue_manager.free_queue(&qu).context(ManagerSnafu)
+        self.queue_manager.free_queue(&qu);
+        Ok(())
     }
 
     fn syscall_exit_notification_subscription(
@@ -946,7 +951,7 @@ mod tests {
         tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::invalid_syscall())
-            .returning(|_, _| Ok(false));
+            .returning(|_, _| false);
 
         let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
@@ -1003,7 +1008,7 @@ mod tests {
         tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
-            .returning(|_, _| Ok(false));
+            .returning(|_, _| false);
 
         let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
@@ -1054,12 +1059,12 @@ mod tests {
         tm.expect_exit_thread()
             .once()
             .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
-            .returning(|_, _| Ok(true));
+            .returning(|_, _| true);
 
         pm.expect_kill_process()
             .once()
             .withf(move |p, r| p.id == proc.id && *r == ExitReason::user(exit_code))
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| ());
 
         let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
 
@@ -1170,10 +1175,7 @@ mod tests {
         .unwrap();
 
         // Create a message queue for the receiver process
-        let receiver_queue = Arc::new(MessageQueue::new(
-            QueueId::new(1).unwrap(),
-            receiver_proc.clone(),
-        ));
+        let receiver_queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), &receiver_proc));
 
         let message = b"Hello, world!!";
         let buffers = &[SharedBufferCreateInfo {
@@ -1271,7 +1273,7 @@ mod tests {
         .unwrap();
 
         // Create an empty message queue for the process
-        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), &proc));
 
         let pm = MockProcessManager::new();
         let tm = MockThreadManager::new();
@@ -1312,7 +1314,7 @@ mod tests {
         .unwrap();
 
         // Create an empty message queue for the process
-        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), &proc));
 
         let pm = MockProcessManager::new();
         let tm = MockThreadManager::new();
@@ -1368,7 +1370,7 @@ mod tests {
         let th = proc.threads.read().first().unwrap().clone();
 
         // Create a message queue and add a message to it
-        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), proc.clone()));
+        let queue = Arc::new(MessageQueue::new(QueueId::new(1).unwrap(), &proc));
 
         let mut message = [0u8; 64];
 
@@ -1551,11 +1553,11 @@ mod tests {
             .return_once(move |_| Some(target_proc2));
         pm.expect_kill_process()
             .withf(move |p, r| p.id == target_proc_id && *r == ExitReason::killed())
-            .return_once(|_, _| Ok(()));
+            .return_once(|_, _| ());
 
         tm.expect_exit_thread()
             .withf(move |t, r| t.id == target_thread_id && *r == ExitReason::killed())
-            .return_once(|_, _| Ok(true));
+            .return_once(|_, _| true);
 
         let pa = &*PAGE_ALLOCATOR;
         let qm = MockQueueManager::new();
@@ -1884,7 +1886,7 @@ mod tests {
         let current_thread = current_proc.threads.read().first().unwrap().clone();
 
         let queue_id = QueueId::new(1234).unwrap();
-        let queue = Arc::new(MessageQueue::new(queue_id, current_proc.clone()));
+        let queue = Arc::new(MessageQueue::new(queue_id, &current_proc));
 
         // Create a target process for exit subscription.
         let target_proc = crate::process::tests::create_test_process(
@@ -1949,7 +1951,7 @@ mod tests {
         proc.threads.write().push(extra_thread.clone());
 
         let queue_id = QueueId::new(1234).unwrap();
-        let queue = Arc::new(MessageQueue::new(queue_id, proc.clone()));
+        let queue = Arc::new(MessageQueue::new(queue_id, &proc));
 
         let current_thread = proc.threads.read().first().unwrap().clone();
         let pm = MockProcessManager::new();
@@ -1965,7 +1967,6 @@ mod tests {
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
-        let receiver_tid = current_thread.id;
         let flags = ExitNotificationSubscriptionFlags::THREAD;
 
         let mut registers = Registers::default();

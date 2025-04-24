@@ -113,9 +113,7 @@ pub fn spawn_init_process(
     let init_process = proc_man.spawn_process(None, &info).context(ProcessSnafu)?;
     debug!("spawned init process #{}", init_process.id);
 
-    let init_queue = qu_man
-        .create_queue(init_process.clone())
-        .context(ProcessSnafu)?;
+    let init_queue = qu_man.create_queue(&init_process).context(ProcessSnafu)?;
 
     // setup mapping for initrd and device tree and send it to the init process
     let init_shared_memprops = MemoryProperties {

@@ -7,13 +7,14 @@ use kernel_core::{
     memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
     platform::cpu::CoreInfo,
     process::{
+        queue::QueueManager,
         system_calls::SystemCalls,
         thread::{ProcessorState, Scheduler, State},
         Id, ManagerError, OutOfHandlesSnafu, Process, ProcessManager, Properties, Thread, ThreadId,
         MAX_PROCESS_ID,
     },
 };
-use log::{debug, error, info, trace};
+use log::{debug, error, warn, info, trace};
 use qemu_exit::QEMUExit;
 use queue::SystemQueueManager;
 use snafu::OptionExt;
@@ -62,19 +63,24 @@ impl ProcessManager for SystemProcessManager {
         Ok(proc)
     }
 
-    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason) -> Result<(), ManagerError> {
+    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason) {
         assert!(process.threads.read().is_empty());
+        assert!(process.owned_queues.lock().is_empty());
         self.processes.remove(process.id);
 
         let msg = ExitMessage::process(process.id, reason);
-        for qu in process.exit_subscribers.lock().iter() {
-            qu.send(bytemuck::bytes_of(&msg), core::iter::empty())?;
+        for qu in process.exit_subscribers.lock().drain(..) {
+            if let Err(e) = qu.send(bytemuck::bytes_of(&msg), core::iter::empty()) {
+                warn!(
+                    "failed to send exit notification {:?} to queue #{}: {}",
+                    msg,
+                    qu.id,
+                    snafu::Report::from_error(e)
+                );
+            }
         }
 
-        // TODO: we need to delete all owned queues
-
         // the process will free all owned memory (including thread stacks) when dropped
-        Ok(())
     }
 
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>> {

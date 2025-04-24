@@ -360,9 +360,8 @@ pub trait ThreadManager {
     /// Cause a thread to exit, with a given `reason`.
     /// Returns true if this was the last thread in the process.
     ///
-    /// # Errors
-    /// Returns an error if the thread could not be cleaned up (which should be rare).
-    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> Result<bool, ManagerError>;
+    /// Exiting a thread must be infailable.
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> bool;
 
     /// Get the thread associated with a thread ID.
     fn thread_for_id(&self, thread_id: Id) -> Option<Arc<Thread>>;
