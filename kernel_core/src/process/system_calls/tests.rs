@@ -1143,7 +1143,10 @@ fn create_message_queue_bad_ptr() {
         .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
-    let policy = SystemCalls::new(pa, &MockProcessManager::new(), &MockThreadManager::new(), &MockQueueManager::new());
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
@@ -1186,7 +1189,9 @@ fn free_message_queue_success() {
         .with(function(move |q: &Arc<MessageQueue>| Arc::ptr_eq(q, &queue)))
         .return_once(|_| Ok(()));
 
-    let policy = SystemCalls::new(pa, &MockProcessManager::new(), &MockThreadManager::new(), &qm);
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
@@ -1220,7 +1225,9 @@ fn free_message_queue_not_found() {
     let mut qm = MockQueueManager::new();
     qm.expect_queue_for_id().return_const(None);
 
-    let policy = SystemCalls::new(pa, &MockProcessManager::new(), &MockThreadManager::new(), &qm);
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
@@ -1274,13 +1281,12 @@ fn free_message_with_buffers_and_flag() {
         ptr::write_unaligned(msg[size_of::<MessageHeader>()..].as_mut_ptr() as *mut SharedBufferInfo, sbi);
     }
 
-    let policy = SystemCalls::new(
-        &*PAGE_ALLOCATOR,
-        &MockProcessManager::new(),
-        &MockThreadManager::new(),
-        &MockQueueManager::new(),
-    );
-    let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+    let pa = &*PAGE_ALLOCATOR;
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
     regs.x[0] = FreeMessageFlags::FREE_BUFFERS.bits();
@@ -1315,13 +1321,12 @@ fn write_log_success() {
         .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
-    let policy = SystemCalls::new(
-        &*PAGE_ALLOCATOR,
-        &MockProcessManager::new(),
-        &MockThreadManager::new(),
-        &MockQueueManager::new(),
-    );
-    let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+    let pa = &*PAGE_ALLOCATOR;
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let msg = b"hello-logger";
     let mut regs = Registers::default();
@@ -1353,13 +1358,12 @@ fn write_log_invalid_level() {
         .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
-    let policy = SystemCalls::new(
-        &*PAGE_ALLOCATOR,
-        &MockProcessManager::new(),
-        &MockThreadManager::new(),
-        &MockQueueManager::new(),
-    );
-    let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+    let pa = &*PAGE_ALLOCATOR;
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
     regs.x[0] = 7; // invalid level (allowed 1-5)
@@ -1402,13 +1406,11 @@ fn exit_notification_unsubscribe() {
         .with(eq(qid))
         .return_once(|_| Some(queue));
 
-    let policy = SystemCalls::new(
-        &*PAGE_ALLOCATOR,
-        &MockProcessManager::new(),
-        &MockThreadManager::new(),
-        &qm,
-    );
-    let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+    let pa = &*PAGE_ALLOCATOR;
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
     regs.x[0] = ExitNotificationSubscriptionFlags::UNSUBSCRIBE.bits();
@@ -1440,13 +1442,12 @@ fn exit_notification_invalid_flags() {
         .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
-    let policy = SystemCalls::new(
-        &*PAGE_ALLOCATOR,
-        &MockProcessManager::new(),
-        &MockThreadManager::new(),
-        &MockQueueManager::new(),
-    );
-    let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+    let pa = &*PAGE_ALLOCATOR;
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
     regs.x[0] = (ExitNotificationSubscriptionFlags::PROCESS | ExitNotificationSubscriptionFlags::THREAD).bits();
@@ -1499,7 +1500,10 @@ fn transfer_to_shared_buffer_out_of_bounds() {
     let handle = proc.shared_buffers.insert(buf).unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
-    let policy = SystemCalls::new(pa, &MockProcessManager::new(), &MockThreadManager::new(), &MockQueueManager::new());
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let data = [0u8; 32];
