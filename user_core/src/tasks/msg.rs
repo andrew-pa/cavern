@@ -4,11 +4,10 @@ use core::{
     task::{Context, Poll},
 };
 
-use kernel_api::{ErrorCode, Message, ProcessId, SharedBufferCreateInfo, ThreadId, send};
+use bytemuck::Contiguous;
+use kernel_api::{ErrorCode, Message, QueueId, SharedBufferCreateInfo, send};
 
-use crate::rpc::MessageHeader;
-
-// TODO: we need a way to await the death of a process/thread ?!
+use crate::rpc::{MessageHeader, MessageType};
 
 use super::{EXECUTOR, PendingResponseState};
 
@@ -21,16 +20,17 @@ impl Future for ResponseFuture {
     type Output = Message;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut pr = EXECUTOR
+        let mut pending_responses = EXECUTOR
             .get()
             .expect("init task executor")
             .pending_responses
             .lock();
 
-        match pr.remove(&self.id) {
+        match pending_responses.remove(&self.id) {
             Some(PendingResponseState::Ready(m)) => Poll::Ready(m),
             None | Some(PendingResponseState::Waiting(_)) => {
-                pr.insert(self.id, PendingResponseState::Waiting(cx.waker().clone()));
+                pending_responses
+                    .insert(self.id, PendingResponseState::Waiting(cx.waker().clone()));
                 Poll::Pending
             }
         }
@@ -44,14 +44,14 @@ impl Future for ResponseFuture {
 /// # Errors
 /// Returns an error if the `send` call fails.
 pub fn send_request(
-    dst_process_id: ProcessId,
-    dst_thread_id: Option<ThreadId>,
+    dst_queue: QueueId,
     msg: &[u8],
     buffers: &[SharedBufferCreateInfo],
 ) -> Result<ResponseFuture, ErrorCode> {
     let hdr: &MessageHeader = bytemuck::from_bytes(&msg[0..core::mem::size_of::<MessageHeader>()]);
-    let id = hdr.correlation_id();
-    // TODO: assert message is request?
-    send(dst_process_id, dst_thread_id, msg, buffers)?;
+    let id = hdr.correlation_id;
+    debug_assert_eq!(hdr.mtype, MessageType::Request.into_integer());
+    debug_assert_eq!(hdr.response_queue, Some(EXECUTOR.get().unwrap().msg_queue));
+    send(dst_queue, msg, buffers)?;
     Ok(ResponseFuture { id })
 }

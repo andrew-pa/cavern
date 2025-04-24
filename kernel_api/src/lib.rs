@@ -398,6 +398,8 @@ pub enum ExitSource {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable)]
 pub struct ExitMessage {
+    /// Always equal to [`EXIT_TAG`], allows processes to detect the message.
+    pub tag: u32,
     /// Indicates if the exit was for a thread or a process.
     pub source: ExitSource,
     /// If the exit is for a process, this is the process ID.
@@ -408,11 +410,15 @@ pub struct ExitMessage {
 }
 unsafe impl Pod for ExitMessage {}
 
+/// Value at the beginning of an exit notification message to identify it.
+pub const EXIT_NOTIFICATION_TAG: u32 = 0xff;
+
 impl ExitMessage {
     /// Create a message for a thread exit.
     #[must_use]
     pub fn thread(tid: ThreadId, reason: ExitReason) -> Self {
         Self {
+            tag: EXIT_NOTIFICATION_TAG,
             source: ExitSource::Thread,
             id: tid.into(),
             reason,
@@ -423,6 +429,7 @@ impl ExitMessage {
     #[must_use]
     pub fn process(pid: ProcessId, reason: ExitReason) -> Self {
         Self {
+            tag: EXIT_NOTIFICATION_TAG,
             source: ExitSource::Process,
             id: pid.into(),
             reason,

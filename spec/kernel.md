@@ -198,6 +198,7 @@ The `receive` call accepts the following flags:
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 - `NotFound`: the queue ID was unknown to the system or not owned by this process.
+- `QueueFreed`: if the thread was blocked waiting for a queue and then that queue was freed.
 
 ### `free_message`
 Free a message, making its space in the inbox available for new messages.
