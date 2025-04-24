@@ -112,12 +112,12 @@ pub enum Error {
     },
 }
 
-fn receive_init_message()
--> Result<(&'static mut TarArchiveRef<'static>, DeviceTree<'static>), Error> {
-    let init_msg = receive(ReceiveFlags::empty()).context(SysCallSnafu {
+fn receive_init_message(
+    main_queue: QueueId,
+) -> Result<(&'static mut TarArchiveRef<'static>, DeviceTree<'static>), Error> {
+    let init_msg = receive(ReceiveFlags::empty(), main_queue).context(SysCallSnafu {
         cause: "receive init msg",
     })?;
-    assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_ID);
     let init: &InitMessage = bytemuck::from_bytes(init_msg.payload());
     assert!(init.initramfs_address > 0);
     assert!(init.initramfs_length > 0);
@@ -157,7 +157,7 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
     write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
 
     // Receive init message from kernel
-    let (initramfs, device_tree_blob) = receive_init_message()?;
+    let (initramfs, device_tree_blob) = receive_init_message(main_queue)?;
 
     // Read configuration from initramfs
     let config = load_config(initramfs)?;
@@ -190,7 +190,7 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
 
     // start the async executor, finish setting things up, and then monitor the root registry and supervisor
     user_core::tasks::run(main_queue, &initramfs_service, async move {
-        match s.setup().await {
+        match s.setup(main_queue).await {
             Ok(()) => {
                 write_log(3, "system setup complete!").unwrap();
 

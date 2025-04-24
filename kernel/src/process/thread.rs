@@ -107,8 +107,10 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
     }
 }
 
+/// The system thread manager.
 pub struct SystemThreadManager<S: Scheduler> {
-    scheduler: S,
+    /// The system thread scheduler instance.
+    pub scheduler: S,
     threads: HandleMap<Thread>,
     asid_pool: AddressSpaceIdPool,
 }
