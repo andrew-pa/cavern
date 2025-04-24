@@ -1098,14 +1098,16 @@ fn create_message_queue_success() {
         },
         ThreadId::new(201).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     // Queue-manager mock: expect one queue creation for `proc`
     let mut qm = MockQueueManager::new();
     let new_qid = QueueId::new(0xdead).unwrap();
     qm.expect_create_queue()
-        .with(function(move |owner: &Arc<Process>| Arc::ptr_eq(owner, &proc)))
+        .with(function(move |owner: &Arc<Process>| {
+            Arc::ptr_eq(owner, &proc)
+        }))
         .return_once(move |owner| Ok(Arc::new(MessageQueue::new(new_qid.into(), &owner))));
 
     let pm = MockProcessManager::new();
@@ -1140,7 +1142,7 @@ fn create_message_queue_bad_ptr() {
         },
         ThreadId::new(203).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     let pm = MockProcessManager::new();
@@ -1159,7 +1161,7 @@ fn create_message_queue_bad_ptr() {
             &regs,
             &usm
         ),
-        Err(Error::InvalidPointer { .. })
+        Err(Error::InvalidAddress { .. })
     );
 }
 
@@ -1174,7 +1176,7 @@ fn free_message_queue_success() {
         },
         ThreadId::new(211).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     // Pre-create a queue that will be freed
@@ -1182,12 +1184,15 @@ fn free_message_queue_success() {
     let queue = Arc::new(MessageQueue::new(qid.into(), &proc));
 
     let mut qm = MockQueueManager::new();
+    let queue2 = queue.clone();
     qm.expect_queue_for_id()
-        .with(eq(qid.into()))
-        .return_once(move |_| Some(queue.clone()));
+        .with(eq(qid))
+        .return_once(move |_| Some(queue2));
     qm.expect_free_queue()
-        .with(function(move |q: &Arc<MessageQueue>| Arc::ptr_eq(q, &queue)))
-        .return_once(|_| Ok(()));
+        .with(function(move |q: &Arc<MessageQueue>| {
+            Arc::ptr_eq(q, &queue)
+        }))
+        .return_once(|_| ());
 
     let pm = MockProcessManager::new();
     let tm = MockThreadManager::new();
@@ -1219,7 +1224,7 @@ fn free_message_queue_not_found() {
         },
         ThreadId::new(213).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     let mut qm = MockQueueManager::new();
@@ -1256,7 +1261,7 @@ fn free_message_with_buffers_and_flag() {
         },
         ThreadId::new(221).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     // Insert a shared buffer so that the message refers to something real.
@@ -1278,7 +1283,10 @@ fn free_message_with_buffers_and_flag() {
             buffer: sb_handle,
             length: 64,
         };
-        ptr::write_unaligned(msg[size_of::<MessageHeader>()..].as_mut_ptr() as *mut SharedBufferInfo, sbi);
+        ptr::write_unaligned(
+            msg[size_of::<MessageHeader>()..].as_mut_ptr() as *mut SharedBufferInfo,
+            sbi,
+        );
     }
 
     let pa = &*PAGE_ALLOCATOR;
@@ -1318,7 +1326,7 @@ fn write_log_success() {
         },
         ThreadId::new(231).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     let pa = &*PAGE_ALLOCATOR;
@@ -1355,7 +1363,7 @@ fn write_log_invalid_level() {
         },
         ThreadId::new(233).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     let pa = &*PAGE_ALLOCATOR;
@@ -1393,7 +1401,7 @@ fn exit_notification_unsubscribe() {
         },
         ThreadId::new(241).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = current_proc.threads.read().first().unwrap().clone();
 
     // Queue to remove
@@ -1407,14 +1415,20 @@ fn exit_notification_unsubscribe() {
         .return_once(|_| Some(queue));
 
     let pa = &*PAGE_ALLOCATOR;
-    let pm = MockProcessManager::new();
+    let mut pm = MockProcessManager::new();
+    let cp2 = current_proc.clone();
+    pm.expect_process_for_id()
+        .with(eq(current_proc.id))
+        .return_once(|_| Some(cp2));
     let tm = MockThreadManager::new();
     let policy = SystemCalls::new(pa, &pm, &tm, &qm);
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
-    regs.x[0] = ExitNotificationSubscriptionFlags::UNSUBSCRIBE.bits();
-    regs.x[1] = 0;           // id ignored for unsubscribe
+    regs.x[0] = (ExitNotificationSubscriptionFlags::UNSUBSCRIBE
+        | ExitNotificationSubscriptionFlags::PROCESS)
+        .bits();
+    regs.x[1] = current_proc.id.get() as usize;
     regs.x[2] = qid.get() as usize;
 
     assert_matches!(
@@ -1439,7 +1453,7 @@ fn exit_notification_invalid_flags() {
         },
         ThreadId::new(243).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let current_thread = proc.threads.read().first().unwrap().clone();
 
     let pa = &*PAGE_ALLOCATOR;
@@ -1450,7 +1464,9 @@ fn exit_notification_invalid_flags() {
     let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
     let mut regs = Registers::default();
-    regs.x[0] = (ExitNotificationSubscriptionFlags::PROCESS | ExitNotificationSubscriptionFlags::THREAD).bits();
+    regs.x[0] = (ExitNotificationSubscriptionFlags::PROCESS
+        | ExitNotificationSubscriptionFlags::THREAD)
+        .bits();
     regs.x[1] = 0;
     regs.x[2] = 0;
 
@@ -1478,7 +1494,7 @@ fn transfer_to_shared_buffer_out_of_bounds() {
         },
         ThreadId::new(251).unwrap(),
     )
-        .unwrap();
+    .unwrap();
     let mem = proc
         .allocate_memory(
             pa,
@@ -1509,8 +1525,8 @@ fn transfer_to_shared_buffer_out_of_bounds() {
     let data = [0u8; 32];
     let mut regs = Registers::default();
     regs.x[0] = handle.get() as usize;
-    regs.x[1] = 16;                      // offset
-    regs.x[2] = data.as_ptr() as usize;  // copy 32 bytes
+    regs.x[1] = 16; // offset
+    regs.x[2] = data.as_ptr() as usize; // copy 32 bytes
     regs.x[3] = data.len();
 
     assert_matches!(
@@ -1520,6 +1536,498 @@ fn transfer_to_shared_buffer_out_of_bounds() {
             &regs,
             &usm
         ),
+        Err(Error::Transfer {
+            source: TransferError::OutOfBounds
+        })
+    );
+}
+
+// 1 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn transfer_from_shared_buffer_out_of_bounds() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(300).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(301).unwrap(),
+    )
+    .unwrap();
+    // Shared buffer: READ-only, length 32.
+    let mem = proc
+        .allocate_memory(
+            pa,
+            1,
+            MemoryProperties {
+                owned: true,
+                user_space_access: true,
+                writable: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let sb = Arc::new(SharedBuffer {
+        owner: proc.clone(),
+        flags: SharedBufferFlags::READ,
+        base_address: mem,
+        length: 32,
+    });
+    let handle = proc.shared_buffers.insert(sb).unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut dst = [0u8; 32];
+    let mut regs = Registers::default();
+    regs.x[0] = handle.get() as usize;
+    regs.x[1] = 16; // offset
+    regs.x[2] = dst.as_mut_ptr() as usize;
+    regs.x[3] = dst.len(); // 16 + 32 > 32 → OOB
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::TransferFromSharedBuffer.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Transfer {
+            source: TransferError::OutOfBounds
+        })
+    );
+}
+
+// 2 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn transfer_to_shared_buffer_insufficient_permissions() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(302).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(303).unwrap(),
+    )
+    .unwrap();
+    let mem = proc
+        .allocate_memory(
+            pa,
+            1,
+            MemoryProperties {
+                owned: true,
+                user_space_access: true,
+                writable: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // READ-only buffer (no WRITE) →  TransferTo must fail.
+    let sb = Arc::new(SharedBuffer {
+        owner: proc.clone(),
+        flags: SharedBufferFlags::READ,
+        base_address: mem,
+        length: 32,
+    });
+    let handle = proc.shared_buffers.insert(sb).unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let data = [1u8; 8];
+    let mut regs = Registers::default();
+    regs.x[0] = handle.get() as usize;
+    regs.x[1] = 0; // offset
+    regs.x[2] = data.as_ptr() as usize;
+    regs.x[3] = data.len(); // within bounds but not permitted
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::TransferToSharedBuffer.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Transfer {
+            source: TransferError::InsufficentPermissions
+        })
+    );
+}
+
+// 3 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn transfer_from_shared_buffer_insufficient_permissions() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(304).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(305).unwrap(),
+    )
+    .unwrap();
+    let mem = proc
+        .allocate_memory(
+            pa,
+            1,
+            MemoryProperties {
+                owned: true,
+                user_space_access: true,
+                writable: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // WRITE-only buffer (no READ) → TransferFrom must fail.
+    let sb = Arc::new(SharedBuffer {
+        owner: proc.clone(),
+        flags: SharedBufferFlags::WRITE,
+        base_address: mem,
+        length: 16,
+    });
+    let handle = proc.shared_buffers.insert(sb).unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut dst = [0u8; 4];
+    let mut regs = Registers::default();
+    regs.x[0] = handle.get() as usize;
+    regs.x[1] = 0; // offset
+    regs.x[2] = dst.as_mut_ptr() as usize;
+    regs.x[3] = dst.len();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::TransferFromSharedBuffer.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Transfer {
+            source: TransferError::InsufficentPermissions
+        })
+    );
+}
+
+// 4 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn allocate_heap_pages_zero_size_invalid_length() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(306).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(307).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = 0; // size = 0 ⇒ invalid
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::AllocateHeapPages.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::InvalidAddress { .. })
+    );
+}
+
+// 5 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn free_heap_pages_zero_size_invalid_length() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(308).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(309).unwrap(),
+    )
+    .unwrap();
+    // Allocate one page so we have something to (incorrectly) free.
+    let ptr = proc
+        .allocate_memory(
+            pa,
+            1,
+            MemoryProperties {
+                owned: true,
+                user_space_access: true,
+                writable: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let current_thread = proc.threads.read().first().unwrap().clone();
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = usize::from(ptr); // valid pointer
+    regs.x[1] = 0; // size = 0 ⇒ invalid
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::FreeHeapPages.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Manager {
+            source: ManagerError::PageTables { .. }
+        })
+    );
+}
+
+// 6 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn kill_process_not_found() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(310).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(311).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    // Process manager returns None for unknown pid.
+    let mut pm = MockProcessManager::new();
+    pm.expect_process_for_id().return_const(None);
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = 0xdead_beef; // non-existent pid
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::KillProcess.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::NotFound { .. })
+    );
+}
+
+// 7 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn send_zero_length_message_invalid_length() {
+    let pa = &*PAGE_ALLOCATOR;
+    let sender = crate::process::tests::create_test_process(
+        ProcessId::new(312).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(313).unwrap(),
+    )
+    .unwrap();
+    let receiver = crate::process::tests::create_test_process(
+        ProcessId::new(314).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(315).unwrap(),
+    )
+    .unwrap();
+    // Receiver owns a queue we know about.
+    let queue = Arc::new(MessageQueue::new(QueueId::new(0xbeef).unwrap(), &receiver));
+
+    // Queue-manager mock.
+    let mut qm = MockQueueManager::new();
+    let queue2 = queue.clone();
+    qm.expect_queue_for_id()
+        .with(eq(queue.id))
+        .return_once(move |_| Some(queue2));
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let current_thread = sender.threads.read().first().unwrap().clone();
+    let mut regs = Registers::default();
+    regs.x[0] = queue.id.get() as usize; // dst queue
+    regs.x[1] = core::ptr::null::<u8>() as usize;
+    regs.x[2] = 0; // zero-length message
+    regs.x[3] = core::ptr::null::<u8>() as usize;
+    regs.x[4] = 0; // no buffers
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::Send.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
         Err(Error::InvalidLength { .. })
+    );
+}
+
+// 8 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn free_shared_buffers_not_found() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(316).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(317).unwrap(),
+    )
+    .unwrap();
+    // Insert exactly one valid handle.
+    let valid = proc
+        .shared_buffers
+        .insert(Arc::new(SharedBuffer {
+            owner: proc.clone(),
+            flags: SharedBufferFlags::empty(),
+            base_address: VirtualAddress::null(),
+            length: 0,
+        }))
+        .unwrap();
+    // Unknown handle (never allocated).
+    let unknown = NonZeroU32::new(0xaaaa).unwrap();
+    let buffers = [valid, unknown];
+
+    let current_thread = proc.threads.read().first().unwrap().clone();
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = buffers.as_ptr() as usize;
+    regs.x[1] = buffers.len();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::FreeSharedBuffers.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Manager {
+            source: ManagerError::Missing { .. }
+        })
+    );
+}
+
+// 9 ────────────────────────────────────────────────────────────────────────────
+#[test]
+fn create_message_queue_out_of_handles() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(318).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(319).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    // Queue-manager mock: no handles left.
+    let mut qm = MockQueueManager::new();
+    qm.expect_create_queue()
+        .returning(|_| Err(ManagerError::OutOfHandles));
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut out_qid = MaybeUninit::<QueueId>::uninit();
+    let mut regs = Registers::default();
+    regs.x[1] = &mut out_qid as *mut _ as usize;
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::CreateMessageQueue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Err(Error::Manager {
+            source: ManagerError::OutOfHandles
+        })
+    );
+}
+
+// 10 ───────────────────────────────────────────────────────────────────────────
+#[test]
+fn read_env_value_page_size() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(320).unwrap(),
+        Properties {
+            supervisor: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::PageSizeInBytes.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(size)) if size == pa.page_size().into()
     );
 }

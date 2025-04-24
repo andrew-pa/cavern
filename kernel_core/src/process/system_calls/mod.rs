@@ -540,6 +540,13 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         let buffers: &[SharedBufferCreateInfo] = user_space_memory
             .check_slice(registers.x[3].into(), registers.x[4])
             .context(InvalidAddressSnafu { cause: "buffers" })?;
+        ensure!(
+            message.len() > 0 || buffers.len() > 0,
+            InvalidLengthSnafu {
+                reason: "message must have at least non-zero size or non-zero number of buffers",
+                length: 0usize
+            }
+        );
         let dst = dst_queue_id
             .and_then(|qid| self.queue_manager.queue_for_id(qid))
             .context(NotFoundSnafu {
@@ -804,9 +811,12 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             })?;
 
         ensure!(
-            receiver_queue.id == current_thread.parent.as_ref().unwrap().id,
+            receiver_queue
+                .owner
+                .upgrade()
+                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
             NotPermittedSnafu {
-                reason: "must own queue to subscribe it to exit notifications"
+                reason: "must own queue to (un)subscribe it to exit notifications"
             }
         );
 
@@ -846,6 +856,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             );
             let mut s = thread.exit_subscribers.lock();
             process_subscription(&mut s);
+        } else {
+            return Err(Error::InvalidFlags {
+                reason: "did not specific process or thread".into(),
+                bits: flags.bits(),
+            });
         }
 
         Ok(())
