@@ -115,7 +115,10 @@ impl Error {
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
                     crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
                 },
-                ManagerError::PageTables { .. } => ErrorCode::InvalidPointer,
+                ManagerError::PageTables { source } => match source {
+                    crate::memory::page_table::Error::InvalidCount => ErrorCode::InvalidLength,
+                    _ => ErrorCode::InvalidPointer
+                },
                 ManagerError::Missing { cause } => {
                     error!("Missing value in process manager: {cause}");
                     ErrorCode::NotFound
@@ -420,6 +423,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 qu.id.get() as usize,
             )
             .context(ManagerSnafu)?;
+
+        debug!("process #{} spawned (main queue #{})", proc.id, qu.id);
 
         *out_process_id = proc.id;
         if let Some(oqi) = out_queue_id {

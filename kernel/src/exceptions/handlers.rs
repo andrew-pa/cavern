@@ -68,7 +68,7 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                 thread_manager.restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }
-    } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_kernel_data_page_fault() {
+    } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_user_space_data_page_fault() {
         error!(
             "user space page fault in thread #{}, process #{}! {}, FAR={far:x}, registers = {:x?}",
             current_thread.id,
