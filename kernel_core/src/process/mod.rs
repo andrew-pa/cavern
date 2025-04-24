@@ -7,7 +7,7 @@ use kernel_api::{
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
-use queue::{PendingMessage, QueueManager};
+use queue::PendingMessage;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
 
