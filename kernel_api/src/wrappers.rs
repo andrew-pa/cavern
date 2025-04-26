@@ -405,8 +405,7 @@ pub fn free_message(flags: FreeMessageFlags, message: Message) -> Result<(), Err
 /// - `NotFound`: an unknown buffer handle was passed.
 /// - `InvalidPointer`: the message pointer or length pointer was null or invalid.
 /// - `OutOfBounds`: the requested operation would extend past the end of the buffer.
-/// - `NotAllowed`: the requested operation is not permitted according to the permissions granted
-/// by the sharer.
+/// - `NotAllowed`: the requested operation is not permitted according to the permissions granted by the sharer.
 pub fn transfer_to_shared_buffer(
     buffer: SharedBufferId,
     dst_offset: usize,

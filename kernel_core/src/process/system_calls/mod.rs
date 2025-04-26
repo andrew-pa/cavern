@@ -117,7 +117,7 @@ impl Error {
                 },
                 ManagerError::PageTables { source } => match source {
                     crate::memory::page_table::Error::InvalidCount => ErrorCode::InvalidLength,
-                    _ => ErrorCode::InvalidPointer
+                    _ => ErrorCode::InvalidPointer,
                 },
                 ManagerError::Missing { cause } => {
                     error!("Missing value in process manager: {cause}");
@@ -539,7 +539,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             .check_slice(registers.x[3].into(), registers.x[4])
             .context(InvalidAddressSnafu { cause: "buffers" })?;
         ensure!(
-            message.len() > 0 || buffers.len() > 0,
+            !message.is_empty() || !buffers.is_empty(),
             InvalidLengthSnafu {
                 reason: "message must have at least non-zero size or non-zero number of buffers",
                 length: 0usize
@@ -556,7 +556,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             "process #{} sending message to queue #{}",
             current_proc.id, dst.id
         );
-        if buffers.len() > 0 {
+        if !buffers.is_empty() {
             trace!("sending buffers {buffers:?}");
         }
         dst.send(
@@ -821,10 +821,8 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
             if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {
                 exit_subs.retain_mut(|q: &mut Arc<MessageQueue>| q.id != receiver_queue.id);
-            } else {
-                if !exit_subs.iter().any(|q| q.id == receiver_queue.id) {
-                    exit_subs.push(receiver_queue.clone());
-                }
+            } else if !exit_subs.iter().any(|q| q.id == receiver_queue.id) {
+                exit_subs.push(receiver_queue.clone());
             }
         };
 

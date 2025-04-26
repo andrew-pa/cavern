@@ -300,9 +300,8 @@ impl Thread {
         }
 
         let Some(msg) = qu.as_ref().and_then(|qu| {
-            qu.receive().map(|msg| {
+            qu.receive().inspect(|_| {
                 self.pending_message_receive_queue.store(None);
-                msg
             })
         }) else {
             return false;

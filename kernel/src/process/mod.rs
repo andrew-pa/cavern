@@ -14,7 +14,7 @@ use kernel_core::{
         MAX_PROCESS_ID,
     },
 };
-use log::{debug, error, warn, info, trace};
+use log::{debug, error, info, trace, warn};
 use qemu_exit::QEMUExit;
 use queue::SystemQueueManager;
 use snafu::OptionExt;

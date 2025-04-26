@@ -22,10 +22,5 @@ fn invalid_env_value() {
 
 pub const TESTS: (&str, &[&dyn Testable]) = (
     "read_env_value",
-    &[
-        &process_id,
-        &thread_id,
-        &page_size,
-        &invalid_env_value,
-    ],
+    &[&process_id, &thread_id, &page_size, &invalid_env_value],
 );
