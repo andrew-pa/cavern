@@ -136,5 +136,16 @@ make_bin := `which make`
 # Build U-Boot image and tools.
 build_u-boot:
     mkdir -p {{vendor_tool_dir / "u-boot"}}
+    # Generate the configuration for the QEMU virt board
     CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./vendor/u-boot O={{vendor_tool_dir / "u-boot"}} qemu_arm64_defconfig
+    # Turn off anything that pulls in OpenSSL/GnuTLS
+    ./vendor/u-boot/scripts/config --file {{vendor_tool_dir / "u-boot" / ".config"}} --disable TOOLS_RSA
+    ./vendor/u-boot/scripts/config --file {{vendor_tool_dir / "u-boot" / ".config"}} --disable TOOLS_MKEFICAPSULE
+    ./vendor/u-boot/scripts/config --file {{vendor_tool_dir / "u-boot" / ".config"}} --disable TOOLS_LIBCRYPTO
+    # Re‑sync the Kconfig after patching .config
+    {{make_bin}} \
+        -C ./vendor/u-boot \
+        O={{vendor_tool_dir / "u-boot"}} \
+        olddefconfig
+    # Run the main build
     CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./vendor/u-boot O={{vendor_tool_dir / "u-boot"}} -j all
