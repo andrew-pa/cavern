@@ -6,7 +6,7 @@ use alloc::{
 };
 use device_tree::{DeviceTree, fdt::Token};
 use hashbrown::HashMap;
-use kernel_api::{QueueId, ThreadId, read_env_value, write_log};
+use kernel_api::{QueueId, write_log};
 use snafu::ResultExt;
 use user_core::interfaces::{
     registry::{Path, RegistryClient},

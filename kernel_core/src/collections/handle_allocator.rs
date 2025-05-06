@@ -46,6 +46,7 @@ impl HandleAllocator {
     }
 
     /// Returns the largest possible handle that this allocator could return.
+    #[must_use]
     pub fn max_handle_value(&self) -> NonZeroU32 {
         self.max_handle
     }

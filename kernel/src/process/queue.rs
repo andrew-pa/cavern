@@ -5,7 +5,7 @@ use kernel_core::{
     collections::HandleMap,
     process::{
         queue::{QueueManager, MAX_QUEUE_ID},
-        ManagerError, MessageQueue, MissingSnafu, OutOfHandlesSnafu, Process, QueueId,
+        ManagerError, MessageQueue, OutOfHandlesSnafu, Process, QueueId,
     },
 };
 use log::warn;

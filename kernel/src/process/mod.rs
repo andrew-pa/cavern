@@ -1,20 +1,15 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
-use itertools::Itertools;
-use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo, KERNEL_FAKE_ID};
+use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo};
 use kernel_core::{
     collections::HandleMap,
-    memory::{page_table::MemoryProperties, PageAllocator, VirtualAddress},
     platform::cpu::CoreInfo,
     process::{
-        queue::QueueManager,
-        system_calls::SystemCalls,
-        thread::{ProcessorState, Scheduler, State},
-        Id, ManagerError, OutOfHandlesSnafu, Process, ProcessManager, Properties, Thread, ThreadId,
-        MAX_PROCESS_ID,
+        system_calls::SystemCalls, Id, ManagerError, OutOfHandlesSnafu, Process, ProcessManager,
+        Properties, MAX_PROCESS_ID,
     },
 };
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, warn};
 use qemu_exit::QEMUExit;
 use queue::SystemQueueManager;
 use snafu::OptionExt;

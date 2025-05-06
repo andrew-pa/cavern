@@ -43,6 +43,9 @@ impl Future for ResponseFuture {
 ///
 /// # Errors
 /// Returns an error if the `send` call fails.
+///
+/// # Panics
+/// Panics if the task executor has not been initialized yet.
 pub fn send_request(
     dst_queue: QueueId,
     msg: &[u8],

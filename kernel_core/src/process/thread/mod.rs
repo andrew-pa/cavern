@@ -3,16 +3,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{sync::Arc, vec::Vec};
 
-use arc_swap::ArcSwapOption;
 use bytemuck::Contiguous;
-use crossbeam::queue::SegQueue;
-use kernel_api::{ErrorCode, ExitReason, MessageHeader, ProcessId, SharedBufferInfo};
-use log::{debug, error, trace};
+use kernel_api::{ErrorCode, ExitReason};
+use log::{error, trace};
 use spin::Mutex;
 
 use crate::memory::{VirtualAddress, VirtualPointerMut};
 
-use super::{queue::QueueManager, ManagerError, MessageQueue, PendingMessage, Process, QueueId};
+use super::{ManagerError, MessageQueue, PendingMessage, Process};
 
 pub mod scheduler;
 

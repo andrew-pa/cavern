@@ -9,7 +9,6 @@ use core::{
 };
 
 use alloc::{boxed::Box, sync::Arc};
-use log::{debug, trace};
 
 use super::HandleAllocator;
 
@@ -44,12 +43,10 @@ impl<T> Table<T> {
             if self.0[index].load(Ordering::Acquire) == v {
                 // safe to build our clone
                 return Some(Arc::from_raw(v as *const T));
-            } else {
-                // somebody removed or replaced it—undo our bump
-                let tmp = Arc::from_raw(v as *const T);
-                drop(tmp);
-                // and retry from scratch
             }
+            // somebody removed or replaced it—undo our bump
+            Arc::decrement_strong_count(v as *const T);
+            // and retry from scratch
         }
     }
 
@@ -255,7 +252,6 @@ impl<T> HandleMap<T> {
 
 impl<T> Drop for HandleMap<T> {
     fn drop(&mut self) {
-        debug!("dropping handle map @ {:x?}", self as *const _ as usize);
         self.table.drop_children(self.depth);
     }
 }

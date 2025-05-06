@@ -441,7 +441,7 @@ fn normal_receive_block() {
 
     assert_eq!(th.state(), State::WaitingForMessage);
     assert_eq!(
-        th.pending_message_receive_queue.load().as_ref().unwrap().id,
+        th.pending_message_receive_queue.lock().as_ref().unwrap().id,
         queue.id
     );
     let pmr = th.pending_message_receive.lock();

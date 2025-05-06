@@ -534,14 +534,16 @@ pub fn create_message_queue() -> Result<QueueId, ErrorCode> {
     }
 }
 
-/// ### `free_message_queue`
 /// Frees a message queue owned by the calling process.
 /// Any pending messages in the queue are freed from the process' inbox.
 ///
-/// #### Arguments
+/// # Arguments
 /// | Name       | Type                 | Notes                            |
 /// |------------|----------------------|----------------------------------|
 /// | `qid`      | `Queue ID`| The ID of the queue to free. |
+///
+/// # Errors
+/// - `NotFound`: the queue ID was not found or unowned by the caller.
 pub fn free_message_queue(queue: QueueId) -> Result<(), ErrorCode> {
     let mut result: usize;
     unsafe {

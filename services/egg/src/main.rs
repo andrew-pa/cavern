@@ -21,8 +21,7 @@ use config::Config;
 use device_tree::DeviceTree;
 use futures::future::Either;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_ID, QueueId, exit_current_thread, flags::ReceiveFlags, receive,
-    write_log,
+    ErrorCode, QueueId, exit_current_thread, flags::ReceiveFlags, receive, write_log,
 };
 use setup::Setup;
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -163,7 +162,7 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
     let config = load_config(initramfs)?;
 
     // Spawn the root resource registry directly from the initramfs
-    let (registry_pid, registry_qid) =
+    let (registry_process_id, registry_queue_id) =
         spawn_root_process(initramfs, config.binaries.resource_registry).context(
             SpawnRootProcessSnafu {
                 name: "root resource registry",
@@ -171,7 +170,7 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
         )?;
 
     // Spawn the root supervisor directly from the initramfs
-    let (supervisor_pid, supervisor_qid) =
+    let (supervisor_process_id, supervisor_queue_id) =
         spawn_root_process(initramfs, config.binaries.supervisor).context(
             SpawnRootProcessSnafu {
                 name: "root supervisor",
@@ -182,8 +181,8 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
     let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
     let s = Setup {
-        registry: RegistryClient::new(registry_qid),
-        supervisor: SupervisorClient::new(supervisor_qid),
+        registry: RegistryClient::new(registry_queue_id),
+        supervisor: SupervisorClient::new(supervisor_queue_id),
         config,
         device_tree_blob,
     };
@@ -195,9 +194,9 @@ fn main(main_queue: QueueId) -> Result<(), Error> {
                 write_log(3, "system setup complete!").unwrap();
 
                 // Watch root registry, supervisor and cascade the exit if they exit
-                let watch_registry =
-                    watch_exit(WatchableId::Process(registry_pid)).expect("watch root registry");
-                let watch_supervisor = watch_exit(WatchableId::Process(supervisor_pid))
+                let watch_registry = watch_exit(WatchableId::Process(registry_process_id))
+                    .expect("watch root registry");
+                let watch_supervisor = watch_exit(WatchableId::Process(supervisor_process_id))
                     .expect("watch root supervisor");
 
                 match futures::future::select(watch_registry, watch_supervisor).await {

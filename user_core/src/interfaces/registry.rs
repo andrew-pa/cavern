@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 
 use crate::{
-    rpc::{MessageHeader, MessageType, ResponseType},
-    tasks::{EXECUTOR, send_request},
+    rpc::{MessageHeader, ResponseType},
+    tasks::send_request,
 };
 
 use super::{Error as RpcError, SendSnafu};

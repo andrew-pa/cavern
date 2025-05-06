@@ -76,8 +76,10 @@ impl MessageHeader {
         }
     }
 
-    /// Create a new message header for a request, expecting a response on the task executor's
-    /// message queue.
+    /// Create a new message header for a request, expecting a response on the task executor's message queue.
+    ///
+    /// # Panics
+    /// Panics if the task executor has not been initalized yet.
     pub fn request(opcode: impl Contiguous<Int = u32>) -> Self {
         Self::new(
             MessageType::Request,
@@ -87,6 +89,7 @@ impl MessageHeader {
     }
 
     /// The type of this message, or `None` if the type is unknown/invalid.
+    #[must_use]
     pub fn msg_type(&self) -> Option<MessageType> {
         MessageType::from_integer(self.mtype)
     }
