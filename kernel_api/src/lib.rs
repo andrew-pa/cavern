@@ -49,8 +49,12 @@ pub enum ErrorCode {
     /// The requested resource or memory region is already in use by another process or driver.
     InUse,
 
-    /// The buffer was not shared with the permissions required for the operation.
-    InsufficentPermissions,
+    /// The buffer was not shared with the permissions required for the operation, or a receive was
+    /// attempted on an unowned queue.
+    NotAllowed,
+
+    /// The queue was freed while the `receive` call was blocked waiting for a message on the queue.
+    QueueFreed,
 }
 
 impl core::fmt::Display for ErrorCode {
@@ -76,13 +80,14 @@ pub enum CallNumber {
     SpawnThread,
     ExitCurrentThread,
     KillProcess,
-    SetDesignatedReceiver,
     AllocateHeapPages,
     FreeHeapPages,
     FreeMessage,
     FreeSharedBuffers,
     ExitNotificationSubscription,
     WriteLogMessage,
+    CreateMessageQueue,
+    FreeMessageQueue,
 }
 
 impl CallNumber {
@@ -102,10 +107,10 @@ pub enum EnvironmentValue {
     CurrentProcessId = 1,
     /// The thread ID of the calling process.
     CurrentThreadId,
-    /// The thread ID of the calling process' designated receiver thread.
-    DesignatedReceiverThreadId,
-    /// The process ID of the supervisor process for the calling process.
-    CurrentSupervisorId,
+    /// The queue ID of the supervisor process associated with the calling process.
+    CurrentSupervisorQueueId,
+    /// The queue ID of the resource registry process associated with the calling process.
+    CurrentRegistryQueueId,
     /// The number of bytes per page of memory.
     PageSizeInBytes,
 }
@@ -204,13 +209,9 @@ pub struct ProcessCreateInfo {
 pub const MESSAGE_BLOCK_SIZE: usize = 64;
 
 /// The header containing information about a received message.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C, align(8))]
 pub struct MessageHeader {
-    /// The process id of the process that send this message.
-    pub sender_pid: ProcessId,
-    /// The thread id of the thread that send this message.
-    pub sender_tid: ThreadId,
     /// The number of shared buffers sent in this message.
     pub num_buffers: usize,
 }
@@ -299,12 +300,12 @@ pub type SharedBufferId = NonZeroU32;
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct SharedBufferCreateInfo {
-    /// Flags for this buffer.
-    pub flags: flags::SharedBufferFlags,
     /// Base address of the buffer.
     pub base_address: *mut u8,
     /// Length in bytes of this buffer.
     pub length: usize,
+    /// Flags for this buffer.
+    pub flags: flags::SharedBufferFlags,
 }
 
 /// Description of a shared buffer on the receiving side.
@@ -397,6 +398,8 @@ pub enum ExitSource {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable)]
 pub struct ExitMessage {
+    /// Always equal to [`EXIT_TAG`], allows processes to detect the message.
+    pub tag: u32,
     /// Indicates if the exit was for a thread or a process.
     pub source: ExitSource,
     /// If the exit is for a process, this is the process ID.
@@ -407,11 +410,15 @@ pub struct ExitMessage {
 }
 unsafe impl Pod for ExitMessage {}
 
+/// Value at the beginning of an exit notification message to identify it.
+pub const EXIT_NOTIFICATION_TAG: u32 = 0xff;
+
 impl ExitMessage {
     /// Create a message for a thread exit.
     #[must_use]
     pub fn thread(tid: ThreadId, reason: ExitReason) -> Self {
         Self {
+            tag: EXIT_NOTIFICATION_TAG,
             source: ExitSource::Thread,
             id: tid.into(),
             reason,
@@ -422,12 +429,16 @@ impl ExitMessage {
     #[must_use]
     pub fn process(pid: ProcessId, reason: ExitReason) -> Self {
         Self {
+            tag: EXIT_NOTIFICATION_TAG,
             source: ExitSource::Process,
             id: pid.into(),
             reason,
         }
     }
 }
+
+/// The unique ID of a message queue.
+pub type QueueId = NonZeroU32;
 
 pub mod flags;
 

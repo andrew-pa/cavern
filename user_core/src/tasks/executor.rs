@@ -9,7 +9,8 @@ use core::{
 };
 use crossbeam::queue::ArrayQueue;
 use kernel_api::{
-    ErrorCode, ExitMessage, ExitReason, KERNEL_FAKE_ID, Message, ProcessId, ThreadId,
+    EXIT_NOTIFICATION_TAG, ErrorCode, ExitMessage, ExitReason, Message, ProcessId, QueueId,
+    ThreadId,
     flags::{FreeMessageFlags, ReceiveFlags},
     receive,
 };
@@ -52,6 +53,8 @@ impl Wake for TaskWaker {
 }
 
 pub struct Executor {
+    /// The ID for the system message queue that this executor is listening on.
+    pub msg_queue: QueueId,
     ready_queue: ReadyTaskQueue,
     new_task_queue: NewTaskQueue,
     next_task_id: Arc<AtomicU64>,
@@ -60,9 +63,10 @@ pub struct Executor {
     pub(super) watched_exits: Mutex<HashMap<WatchableId, PendingResponseState<ExitReason>>>,
 }
 
-impl Default for Executor {
-    fn default() -> Self {
+impl Executor {
+    pub fn new(msg_queue: QueueId) -> Self {
         Self {
+            msg_queue,
             ready_queue: Arc::new(ArrayQueue::new(128)),
             new_task_queue: Arc::new(ArrayQueue::new(32)),
             next_task_id: Arc::new(AtomicU64::new(1)),
@@ -70,9 +74,7 @@ impl Default for Executor {
             watched_exits: Mutex::default(),
         }
     }
-}
 
-impl Executor {
     pub fn spawn(&self, task: Box<dyn Future<Output = ()> + Send>) {
         let task_id = self
             .next_task_id
@@ -86,6 +88,7 @@ impl Executor {
 
     fn process_exit_notification(&self, msg: &Message) {
         let e = from_bytes::<ExitMessage>(msg.payload());
+        assert_eq!(e.tag, EXIT_NOTIFICATION_TAG);
         let wi = match e.source {
             kernel_api::ExitSource::Thread => WatchableId::Thread(ThreadId::new(e.id).unwrap()),
             kernel_api::ExitSource::Process => WatchableId::Process(ProcessId::new(e.id).unwrap()),
@@ -98,32 +101,50 @@ impl Executor {
         }
     }
 
-    fn process_incoming_message_for_task_loop(&self, msg: Message) {
-        if msg.header().sender_pid == KERNEL_FAKE_ID {
-            self.process_exit_notification(&msg);
-            return;
-        }
-
+    fn process_message(&self, service: &impl Service, msg: Message) {
         let hdr: &MessageHeader =
             bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
+
         match hdr.msg_type() {
-            MessageType::Request | MessageType::ProxiedRequest | MessageType::Notification => {
-                // we're not a receiver thread so drop the message
-                msg.free(FreeMessageFlags::FREE_BUFFERS);
+            Some(MessageType::Request | MessageType::Notification) => {
+                self.spawn(Box::new(service.handle_message(msg)));
             }
-            MessageType::Response => {
+            Some(MessageType::Response) => {
                 let mut pr = self.pending_responses.lock();
-                if let Some(p) = pr.get_mut(&hdr.correlation_id()) {
+                if let Some(p) = pr.get_mut(&hdr.correlation_id) {
                     p.become_ready(msg);
                 } else {
-                    pr.insert(hdr.correlation_id(), PendingResponseState::Ready(msg));
+                    pr.insert(hdr.correlation_id, PendingResponseState::Ready(msg));
                 }
+            }
+            None if hdr.mtype == EXIT_NOTIFICATION_TAG => {
+                self.process_exit_notification(&msg);
+            }
+            None => {
+                // ignore unknown messages
+                msg.free(FreeMessageFlags::FREE_BUFFERS);
             }
         }
     }
 
+    fn check_for_messages(&self, service: &impl Service, block: bool) {
+        let msg = receive(
+            if block {
+                ReceiveFlags::empty()
+            } else {
+                ReceiveFlags::NONBLOCKING
+            },
+            self.msg_queue,
+        );
+        match msg {
+            Ok(m) => self.process_message(service, m),
+            Err(ErrorCode::WouldBlock) if !block => {}
+            Err(e) => panic!("failed to receive message: {e}"),
+        }
+    }
+
     /// Run the task executor forever. This is intended to be the effective entry point for the executor thread.
-    pub fn task_poll_loop(&self) -> ! {
+    pub fn run(&self, service: &impl Service) -> ! {
         let mut tasks = HashMap::new();
         let mut waker_cache = HashMap::new();
 
@@ -137,14 +158,7 @@ impl Executor {
                     .expect("ready task queue overflow");
             }
 
-            // check to see if this thread received any messages
-            loop {
-                match receive(ReceiveFlags::NONBLOCKING) {
-                    Ok(msg) => self.process_incoming_message_for_task_loop(msg),
-                    Err(ErrorCode::WouldBlock) => break,
-                    Err(e) => panic!("failed to receive message: {e}"),
-                }
-            }
+            self.check_for_messages(service, self.ready_queue.is_empty());
 
             // find and poll all ready tasks
             while let Some(task_id) = self.ready_queue.pop() {
@@ -161,32 +175,6 @@ impl Executor {
                         waker_cache.remove(&task_id);
                     }
                     Poll::Pending => {}
-                }
-            }
-        }
-    }
-
-    /// Run a receive only message loop to wake tasks waiting for responses and handle incoming requests.
-    pub fn designated_receiver_message_loop(&self, service: &impl Service) -> ! {
-        loop {
-            let msg = receive(ReceiveFlags::empty()).unwrap();
-            if msg.header().sender_pid == KERNEL_FAKE_ID {
-                self.process_exit_notification(&msg);
-                continue;
-            }
-            let hdr: &MessageHeader =
-                bytemuck::from_bytes(&msg.payload()[0..core::mem::size_of::<MessageHeader>()]);
-            match hdr.msg_type() {
-                MessageType::Request | MessageType::ProxiedRequest | MessageType::Notification => {
-                    self.spawn(Box::new(service.handle_message(msg)));
-                }
-                MessageType::Response => {
-                    let mut pr = self.pending_responses.lock();
-                    if let Some(p) = pr.get_mut(&hdr.correlation_id()) {
-                        p.become_ready(msg);
-                    } else {
-                        pr.insert(hdr.correlation_id(), PendingResponseState::Ready(msg));
-                    }
                 }
             }
         }

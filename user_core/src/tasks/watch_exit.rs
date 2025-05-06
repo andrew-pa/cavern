@@ -7,7 +7,7 @@ use core::{
 
 use kernel_api::{
     ErrorCode, ExitReason, ProcessId, ThreadId, exit_notification_subscription,
-    flags::ExitNotificationSubscriptionFlags, read_env_value,
+    flags::ExitNotificationSubscriptionFlags,
 };
 
 use super::{EXECUTOR, PendingResponseState};
@@ -30,16 +30,16 @@ impl Future for WatchExitFuture {
     type Output = ExitReason;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut pr = EXECUTOR
+        let mut watched_exits = EXECUTOR
             .get()
             .expect("init task executor")
             .watched_exits
             .lock();
 
-        match pr.remove(&self.id) {
+        match watched_exits.remove(&self.id) {
             Some(PendingResponseState::Ready(m)) => Poll::Ready(m),
             None | Some(PendingResponseState::Waiting(_)) => {
-                pr.insert(self.id, PendingResponseState::Waiting(cx.waker().clone()));
+                watched_exits.insert(self.id, PendingResponseState::Waiting(cx.waker().clone()));
                 Poll::Pending
             }
         }
@@ -55,12 +55,10 @@ impl Future for WatchExitFuture {
 #[allow(clippy::missing_panics_doc)]
 #[allow(clippy::cast_possible_truncation)]
 pub fn watch_exit(object: WatchableId) -> Result<WatchExitFuture, ErrorCode> {
-    let current_thread_id =
-        ThreadId::new(read_env_value(kernel_api::EnvironmentValue::CurrentThreadId) as _).unwrap();
     let (flags, id) = match object {
         WatchableId::Process(id) => (ExitNotificationSubscriptionFlags::PROCESS, id.get()),
         WatchableId::Thread(id) => (ExitNotificationSubscriptionFlags::THREAD, id.get()),
     };
-    exit_notification_subscription(flags, id, Some(current_thread_id))?;
+    exit_notification_subscription(flags, id, EXECUTOR.get().unwrap().msg_queue)?;
     Ok(WatchExitFuture { id: object })
 }

@@ -4,7 +4,7 @@
 
 use super::{Error as RpcError, registry::Path};
 use alloc::vec::Vec;
-use kernel_api::{ProcessId, ThreadId};
+use kernel_api::{ProcessId, QueueId, ThreadId};
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
@@ -76,15 +76,14 @@ pub struct SupervisorConfig<'a> {
 
 /// A client for interacting with a registry service via RPC.
 pub struct SupervisorClient {
-    pid: ProcessId,
-    tid: Option<ThreadId>,
+    qid: QueueId,
 }
 
 impl SupervisorClient {
     /// Create a new client, connecting to the server at `pid`/`tid`.
     #[must_use]
-    pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> Self {
-        Self { pid, tid }
+    pub fn new(qid: QueueId) -> Self {
+        Self { qid }
     }
 
     /// Configure the supervisor directly with a configuration.

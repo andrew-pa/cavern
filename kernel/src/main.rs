@@ -129,6 +129,8 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         initrd_slice,
         config.init_exec_name,
         process::PROCESS_MANAGER.get().unwrap(),
+        process::thread::THREAD_MANAGER.get().unwrap(),
+        process::queue::QUEUE_MANAGER.get().unwrap(),
         memory::page_allocator().page_size(),
         (
             device_tree_blob.cast(),
@@ -201,6 +203,8 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     if let Some(ic) = exceptions::INTERRUPT_CONTROLLER.get() {
         ic.broadcast_sgi(0);
     }
+
+    log::logger().flush();
 
     qemu_exit::AArch64::new().exit_failure()
 }

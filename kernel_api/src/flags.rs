@@ -15,7 +15,7 @@ bitflags! {
 bitflags! {
     /// Flags that define the properties of a shared buffer.
     #[derive(Debug, Clone, Copy)]
-    pub struct SharedBufferFlags: usize {
+    pub struct SharedBufferFlags: u32 {
         /// Allows the borrower to read from the buffer.
         const READ = 0b01;
         /// Allows the borrower to write to the buffer.

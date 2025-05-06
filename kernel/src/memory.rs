@@ -12,7 +12,7 @@ use kernel_core::{
     memory::{
         active_user_space_tables::ActiveUserSpaceTables,
         page_table::{MapBlockSize, MemoryKind, MemoryProperties},
-        AddressSpaceId, BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables,
+        talc_heap, AddressSpaceId, BuddyPageAllocator, PageAllocator, PageSize, PageTables,
         PhysicalAddress, PhysicalPointer, VirtualAddress,
     },
     platform::device_tree::DeviceTree,
@@ -31,9 +31,10 @@ pub type PlatformPageAllocator = BuddyPageAllocator;
 /// The global physical page allocator.
 static PAGE_ALLOCATOR: Once<PlatformPageAllocator> = Once::new();
 
-#[global_allocator]
 /// The Rust global heap allocator.
-static ALLOCATOR: HeapAllocator<'static, PlatformPageAllocator> = HeapAllocator::new_uninit();
+#[global_allocator]
+static ALLOCATOR: talc_heap::GlobalAllocator<PlatformPageAllocator> =
+    talc_heap::init_allocator(&PAGE_ALLOCATOR);
 
 /// The kernel's own page tables.
 ///
@@ -256,9 +257,6 @@ pub fn init(dt: &DeviceTree<'_>, initrd_slice: &(PhysicalPointer<u8>, usize)) {
             assert!(pa.add_memory_region(region_start, region_length));
         }
     }
-
-    // initialize kernel heap
-    ALLOCATOR.init(pa);
 
     info!("Memory initialized!");
 }

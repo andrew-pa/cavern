@@ -859,6 +859,7 @@ dependencies = [
  "serde",
  "snafu",
  "spin 0.10.0",
+ "talc",
  "tar-no-std",
  "test-case",
 ]
