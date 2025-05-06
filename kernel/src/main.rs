@@ -204,5 +204,7 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         ic.broadcast_sgi(0);
     }
 
+    log::logger().flush();
+
     qemu_exit::AArch64::new().exit_failure()
 }

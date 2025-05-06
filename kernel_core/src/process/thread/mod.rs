@@ -1,4 +1,4 @@
-//! Threads
+//! Thread data structures and policies.
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{sync::Arc, vec::Vec};
@@ -7,7 +7,7 @@ use arc_swap::ArcSwapOption;
 use bytemuck::Contiguous;
 use crossbeam::queue::SegQueue;
 use kernel_api::{ErrorCode, ExitReason, MessageHeader, ProcessId, SharedBufferInfo};
-use log::{error, trace};
+use log::{debug, error, trace};
 use spin::Mutex;
 
 use crate::memory::{VirtualAddress, VirtualPointerMut};
@@ -214,7 +214,7 @@ pub struct Thread {
 
     /// If the thread is [`State::WaitingForMessage`], then this contains the queue that the thread
     /// is waiting to receive a message on.
-    pub pending_message_receive_queue: ArcSwapOption<MessageQueue>,
+    pub pending_message_receive_queue: Mutex<Option<Arc<MessageQueue>>>,
 }
 
 impl Thread {
@@ -235,7 +235,7 @@ impl Thread {
             stack,
             exit_subscribers: Mutex::default(),
             pending_message_receive: Mutex::default(),
-            pending_message_receive_queue: ArcSwapOption::default(),
+            pending_message_receive_queue: Mutex::default(),
         }
     }
 
@@ -277,65 +277,83 @@ impl Thread {
             .pending_message_receive
             .lock()
             .replace((delivery_addr, delivery_len));
-        self.pending_message_receive_queue.store(Some(queue));
+        *self.pending_message_receive_queue.lock() = Some(queue);
         assert!(was_pending.is_none(), "thread cannot wait for more than one message at a time, was waiting to deliver to {was_pending:?}");
+    }
+
+    /// Attempt to receive a message if we are waiting for one.
+    /// If the queue was freed while we waited, `Err` is returned.
+    fn try_receive_pending(&self) -> Result<Option<PendingMessage>, ()> {
+        debug_assert_eq!(self.state(), State::WaitingForMessage);
+
+        let mut qu_guard = self.pending_message_receive_queue.lock();
+
+        let Some(qu) = qu_guard.clone() else {
+            return Ok(None);
+        };
+
+        if qu.dead.load(Ordering::Acquire) {
+            *qu_guard = None;
+            return Err(());
+        }
+
+        if let Some(msg) = qu.receive() {
+            *qu_guard = None;
+            Ok(Some(msg))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Given that the thread is in the [`State::WaitingForMessage`] state, check to see if a
     /// message has arrived. If it has, the message is delivered, the thread transitions to the
     /// [`State::Running`] state, and true is returned. Otherwise the thread continues to wait and
-    /// false is returned.
+    /// false is returned. If an error occurs that needs to be communicated to user space, this
+    /// function returns true and sets up the thread to receive the error.
     pub fn check_resume(&self) -> bool {
-        debug_assert_eq!(self.state(), State::WaitingForMessage);
+        match self.try_receive_pending() {
+            Ok(None) => false,
+            Ok(Some(msg)) => {
+                trace!("resuming thread #{} with message {msg:?}", self.id);
+                let proc = self.parent.as_ref().unwrap();
+                let pt = proc.page_tables.read();
 
-        let qu = self.pending_message_receive_queue.load();
-
-        if qu.as_ref().is_some_and(|q| q.dead.load(Ordering::Acquire)) {
-            // the queue was freed while we waited, return an error.
-            self.pending_message_receive_queue.store(None);
-            self.pending_message_receive.lock().take();
-            self.processor_state.lock().registers.x[0] = ErrorCode::QueueFreed.into_integer();
-            self.set_state(State::Running);
-            return true;
+                let (user_delivery_address, user_delivery_length) =
+                    self.pending_message_receive.lock().take().unwrap();
+                let return_value = &mut self.processor_state.lock().registers.x[0];
+                *return_value = if let Some(delivery_addr) =
+                    pt.physical_address_of(user_delivery_address.cast())
+                {
+                    if let Some(delivery_len) = pt.physical_address_of(user_delivery_length.cast())
+                    {
+                        // actually deliver the message by writing the output addresses provided by user space
+                        let delivery_addr: *mut VirtualAddress = delivery_addr.cast().into();
+                        let delivery_len: *mut usize = delivery_len.cast().into();
+                        unsafe {
+                            delivery_addr.write(msg.data_address);
+                            delivery_len.write(msg.data_length);
+                        }
+                        // return zero for success
+                        0
+                    } else {
+                        error!("process #{}, user space message length pointer was unmapped: {user_delivery_length:?}", proc.id);
+                        ErrorCode::InvalidPointer.into_integer()
+                    }
+                } else {
+                    error!("process #{}, user space message address pointer was unmapped: {user_delivery_address:?}", proc.id);
+                    ErrorCode::InvalidPointer.into_integer()
+                };
+                self.set_state(State::Running);
+                true
+            }
+            Err(()) => {
+                // the queue was freed while we waited, return an error.
+                self.pending_message_receive.lock().take();
+                self.processor_state.lock().registers.x[0] = ErrorCode::QueueFreed.into_integer();
+                self.set_state(State::Running);
+                true
+            }
         }
-
-        let Some(msg) = qu.as_ref().and_then(|qu| {
-            qu.receive().inspect(|_| {
-                self.pending_message_receive_queue.store(None);
-            })
-        }) else {
-            return false;
-        };
-
-        trace!("resuming thread #{} with message {msg:?}", self.id);
-        let proc = self.parent.as_ref().unwrap();
-        let pt = proc.page_tables.read();
-
-        // deliver message to user space
-        let (user_delivery_address, user_delivery_length) =
-            self.pending_message_receive.lock().take().unwrap();
-        let Some(delivery_addr) = pt.physical_address_of(user_delivery_address.cast()) else {
-            error!("process #{}, user space message address pointer was unmapped: {user_delivery_address:?}", proc.id);
-            self.processor_state.lock().registers.x[0] = ErrorCode::InvalidPointer.into_integer();
-            self.set_state(State::Running);
-            return true;
-        };
-        let Some(delivery_len) = pt.physical_address_of(user_delivery_length.cast()) else {
-            error!("process #{}, user space message length pointer was unmapped: {user_delivery_length:?}", proc.id);
-            self.processor_state.lock().registers.x[0] = ErrorCode::InvalidPointer.into_integer();
-            self.set_state(State::Running);
-            return true;
-        };
-        let delivery_addr: *mut VirtualAddress = delivery_addr.cast().into();
-        let delivery_len: *mut usize = delivery_len.cast().into();
-        unsafe {
-            delivery_addr.write(msg.data_address);
-            delivery_len.write(msg.data_length);
-        }
-        // set up return value
-        self.processor_state.lock().registers.x[0] = 0;
-        self.set_state(State::Running);
-        true
     }
 }
 

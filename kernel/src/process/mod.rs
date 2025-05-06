@@ -80,6 +80,16 @@ impl ProcessManager for SystemProcessManager {
             }
         }
 
+        if process.props.supervisor.is_none() {
+            // the root process has exited
+            qemu_exit::AArch64::new().exit(match reason.tag {
+                kernel_api::ExitReasonTag::User => reason.user_code,
+                kernel_api::ExitReasonTag::PageFault => 1,
+                kernel_api::ExitReasonTag::InvalidSysCall => 2,
+                kernel_api::ExitReasonTag::Killed => 3,
+            });
+        }
+
         // the process will free all owned memory (including thread stacks) when dropped
     }
 
