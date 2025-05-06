@@ -45,6 +45,11 @@ impl HandleAllocator {
         Self { bits, max_handle }
     }
 
+    /// Returns the largest possible handle that this allocator could return.
+    pub fn max_handle_value(&self) -> NonZeroU32 {
+        self.max_handle
+    }
+
     /// Allocates the next available handle.
     ///
     /// Scans the bit set to find the first zero bit, atomically sets it to one,
