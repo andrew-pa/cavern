@@ -670,14 +670,16 @@ pub fn kill_thread_entirely(
     reason: ExitReason,
 ) {
     // that was the last thread, so we need to kill the entire process
-    let parent = thread.parent.clone().unwrap();
+    let parent = thread.parent.clone();
     if tm.exit_thread(thread, reason) {
-        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
-        let queues = parent.owned_queues.lock().clone();
-        for qu in queues {
-            qm.free_queue(&qu);
+        if let Some(parent) = parent {
+            // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+            let queues = parent.owned_queues.lock().clone();
+            for qu in queues {
+                qm.free_queue(&qu);
+            }
+            pm.kill_process(&parent, reason);
         }
-        pm.kill_process(&parent, reason);
     }
 }
 
