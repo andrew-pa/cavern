@@ -7,7 +7,7 @@ use log::{debug, info};
 use spin::once::Once;
 
 use crate::{
-    process::thread::{PlatformScheduler, SCHEDULER},
+    process::thread::{PlatformScheduler, THREAD_MANAGER},
     timer::Timer,
 };
 
@@ -57,15 +57,8 @@ pub fn init(device_tree: &DeviceTree<'_>) {
             .expect("configure system timer")
     });
 
-    HANDLER_POLICY.call_once(|| {
-        Handler::new(
-            controller,
-            timer,
-            SCHEDULER
-                .get()
-                .expect("threads initialized before interrupts"),
-        )
-    });
+    HANDLER_POLICY
+        .call_once(|| Handler::new(controller, timer, &THREAD_MANAGER.get().unwrap().scheduler));
 
     init_for_core();
 

@@ -21,7 +21,7 @@ use config::Config;
 use device_tree::DeviceTree;
 use futures::future::Either;
 use kernel_api::{
-    ErrorCode, KERNEL_FAKE_ID, exit_current_thread, flags::ReceiveFlags, receive, write_log,
+    ErrorCode, QueueId, exit_current_thread, flags::ReceiveFlags, receive, write_log,
 };
 use setup::Setup;
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -111,12 +111,12 @@ pub enum Error {
     },
 }
 
-fn receive_init_message()
--> Result<(&'static mut TarArchiveRef<'static>, DeviceTree<'static>), Error> {
-    let init_msg = receive(ReceiveFlags::empty()).context(SysCallSnafu {
+fn receive_init_message(
+    main_queue: QueueId,
+) -> Result<(&'static mut TarArchiveRef<'static>, DeviceTree<'static>), Error> {
+    let init_msg = receive(ReceiveFlags::empty(), main_queue).context(SysCallSnafu {
         cause: "receive init msg",
     })?;
-    assert_eq!(init_msg.header().sender_pid, KERNEL_FAKE_ID);
     let init: &InitMessage = bytemuck::from_bytes(init_msg.payload());
     assert!(init.initramfs_address > 0);
     assert!(init.initramfs_length > 0);
@@ -152,49 +152,51 @@ fn load_config<'a>(initramfs: &'a TarArchiveRef<'_>) -> Result<Config<'a>, Error
         .map(|(c, _)| c)
 }
 
-fn main() -> Result<(), Error> {
+fn main(main_queue: QueueId) -> Result<(), Error> {
     write_log(3, "egg boot start").context(SysCallSnafu { cause: "write log" })?;
 
     // Receive init message from kernel
-    let (initramfs, device_tree_blob) = receive_init_message()?;
+    let (initramfs, device_tree_blob) = receive_init_message(main_queue)?;
 
     // Read configuration from initramfs
     let config = load_config(initramfs)?;
 
     // Spawn the root resource registry directly from the initramfs
-    let registry_pid = spawn_root_process(initramfs, config.binaries.resource_registry).context(
-        SpawnRootProcessSnafu {
-            name: "root resource registry",
-        },
-    )?;
+    let (registry_process_id, registry_queue_id) =
+        spawn_root_process(initramfs, config.binaries.resource_registry).context(
+            SpawnRootProcessSnafu {
+                name: "root resource registry",
+            },
+        )?;
 
     // Spawn the root supervisor directly from the initramfs
-    let supervisor_pid = spawn_root_process(initramfs, config.binaries.supervisor).context(
-        SpawnRootProcessSnafu {
-            name: "root supervisor",
-        },
-    )?;
+    let (supervisor_process_id, supervisor_queue_id) =
+        spawn_root_process(initramfs, config.binaries.supervisor).context(
+            SpawnRootProcessSnafu {
+                name: "root supervisor",
+            },
+        )?;
 
     // Create the Initramfs service object
     let initramfs_service = initramfs::InitramfsService::new(initramfs.clone());
 
     let s = Setup {
-        registry: RegistryClient::new(registry_pid, None),
-        supervisor: SupervisorClient::new(supervisor_pid, None),
+        registry: RegistryClient::new(registry_queue_id),
+        supervisor: SupervisorClient::new(supervisor_queue_id),
         config,
         device_tree_blob,
     };
 
     // start the async executor, finish setting things up, and then monitor the root registry and supervisor
-    user_core::tasks::run(&initramfs_service, async move {
-        match s.setup().await {
+    user_core::tasks::run(main_queue, &initramfs_service, async move {
+        match s.setup(main_queue).await {
             Ok(()) => {
                 write_log(3, "system setup complete!").unwrap();
 
                 // Watch root registry, supervisor and cascade the exit if they exit
-                let watch_registry =
-                    watch_exit(WatchableId::Process(registry_pid)).expect("watch root registry");
-                let watch_supervisor = watch_exit(WatchableId::Process(supervisor_pid))
+                let watch_registry = watch_exit(WatchableId::Process(registry_process_id))
+                    .expect("watch root registry");
+                let watch_supervisor = watch_exit(WatchableId::Process(supervisor_process_id))
                     .expect("watch root supervisor");
 
                 match futures::future::select(watch_registry, watch_supervisor).await {
@@ -218,8 +220,8 @@ fn main() -> Result<(), Error> {
 /// # Panics
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() {
-    match main() {
+pub extern "C" fn _start(main_queue_id_raw: usize) {
+    match main(QueueId::new(main_queue_id_raw as u32).unwrap()) {
         Ok(()) => exit_current_thread(0),
         Err(e) => {
             let s = alloc::format!("{}", snafu::Report::from_error(&e));

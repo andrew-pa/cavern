@@ -7,12 +7,16 @@ use kernel_api::{
     PrivilegeLevel, ProcessCreateInfo, SharedBufferInfo, MESSAGE_BLOCK_SIZE,
 };
 use log::trace;
+use queue::{PendingMessage, QueueManager};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use spin::{Mutex, RwLock};
-pub use thread::{Id as ThreadId, Thread};
 
 pub mod system_calls;
 pub mod thread;
+use thread::ThreadManager;
+pub use thread::{Id as ThreadId, Thread};
+pub mod queue;
+pub use queue::{Id as QueueId, MessageQueue};
 
 use crate::{
     collections::HandleMap,
@@ -34,21 +38,6 @@ pub type SharedBufferId = crate::collections::Handle;
 
 /// The largest possible shared buffer ID in the system.
 pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
-
-/// A message that is waiting in a thread's inbox queue to be received.
-#[derive(Debug)]
-pub struct PendingMessage {
-    /// The address of the message in the process' virtual address space.
-    data_address: VirtualAddress,
-    /// The length of the message in bytes.
-    data_length: usize,
-    /// The process id of the sender.
-    sender_process_id: Id,
-    /// The thread id of the sender.
-    sender_thread_id: ThreadId,
-    /// The attached buffers to this message.
-    buffer_handles: Vec<SharedBufferId>,
-}
 
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
 #[must_use]
@@ -224,11 +213,14 @@ pub struct Process {
     /// Allocator for message blocks in this process' inbox.
     pub inbox_allocator: Mutex<FreeListAllocator>,
 
+    /// Message queues that are owned by this process.
+    pub owned_queues: Mutex<Vec<Arc<MessageQueue>>>,
+
     /// Buffers that have been shared with this process from other processes.
     pub shared_buffers: HandleMap<SharedBuffer>,
 
     /// Threads/processes that will be notified when this process exits.
-    pub exit_subscribers: Mutex<Vec<(Id, Option<ThreadId>)>>,
+    pub exit_subscribers: Mutex<Vec<Arc<MessageQueue>>>,
 }
 
 impl Process {
@@ -245,7 +237,7 @@ impl Process {
         props: Properties,
         image: &[ImageSection],
         inbox_size: usize,
-    ) -> Result<Self, ProcessManagerError> {
+    ) -> Result<Self, ManagerError> {
         // TODO: this function is huge, it should be decomposed
         trace!("creating new process object #{id}");
 
@@ -343,6 +335,7 @@ impl Process {
                 inbox_size_in_pages,
                 MESSAGE_BLOCK_SIZE,
             )),
+            owned_queues: Mutex::default(),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
             exit_subscribers: Mutex::default(),
         })
@@ -379,7 +372,7 @@ impl Process {
         base_addr: PhysicalAddress,
         size_in_pages: usize,
         props: &MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         let virt_addr = self
             .address_space_allocator
             .lock()
@@ -414,7 +407,7 @@ impl Process {
         page_allocator: &impl PageAllocator,
         size_in_pages: usize,
         mut properties: MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         let phys_addr = page_allocator
             .allocate(size_in_pages)
             .context(MemorySnafu {
@@ -441,7 +434,7 @@ impl Process {
         base_addr: PhysicalAddress,
         size_in_pages: usize,
         props: &MemoryProperties,
-    ) -> Result<VirtualAddress, ProcessManagerError> {
+    ) -> Result<VirtualAddress, ManagerError> {
         assert!(!props.owned);
         self.map_arbitrary(base_addr, size_in_pages, props)
     }
@@ -461,7 +454,7 @@ impl Process {
         page_allocator: &impl PageAllocator,
         base_address: VirtualAddress,
         size_in_pages: usize,
-    ) -> Result<(), ProcessManagerError> {
+    ) -> Result<(), ManagerError> {
         let paddr = self
             .page_tables
             .read()
@@ -489,45 +482,25 @@ impl Process {
         Ok(())
     }
 
-    /// Send a message to this process, and optionally to a specific thread within this process.
-    /// If no thread is specified, the designated receiver thread will receive the message.
-    /// This method **assumes** that the sender ids are valid!
+    /// Insert a message into this process' inbox, returning the [`PendingMessage`] that can be
+    /// enqueued.
+    ///
+    /// The message will never be received unless the [`PendingMessage`] is added to some
+    /// [`MessageQueue`]. See [`MessageQueue::send_message`].
     ///
     /// # Errors
     /// Returns an error if the message could not be delivered, or something goes wrong with memory
     /// or page tables.
-    pub fn send_message(
+    pub fn deliver_message(
         &self,
-        sender: (Id, ThreadId),
-        receiver_thread: Option<Arc<Thread>>,
         message: &[u8],
         buffers: impl ExactSizeIterator<Item = Arc<SharedBuffer>>,
-    ) -> Result<(), ProcessManagerError> {
-        // TODO: check message length against max?
-        let thread = if let Some(th) = receiver_thread {
-            ensure!(
-                th.parent.as_ref().is_some_and(|p| p.id == self.id),
-                MissingSnafu {
-                    cause: "provided thread not in process"
-                }
-            );
-            th
-        } else {
-            let ths = self.threads.read();
-            ths.first()
-                .context(MissingSnafu {
-                    cause: "process has no threads",
-                })?
-                .clone()
-        };
+    ) -> Result<PendingMessage, ManagerError> {
         let payload_start =
             size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
         let actual_message_size_in_bytes = message.len() + payload_start;
-        trace!(
-            "sending message of size {actual_message_size_in_bytes} to thread #{}",
-            thread.id
-        );
-        trace!("{message:?}");
+
+        // allocate new memory for the message in the inbox
         let ptr = {
             match self
                 .inbox_allocator
@@ -536,43 +509,60 @@ impl Process {
             {
                 Ok(r) => r.start,
                 Err(crate::memory::Error::OutOfMemory) => {
-                    return Err(ProcessManagerError::InboxFull)
+                    return Err(ManagerError::InboxFull)
                 }
-                Err(e) => return Err(ProcessManagerError::Memory { cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"), source: e }),
+                Err(e) => {
+                    return Err(ManagerError::Memory {
+                        cause: alloc::format!("allocate message memory in inbox, message size {actual_message_size_in_bytes}"),
+                        source: e
+                    })
+                },
             }
         };
+
+        // encode and write the message header to the inbox
+        let mut header_enc: Vec<usize> = Vec::with_capacity(payload_start / size_of::<usize>());
+
+        // start with the number of shared buffers
+        header_enc.push(buffers.len());
+
+        // create `SharedBufferInfo` in the header for each shared buffer
+        for b in buffers {
+            let flags = b.flags;
+            let len = b.length;
+            let handle = self
+                .shared_buffers
+                .insert(b)
+                .context(OutOfHandlesSnafu)?
+                .get() as usize;
+            // encode a `SharedBufferInfo`
+            // TODO: this is messy/brittle
+            header_enc.push(handle << 32 | flags.bits() as usize);
+            header_enc.push(len);
+        }
+
         unsafe {
             // SAFETY: Since we just allocated this memory using the inbox_allocator we know it is safe to copy to.
-            self.page_tables
-                .read()
-                .copy_to_while_unmapped(ptr.byte_add(payload_start), message)
+            let pt = self.page_tables.read();
+            // copy the header into the inbox
+            pt.copy_to_while_unmapped(ptr, bytemuck::cast_slice(header_enc.as_slice()))
+                .context(PageTablesSnafu)?;
+            // copy the message into the inbox
+            pt.copy_to_while_unmapped(ptr.byte_add(payload_start), message)
                 .context(PageTablesSnafu)?;
         }
 
-        let buffer_handles = buffers
-            .map(|b| self.shared_buffers.insert(b).context(OutOfHandlesSnafu))
-            .collect::<Result<_, _>>()?;
-
-        let msg = PendingMessage {
+        Ok(PendingMessage {
             data_address: ptr,
             data_length: actual_message_size_in_bytes,
-            sender_process_id: sender.0,
-            sender_thread_id: sender.1,
-            buffer_handles,
-        };
-
-        trace!("enqueuing {msg:?}");
-
-        thread.inbox_queue.push(msg);
-
-        Ok(())
+        })
     }
 
     /// Frees a message from the inbox.
     ///
     /// # Errors
     /// Returns an error if the memory could not be freed.
-    pub fn free_message(&self, ptr: VirtualAddress, len: usize) -> Result<(), ProcessManagerError> {
+    pub fn free_message(&self, ptr: VirtualAddress, len: usize) -> Result<(), ManagerError> {
         self.inbox_allocator
             .lock()
             .free(ptr, len.div_ceil(MESSAGE_BLOCK_SIZE))
@@ -589,7 +579,7 @@ impl Process {
     pub fn free_shared_buffers(
         &self,
         buffers: impl Iterator<Item = SharedBufferId>,
-    ) -> Result<(), ProcessManagerError> {
+    ) -> Result<(), ManagerError> {
         let mut not_found = false;
 
         for buffer in buffers {
@@ -613,10 +603,10 @@ impl core::fmt::Debug for Process {
     }
 }
 
-/// Errors arising from [`ProcessManager`] operations.
+/// Errors arising from [`ProcessManager`], [`ThreadManager`] or [`QueueManager`] operations.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
-pub enum ProcessManagerError {
+pub enum ManagerError {
     /// An error occurred during a memory operation.
     #[snafu(display("Memory error: {cause}"))]
     Memory {
@@ -646,10 +636,10 @@ pub enum ProcessManagerError {
     },
 }
 
-/// An interface for managing processes and threads.
+/// An interface for managing processes.
 #[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
-    /// Spawn a new process.
+    /// Spawn a new process. This does *not* create a main thread!
     ///
     /// # Errors
     /// Returns an error if the process could not be spawned due to resource requirements or
@@ -658,43 +648,39 @@ pub trait ProcessManager {
         &self,
         parent: Option<Arc<Process>>,
         info: &ProcessCreateInfo,
-    ) -> Result<Arc<Process>, ProcessManagerError>;
-
-    /// Spawn a new thread with the given parent process.
-    /// The `stack_size` is in pages.
-    ///
-    /// # Errors
-    /// Returns an error if the thread could not be spawned due to resource requirements or
-    /// invalid inputs.
-    fn spawn_thread(
-        &self,
-        parent_process: Arc<Process>,
-        entry_point: VirtualAddress,
-        stack_size: usize,
-        user_data: usize,
-    ) -> Result<Arc<Thread>, ProcessManagerError>;
+    ) -> Result<Arc<Process>, ManagerError>;
 
     /// Kill a process.
+    /// The process must not have any threads or owned queues, ie the caller must exit them first.
     ///
-    /// # Errors
-    /// TODO
-    fn kill_process(&self, process: &Arc<Process>) -> Result<(), ProcessManagerError>;
-
-    /// Cause a thread to exit, with a given `reason`.
-    ///
-    /// # Errors
-    /// Returns an error if the thread could not be cleaned up (which should be rare).
-    fn exit_thread(
-        &self,
-        thread: &Arc<Thread>,
-        reason: ExitReason,
-    ) -> Result<(), ProcessManagerError>;
-
-    /// Get the thread associated with a thread ID.
-    fn thread_for_id(&self, thread_id: ThreadId) -> Option<Arc<Thread>>;
+    /// Killing a process must be infailable.
+    fn kill_process(&self, process: &Arc<Process>, reason: ExitReason);
 
     /// Get the process associated with a process ID.
     fn process_for_id(&self, process_id: Id) -> Option<Arc<Process>>;
+}
+
+/// Helper to entirely kill a thread, making sure to clean up the rest of the process if it was the last
+/// one, cascading the exit.
+pub fn kill_thread_entirely(
+    pm: &impl ProcessManager,
+    tm: &impl ThreadManager,
+    qm: &impl QueueManager,
+    thread: &Arc<Thread>,
+    reason: ExitReason,
+) {
+    // that was the last thread, so we need to kill the entire process
+    let parent = thread.parent.clone();
+    if tm.exit_thread(thread, reason) {
+        if let Some(parent) = parent {
+            // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+            let queues = parent.owned_queues.lock().clone();
+            for qu in queues {
+                qm.free_queue(&qu);
+            }
+            pm.kill_process(&parent, reason);
+        }
+    }
 }
 
 /// Unit tests
@@ -709,11 +695,14 @@ pub mod tests {
 
     use test_case::test_case;
 
-    use crate::memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress};
+    use crate::{
+        memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress},
+        process::{MessageQueue, QueueId},
+    };
 
     use super::{
         thread::{ProcessorState, State},
-        Process, ProcessManagerError, Properties, Thread, ThreadId,
+        ManagerError, Process, Properties, Thread, ThreadId,
     };
 
     /// "Global" page allocator.
@@ -725,7 +714,7 @@ pub mod tests {
         pid: ProcessId,
         props: Properties,
         tid: ThreadId,
-    ) -> Result<Arc<Process>, ProcessManagerError> {
+    ) -> Result<Arc<Process>, ManagerError> {
         let proc = Arc::new(Process::new(&*PAGE_ALLOCATOR, pid, props, &[], 8)?);
         let thread = Arc::new(Thread::new(
             tid,
@@ -764,21 +753,15 @@ pub mod tests {
             ThreadId::new(1).unwrap(),
         )
         .expect("create process");
-        let thread = proc.threads.read().first().cloned().unwrap();
 
-        let sender_pid = ProcessId::new(333).unwrap();
-        let sender_tid = ProcessId::new(999).unwrap();
+        let qu = MessageQueue::new(QueueId::new(1).unwrap(), &proc);
 
         let message = b"Hello, world!!";
 
-        proc.send_message((sender_pid, sender_tid), None, message, core::iter::empty())
-            .expect("send message");
+        qu.send(message, core::iter::empty()).expect("send message");
 
-        let msg = thread.inbox_queue.pop().unwrap();
-        assert_eq!(msg.data_length, 14 + size_of::<MessageHeader>());
-        assert_eq!(msg.sender_process_id, sender_pid);
-        assert_eq!(msg.sender_thread_id, sender_tid);
-        assert!(msg.buffer_handles.is_empty());
+        let msg = qu.receive().unwrap();
+        assert_eq!(msg.data_length, message.len() + size_of::<MessageHeader>());
 
         let mut message_data_check = [0u8; 14];
         unsafe {

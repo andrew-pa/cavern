@@ -27,6 +27,8 @@ pub use buddy::BuddyPageAllocator;
 mod heap;
 pub use heap::HeapAllocator;
 
+pub mod talc_heap;
+
 mod subtract_ranges;
 pub use subtract_ranges::*;
 

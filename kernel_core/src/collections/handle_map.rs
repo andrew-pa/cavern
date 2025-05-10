@@ -1,7 +1,8 @@
-//
+//! A map from handles to objects in the kernel (stored as [`Arc`]s).
 
 use core::{
     marker::PhantomData,
+    mem::drop,
     num::NonZeroU32,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
@@ -31,12 +32,21 @@ impl<T> Table<T> {
     /// # Safety
     /// Assumes that if there is a non-zero value at `index` then it is a value.
     unsafe fn get_value(&self, index: usize) -> Option<Arc<T>> {
-        let v = self.0[index].load(Ordering::Acquire);
-        if v == 0 {
-            None
-        } else {
-            Arc::increment_strong_count(v as *mut T);
-            Some(Arc::from_raw(v as _))
+        loop {
+            let v = self.0[index].load(Ordering::Acquire);
+            if v == 0 {
+                return None;
+            }
+            // bump the count
+            Arc::increment_strong_count(v as *const T);
+            // did someone race us out?
+            if self.0[index].load(Ordering::Acquire) == v {
+                // safe to build our clone
+                return Some(Arc::from_raw(v as *const T));
+            }
+            // somebody removed or replaced it—undo our bump
+            Arc::decrement_strong_count(v as *const T);
+            // and retry from scratch
         }
     }
 
@@ -109,18 +119,16 @@ impl<T> Table<T> {
         // because we have an exclusive reference to the table, we know there are no other threads accessing the table.
         // Therefore, we can safely use `Relaxed` operations.
         for entry in &self.0 {
-            let v = entry.swap(0, Ordering::Relaxed);
-            // #[cfg(test)]
-            // std::println!("drop: {v:x}, {depth}");
-            match (v, depth) {
+            let entry_value = entry.swap(0, Ordering::Relaxed);
+            match (entry_value, depth) {
                 (_, 0) => unreachable!(),
                 (0, _) => {}
                 (_, 1) => {
-                    let val: Arc<T> = unsafe { Arc::from_raw(v as _) };
+                    let val: Arc<T> = unsafe { Arc::from_raw(entry_value as _) };
                     drop(val);
                 }
                 (_, _) => {
-                    let mut tbl: Box<Table<T>> = unsafe { Box::from_raw(v as _) };
+                    let mut tbl: Box<Table<T>> = unsafe { Box::from_raw(entry_value as _) };
                     tbl.drop_children(depth - 1);
                     drop(tbl);
                 }
@@ -230,9 +238,14 @@ impl<T> HandleMap<T> {
     /// Returns a reference to the value associated with `handle`.
     /// If the handle is unknown, then `None` is returned.
     pub fn remove(&self, handle: Handle) -> Option<Arc<T>> {
+        if handle > self.allocator.max_handle_value() {
+            return None;
+        }
         let (table, leaf_index) = self.leaf_table_for_handle(handle)?;
         let val = unsafe { table.take_value(leaf_index) };
-        self.allocator.free_handle(handle).ok()?;
+        self.allocator
+            .free_handle(handle)
+            .expect("can free handle if it was in table");
         val
     }
 }
@@ -283,7 +296,7 @@ mod tests {
             handles.push(handle);
             values.insert((handle, value));
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         handles.shuffle(&mut rng);
         for handle in handles {
             let value = map.get(handle).expect("handle in map");
@@ -305,7 +318,7 @@ mod tests {
             handles.push(handle);
             values.insert((handle, value));
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         handles.shuffle(&mut rng);
         for handle in handles {
             let value = map.remove(handle).expect("handle in map");
@@ -521,5 +534,121 @@ mod tests {
             let handle = handle_map.insert(value.clone()).expect("Insert failed");
             assert!(handles.insert(handle), "Handle was not unique");
         }
+    }
+
+    #[test]
+    fn test_concurrent_get_and_remove() {
+        use std::sync::Barrier;
+        const N: u32 = 1_000;
+        let map = Arc::new(HandleMap::new(NonZeroU32::new(N).unwrap()));
+        let h = map.insert(Arc::new(123u32)).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let m1 = Arc::clone(&map);
+        let b1 = Arc::clone(&barrier);
+        let t1 = std::thread::spawn(move || {
+            b1.wait();
+            // keep calling get in a loop
+            for _ in 0..10_000 {
+                let _ = m1.get(h);
+            }
+        });
+
+        let m2 = Arc::clone(&map);
+        let b2 = barrier;
+        let t2 = std::thread::spawn(move || {
+            b2.wait();
+            // remove it once, then exit
+            let _ = m2.remove(h);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+        // finally, get must now be None
+        assert!(map.get(h).is_none());
+    }
+
+    #[test_case(5)]
+    #[test_case(50)]
+    #[test_case(256)]
+    fn test_preallocate_and_reuse_handle(max: u32) {
+        let map = HandleMap::<u8>::new(NonZeroU32::new(max).unwrap());
+
+        // exhaust via preallocate
+        let mut got = Vec::new();
+        for _ in 0..max {
+            let h = map.preallocate_handle().expect("should get handle");
+            got.push(h);
+        }
+        assert!(map.preallocate_handle().is_none(), "must be exhausted");
+
+        for h in &got {
+            map.insert_with_handle(*h, Arc::new(7));
+        }
+
+        // free one
+        let freed = got.pop().unwrap();
+        map.remove(freed).unwrap();
+        // now preallocate_handle should yield that same handle
+        let h2 = map.preallocate_handle().unwrap();
+        assert_eq!(h2, freed, "freed handle should be recycled");
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct DropSpy<'a>(&'a AtomicUsize);
+    impl Drop for DropSpy<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test_case(16)]
+    #[test_case(24)]
+    #[test_case(128)]
+    fn test_map_drop_drops_all_entries(max: u32) {
+        let drops: AtomicUsize = AtomicUsize::new(0);
+        {
+            let map = HandleMap::new(NonZeroU32::new(max).unwrap());
+            for _ in 0..max {
+                map.insert(Arc::new(DropSpy(&drops))).unwrap();
+            }
+            // no gets or removes—just let the map go out of scope
+        }
+        // we expect exactly `max` drops of the inner T
+        assert_eq!(drops.load(Ordering::Relaxed), max as usize);
+    }
+
+    #[test_case(16)]
+    #[test_case(24)]
+    #[test_case(128)]
+    #[test_case(196)]
+    fn test_map_drop_drops_all_entries_manual_remove(max: u32) {
+        let drops: AtomicUsize = AtomicUsize::new(0);
+        let map = HandleMap::new(NonZeroU32::new(max).unwrap());
+        let mut handles = Vec::new();
+        for _ in 0..max {
+            handles.push(map.insert(Arc::new(DropSpy(&drops))).unwrap());
+        }
+        handles.shuffle(&mut rand::rng());
+        for h in handles {
+            drop(map.remove(h).unwrap());
+        }
+        // we expect exactly `max` drops of the inner T
+        assert_eq!(drops.load(Ordering::Relaxed), max as usize);
+    }
+
+    #[test]
+    fn test_handle_reused_after_remove_and_insert() {
+        let map = HandleMap::new(NonZeroU32::new(3).unwrap());
+        let _h1 = map.insert(Arc::new(1u8)).unwrap();
+        let h2 = map.insert(Arc::new(2u8)).unwrap();
+        let _h3 = map.insert(Arc::new(3u8)).unwrap();
+        assert!(map.insert(Arc::new(4u8)).is_none(), "exhausted");
+
+        // remove one
+        assert_eq!(*map.remove(h2).unwrap(), 2);
+        // now insert again, should get h2 back eventually
+        let h4 = map.insert(Arc::new(5u8)).unwrap();
+        assert_eq!(h4, h2);
     }
 }

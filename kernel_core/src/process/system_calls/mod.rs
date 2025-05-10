@@ -1,0 +1,904 @@
+//! System calls from user space.
+#![allow(clippy::needless_pass_by_value)]
+
+use alloc::{string::String, sync::Arc};
+use bytemuck::Contiguous;
+use kernel_api::{
+    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, QueueId,
+    SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
+};
+use log::{debug, error, trace, warn};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
+
+use crate::{
+    memory::{
+        active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
+        page_table::MemoryProperties,
+        PageAllocator, VirtualAddress, VirtualPointer,
+    },
+    process::{kill_thread_entirely, MessageQueue, SharedBuffer},
+};
+
+use super::{
+    queue::QueueManager,
+    thread::{Registers, ThreadManager},
+    ManagerError, Process, ProcessManager, SharedBufferId, Thread, TransferError,
+};
+
+/// Errors that can arise during a system call.
+#[derive(Debug, Snafu)]
+pub enum Error {
+    /// The specified length was invalid, out of bounds, or not in the acceptable range.
+    #[snafu(display("Invalid length {reason}: {length}"))]
+    InvalidLength {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid length value.
+        length: usize,
+    },
+    /// An unknown, unsupported, or invalid combination of flags was passed.
+    #[snafu(display("Invalid flags {reason}: 0b{bits:b}"))]
+    InvalidFlags {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid flag bits (may contain valid bits as well).
+        bits: usize,
+    },
+    /// A pointer provided was null, invalid, or otherwise could not be used as expected.
+    #[snafu(display("Invalid pointer {reason}: 0x{ptr:x}"))]
+    InvalidPointer {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid pointer value.
+        ptr: usize,
+    },
+    /// A pointer provided was to an address that was not mapped correctly.
+    #[snafu(display("Invalid address for {cause}"))]
+    InvalidAddress {
+        /// The information about what the source of the error was.
+        source: crate::memory::page_table::Error,
+        /// The specific value that was invalid.
+        cause: String,
+    },
+    /// A handle provided was invalid, or otherwise could not be used as expected.
+    #[snafu(display("Invalid handle {reason}: 0x{handle:x}"))]
+    InvalidHandle {
+        /// The value that was invalid or other information about what the source of the error was.
+        reason: String,
+        /// The invalid handle value.
+        handle: u32,
+    },
+    /// The specified process, thread, or handler ID was unknown or not found in the system.
+    #[snafu(display("Id {id} not found: {reason}"))]
+    NotFound {
+        /// The value that was missing or other information about what the source of the error was.
+        reason: String,
+        /// The missing id value.
+        id: usize,
+    },
+    /// Error occurred in a manager mechanism.
+    Manager {
+        /// Underlying error.
+        source: ManagerError,
+    },
+    /// Receiving a message would otherwise block the thread.
+    WouldBlock,
+    /// Error occured doing a shared buffer transfer.
+    Transfer {
+        /// Underlying error.
+        source: TransferError,
+    },
+    /// The operation was not permitted due to insufficent access rights.
+    #[snafu(display("Operation not permitted: {reason}"))]
+    NotPermitted {
+        /// The reason/operation attempted.
+        reason: String,
+    },
+}
+
+impl Error {
+    /// Convert the `Error` to a error code that can be returned to user space.
+    #[must_use]
+    pub fn to_code(self) -> ErrorCode {
+        match self {
+            Error::InvalidLength { .. } => ErrorCode::InvalidLength,
+            Error::InvalidFlags { .. } => ErrorCode::InvalidFlags,
+            Error::InvalidPointer { .. } | Error::InvalidAddress { .. } => {
+                ErrorCode::InvalidPointer
+            }
+            Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
+            Error::WouldBlock => ErrorCode::WouldBlock,
+            Error::Manager { source } => match source {
+                ManagerError::Memory { source, .. } => match source {
+                    crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
+                    crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,
+                    crate::memory::Error::UnknownPtr => ErrorCode::InvalidPointer,
+                },
+                ManagerError::PageTables { source } => match source {
+                    crate::memory::page_table::Error::InvalidCount => ErrorCode::InvalidLength,
+                    _ => ErrorCode::InvalidPointer,
+                },
+                ManagerError::Missing { cause } => {
+                    error!("Missing value in process manager: {cause}");
+                    ErrorCode::NotFound
+                }
+                ManagerError::OutOfHandles => ErrorCode::OutOfHandles,
+                ManagerError::InboxFull => ErrorCode::InboxFull,
+            },
+            Error::Transfer { source } => match source {
+                TransferError::OutOfBounds => ErrorCode::OutOfBounds,
+                TransferError::InsufficentPermissions => ErrorCode::NotAllowed,
+                TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
+            },
+            Error::NotPermitted { .. } => ErrorCode::NotAllowed,
+        }
+    }
+}
+
+/// Effects that can result from a system call.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SysCallEffect {
+    /// The system call returns normally with value `usize`.
+    Return(usize),
+    /// The system call does not return to the caller, but instead another thread is scheduled.
+    ScheduleNextThread,
+}
+
+/// System call handler policy.
+pub struct SystemCalls<
+    'pa,
+    'm,
+    PA: PageAllocator,
+    PM: ProcessManager,
+    TM: ThreadManager,
+    QM: QueueManager,
+> {
+    page_allocator: &'pa PA,
+    process_manager: &'m PM,
+    thread_manager: &'m TM,
+    queue_manager: &'m QM,
+}
+
+impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
+    SystemCalls<'pa, 'm, PA, PM, TM, QM>
+{
+    /// Create a new system call handler policy.
+    pub fn new(
+        page_allocator: &'pa PA,
+        process_manager: &'m PM,
+        thread_manager: &'m TM,
+        queue_manager: &'m QM,
+    ) -> Self {
+        Self {
+            page_allocator,
+            process_manager,
+            thread_manager,
+            queue_manager,
+        }
+    }
+
+    /// Execute a system call on behalf of a process.
+    ///
+    /// Returns a [`SysCallEffect`] if there is no error to return to user-space.
+    /// - [`SysCallEffect::Return`] to return a value (zero being success) to user-space.
+    /// - [`SysCallEffect::ScheduleNextThread`] to cause a different thread to be scheduled.
+    ///
+    ///  This may mean that the current thread was killed by this system call, either intentionally or
+    ///  due to a fault (for example, because an invalid system call number was provided).
+    ///
+    /// # Errors
+    /// Returns an error that should be reported to user-space if the system call is unsuccessful.
+    pub fn dispatch_system_call<AUST: ActiveUserSpaceTables>(
+        &self,
+        syscall_number: u16,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: &AUST,
+    ) -> Result<SysCallEffect, Error> {
+        let Some(syscall_number) = CallNumber::from_integer(syscall_number) else {
+            warn!(
+                "invalid system call number {} provided by thread #{}",
+                syscall_number, current_thread.id
+            );
+            kill_thread_entirely(
+                self.process_manager,
+                self.thread_manager,
+                self.queue_manager,
+                current_thread,
+                ExitReason::invalid_syscall(),
+            );
+            return Ok(SysCallEffect::ScheduleNextThread);
+        };
+        let user_space_memory = user_space_memory.into();
+        match syscall_number {
+            CallNumber::ReadEnvValue => Ok(SysCallEffect::Return(
+                self.syscall_read_env_value(current_thread, registers),
+            )),
+            CallNumber::SpawnThread => {
+                self.syscall_spawn_thread(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::SpawnProcess => {
+                self.syscall_spawn_process(
+                    current_thread.parent.clone().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::KillProcess => {
+                self.syscall_kill_process(current_thread.parent.as_ref().unwrap(), registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::AllocateHeapPages => {
+                self.syscall_allocate_heap_pages(
+                    current_thread.parent.as_ref().unwrap(),
+                    registers,
+                    user_space_memory,
+                )?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeHeapPages => {
+                self.syscall_free_heap_pages(current_thread.parent.as_ref().unwrap(), registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::ExitCurrentThread => {
+                self.syscall_exit_current_thread(current_thread, registers);
+                Ok(SysCallEffect::ScheduleNextThread)
+            }
+            CallNumber::Send => {
+                self.syscall_send(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::Receive => {
+                self.syscall_receive(current_thread, registers, user_space_memory)
+            }
+            CallNumber::TransferToSharedBuffer => {
+                self.syscall_transfer_to(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::TransferFromSharedBuffer => {
+                self.syscall_transfer_from(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeMessage => {
+                self.syscall_free_message(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeSharedBuffers => {
+                self.syscall_free_shared_buffers(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::ExitNotificationSubscription => {
+                self.syscall_exit_notification_subscription(current_thread, registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::WriteLogMessage => {
+                self.syscall_write_log(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::CreateMessageQueue => {
+                self.syscall_create_msg_queue(current_thread, registers, user_space_memory)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::FreeMessageQueue => {
+                self.syscall_free_msg_queue(registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+        }
+    }
+
+    fn syscall_read_env_value(&self, current_thread: &Arc<Thread>, registers: &Registers) -> usize {
+        let Some(value_to_read) = EnvironmentValue::from_integer(registers.x[0]) else {
+            return 0;
+        };
+        trace!(
+            "reading value {value_to_read:?} for thread {}",
+            current_thread.id
+        );
+        match value_to_read {
+            EnvironmentValue::CurrentProcessId => current_thread
+                .parent
+                .as_ref()
+                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
+            EnvironmentValue::CurrentSupervisorQueueId => todo!(),
+            EnvironmentValue::CurrentRegistryQueueId => todo!(),
+            EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
+        }
+    }
+
+    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
+        let code: u32 = registers.x[0] as _;
+        debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
+        kill_thread_entirely(
+            self.process_manager,
+            self.thread_manager,
+            self.queue_manager,
+            current_thread,
+            ExitReason::user(code),
+        );
+    }
+
+    fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
+        &self,
+        parent: Arc<Process>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<(), Error> {
+        let info: &ThreadCreateInfo =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "thread info",
+                })?;
+        let out_thread_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output thread id",
+            })?;
+
+        let entry_ptr = VirtualAddress::from(info.entry as *mut ());
+        ensure!(
+            !entry_ptr.is_null(),
+            InvalidPointerSnafu {
+                reason: "thread entry point ptr",
+                ptr: entry_ptr
+            }
+        );
+        ensure!(
+            info.stack_size > 0,
+            InvalidLengthSnafu {
+                reason: "stack size <= 0",
+                length: info.stack_size
+            }
+        );
+
+        debug!("spawning thread {info:?} in process #{}", parent.id);
+
+        let thread = self
+            .thread_manager
+            .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
+            .context(ManagerSnafu)?;
+
+        *out_thread_id = thread.id;
+
+        Ok(())
+    }
+
+    fn syscall_spawn_process<T: ActiveUserSpaceTables>(
+        &self,
+        parent: Arc<Process>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<(), Error> {
+        let info =
+            user_space_memory
+                .check_ref(registers.x[0].into())
+                .context(InvalidAddressSnafu {
+                    cause: "process info",
+                })?;
+
+        let out_process_id = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output process id",
+            })?;
+
+        let out_queue_id = if registers.x[2] > 0 {
+            Some(
+                user_space_memory
+                    .check_mut_ref(registers.x[2].into())
+                    .context(InvalidAddressSnafu {
+                        cause: "output queue id",
+                    })?,
+            )
+        } else {
+            None
+        };
+
+        debug!("spawning process {info:?}, parent #{}", parent.id);
+        let proc = self
+            .process_manager
+            .spawn_process(Some(parent), info)
+            .context(ManagerSnafu)?;
+
+        // create the initial queue
+        let qu = self
+            .queue_manager
+            .create_queue(&proc)
+            .context(ManagerSnafu)?;
+
+        // spawn the main thread with an 8 MiB stack
+        self.thread_manager
+            .spawn_thread(
+                proc.clone(),
+                info.entry_point.into(),
+                8 * 1024 * 1024 / self.page_allocator.page_size(),
+                qu.id.get() as usize,
+            )
+            .context(ManagerSnafu)?;
+
+        debug!("process #{} spawned (main queue #{})", proc.id, qu.id);
+
+        *out_process_id = proc.id;
+        if let Some(oqi) = out_queue_id {
+            *oqi = qu.id;
+        }
+
+        Ok(())
+    }
+
+    fn syscall_kill_process(
+        &self,
+        current_process: &Arc<Process>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let pid = ProcessId::new(registers.x[0] as u32).context(NotFoundSnafu {
+            reason: "process id is zero",
+            id: 0usize,
+        })?;
+
+        let proc = self
+            .process_manager
+            .process_for_id(pid)
+            .context(NotFoundSnafu {
+                reason: "process id",
+                id: pid.get() as usize,
+            })?;
+
+        // TODO: access control?
+        debug!("process #{} killing process #{pid}", current_process.id);
+
+        // Make a copy of the threads in the process. Exiting the thread will remove it from the parent process.
+        let threads = proc.threads.read().clone();
+        for t in threads {
+            self.thread_manager.exit_thread(&t, ExitReason::killed());
+        }
+
+        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
+        let queues = proc.owned_queues.lock().clone();
+        for qu in queues {
+            self.queue_manager.free_queue(&qu);
+        }
+
+        self.process_manager
+            .kill_process(&proc, ExitReason::killed());
+
+        Ok(())
+    }
+
+    fn syscall_allocate_heap_pages<T: ActiveUserSpaceTables>(
+        &self,
+        current_process: &Arc<Process>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<(), Error> {
+        let size: usize = registers.x[0];
+        let dst: &mut usize = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output pointer",
+            })?;
+
+        debug!(
+            "allocating {size} pages for process #{}",
+            current_process.id
+        );
+
+        let addr = current_process
+            .allocate_memory(
+                self.page_allocator,
+                size,
+                MemoryProperties {
+                    user_space_access: true,
+                    writable: true,
+                    executable: true,
+                    ..Default::default()
+                },
+            )
+            .context(ManagerSnafu)?;
+
+        *dst = addr.into();
+
+        Ok(())
+    }
+
+    fn syscall_free_heap_pages(
+        &self,
+        current_process: &Arc<Process>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let ptr: VirtualAddress = registers.x[0].into();
+        let size: usize = registers.x[1];
+        debug!(
+            "freeing {size} pages @ {ptr:?} for process #{}",
+            current_process.id
+        );
+        current_process
+            .free_memory(self.page_allocator, ptr, size)
+            .context(ManagerSnafu)
+    }
+
+    fn syscall_send<T: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<(), Error> {
+        let dst_queue_id: Option<QueueId> = QueueId::new(registers.x[0] as _);
+        let message = user_space_memory
+            .check_slice(registers.x[1].into(), registers.x[2])
+            .context(InvalidAddressSnafu { cause: "message" })?;
+        let buffers: &[SharedBufferCreateInfo] = user_space_memory
+            .check_slice(registers.x[3].into(), registers.x[4])
+            .context(InvalidAddressSnafu { cause: "buffers" })?;
+        ensure!(
+            !message.is_empty() || !buffers.is_empty(),
+            InvalidLengthSnafu {
+                reason: "message must have at least non-zero size or non-zero number of buffers",
+                length: 0usize
+            }
+        );
+        let dst = dst_queue_id
+            .and_then(|qid| self.queue_manager.queue_for_id(qid))
+            .context(NotFoundSnafu {
+                reason: "destination queue id",
+                id: dst_queue_id.map_or(0, ProcessId::get) as usize,
+            })?;
+        let current_proc = current_thread.parent.as_ref().unwrap();
+        debug!(
+            "process #{} sending message to queue #{}",
+            current_proc.id, dst.id
+        );
+        if !buffers.is_empty() {
+            trace!("sending buffers {buffers:?}");
+        }
+        dst.send(
+            message,
+            buffers.iter().map(|b| {
+                Arc::new(SharedBuffer {
+                    owner: current_proc.clone(),
+                    flags: b.flags,
+                    base_address: VirtualAddress::from(b.base_address.cast()),
+                    length: b.length,
+                })
+            }),
+        )
+        .context(ManagerSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_receive<T: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
+    ) -> Result<SysCallEffect, Error> {
+        let flag_bits: usize = registers.x[0];
+        let queue_id: Option<QueueId> = QueueId::new(registers.x[1] as _);
+        let u_out_msg = registers.x[2].into();
+        let out_msg: &mut VirtualAddress =
+            user_space_memory
+                .check_mut_ref(u_out_msg)
+                .context(InvalidAddressSnafu {
+                    cause: "output message ptr",
+                })?;
+        let u_out_len = registers.x[3].into();
+        let out_len: &mut usize =
+            user_space_memory
+                .check_mut_ref(u_out_len)
+                .context(InvalidAddressSnafu {
+                    cause: "output message len",
+                })?;
+        let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
+            reason: "invalid bits",
+            bits: flag_bits,
+        })?;
+        let qu = queue_id
+            .and_then(|qid| self.queue_manager.queue_for_id(qid))
+            .context(NotFoundSnafu {
+                reason: "queue id",
+                id: queue_id.map_or(0, ProcessId::get) as usize,
+            })?;
+        ensure!(
+            qu.owner
+                .upgrade()
+                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
+            NotPermittedSnafu {
+                reason: "queue not owned by current process"
+            }
+        );
+        if let Some(msg) = qu.receive() {
+            *out_msg = msg.data_address;
+            *out_len = msg.data_length;
+            Ok(SysCallEffect::Return(0))
+        } else if flags.contains(ReceiveFlags::NONBLOCKING) {
+            Err(Error::WouldBlock)
+        } else {
+            current_thread.wait_for_message(qu, u_out_msg, u_out_len);
+            Ok(SysCallEffect::ScheduleNextThread)
+        }
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_to<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let src = user_space_memory
+            .check_slice(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "source buffer",
+            })?;
+        buf.transfer_to(offset, src).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_transfer_from<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let proc = current_thread.parent.as_ref().unwrap();
+        let buffer_handle =
+            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
+                reason: "buffer handle is zero",
+                handle: 0u32,
+            })?;
+        let buf = proc
+            .shared_buffers
+            .get(buffer_handle)
+            .context(InvalidHandleSnafu {
+                reason: "buffer handle not found",
+                handle: buffer_handle.get(),
+            })?;
+        let offset = registers.x[1];
+        let dst = user_space_memory
+            .check_slice_mut(registers.x[2].into(), registers.x[3])
+            .context(InvalidAddressSnafu {
+                cause: "destination buffer",
+            })?;
+        buf.transfer_from(offset, dst).context(TransferSnafu)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_free_message<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let flags = FreeMessageFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
+            reason: "invalid bits",
+            bits: registers.x[0],
+        })?;
+
+        let ptr: VirtualAddress = registers.x[1].into();
+        let len = registers.x[2];
+
+        let proc = current_thread.parent.as_ref().unwrap();
+
+        if flags.contains(FreeMessageFlags::FREE_BUFFERS) {
+            let msg: &[u8] = user_space_memory
+                .check_slice(VirtualPointer::from(ptr).cast(), len)
+                .context(InvalidAddressSnafu { cause: "message" })?;
+            let msg = unsafe { Message::from_slice(msg) };
+            proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
+                .context(ManagerSnafu)?;
+        }
+
+        proc.free_message(ptr, len).context(ManagerSnafu)?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_free_shared_buffers<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let buffers: &[SharedBufferId] = user_space_memory
+            .check_slice(registers.x[0].into(), registers.x[1])
+            .context(InvalidAddressSnafu {
+                cause: "buffers slice",
+            })?;
+
+        let proc = current_thread.parent.as_ref().unwrap();
+
+        proc.free_shared_buffers(buffers.iter().copied())
+            .context(ManagerSnafu)
+    }
+
+    fn syscall_create_msg_queue<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let dst: &mut QueueId = user_space_memory
+            .check_mut_ref(registers.x[1].into())
+            .context(InvalidAddressSnafu {
+                cause: "output pointer",
+            })?;
+
+        let q = self
+            .queue_manager
+            .create_queue(current_thread.parent.as_ref().unwrap())
+            .context(ManagerSnafu)?;
+
+        *dst = q.id;
+
+        Ok(())
+    }
+
+    fn syscall_free_msg_queue(&self, registers: &Registers) -> Result<(), Error> {
+        let queue_id = QueueId::new(registers.x[0] as _).context(InvalidHandleSnafu {
+            reason: "queue id zero",
+            handle: 0u32,
+        })?;
+        let qu = self
+            .queue_manager
+            .queue_for_id(queue_id)
+            .context(NotFoundSnafu {
+                reason: "queue id",
+                id: queue_id.get() as usize,
+            })?;
+        debug!("freeing message queue #{}", qu.id);
+        self.queue_manager.free_queue(&qu);
+        Ok(())
+    }
+
+    fn syscall_exit_notification_subscription(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+    ) -> Result<(), Error> {
+        let flags = ExitNotificationSubscriptionFlags::from_bits(registers.x[0]).context(
+            InvalidFlagsSnafu {
+                reason: "invalid flag bits",
+                bits: registers.x[0],
+            },
+        )?;
+
+        ensure!(
+            !flags.contains(
+                ExitNotificationSubscriptionFlags::PROCESS
+                    | ExitNotificationSubscriptionFlags::THREAD
+            ) && !flags.is_empty(),
+            InvalidFlagsSnafu {
+                reason: "process mode xor thread mode",
+                bits: registers.x[0]
+            }
+        );
+
+        let receiver_queue = QueueId::new(registers.x[2] as u32)
+            .context(InvalidHandleSnafu {
+                reason: "queue id is zero",
+                handle: 0u32,
+            })
+            .and_then(|qid| {
+                self.queue_manager.queue_for_id(qid).context(NotFoundSnafu {
+                    reason: "queue id not found",
+                    id: qid.get() as usize,
+                })
+            })?;
+
+        ensure!(
+            receiver_queue
+                .owner
+                .upgrade()
+                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
+            NotPermittedSnafu {
+                reason: "must own queue to (un)subscribe it to exit notifications"
+            }
+        );
+
+        let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
+            if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {
+                exit_subs.retain_mut(|q: &mut Arc<MessageQueue>| q.id != receiver_queue.id);
+            } else if !exit_subs.iter().any(|q| q.id == receiver_queue.id) {
+                exit_subs.push(receiver_queue.clone());
+            }
+        };
+
+        if flags.contains(ExitNotificationSubscriptionFlags::PROCESS) {
+            let proc = ProcessId::new(registers.x[1] as u32)
+                .and_then(|id| self.process_manager.process_for_id(id))
+                .context(InvalidHandleSnafu {
+                    reason: "process id unknown",
+                    handle: registers.x[1] as u32,
+                })?;
+            debug!(
+                "subscribing queue #{} to exit of process #{}",
+                receiver_queue.id, proc.id
+            );
+            let mut s = proc.exit_subscribers.lock();
+            process_subscription(&mut s);
+        } else if flags.contains(ExitNotificationSubscriptionFlags::THREAD) {
+            let thread = ThreadId::new(registers.x[1] as u32)
+                .and_then(|id| self.thread_manager.thread_for_id(id))
+                .context(InvalidHandleSnafu {
+                    reason: "thread id unknown",
+                    handle: registers.x[1] as u32,
+                })?;
+            debug!(
+                "subscribing queue #{} to exit of thread #{}",
+                receiver_queue.id, thread.id
+            );
+            let mut s = thread.exit_subscribers.lock();
+            process_subscription(&mut s);
+        } else {
+            return Err(Error::InvalidFlags {
+                reason: "did not specific process or thread".into(),
+                bits: flags.bits(),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn syscall_write_log<AUST: ActiveUserSpaceTables>(
+        &self,
+        current_thread: &Arc<Thread>,
+        registers: &Registers,
+        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
+    ) -> Result<(), Error> {
+        let level = match registers.x[0] {
+            1 => log::Level::Error,
+            2 => log::Level::Warn,
+            3 => log::Level::Info,
+            4 => log::Level::Debug,
+            5 => log::Level::Trace,
+            _ => {
+                return Err(Error::InvalidFlags {
+                    reason: "unknown log level".into(),
+                    bits: registers.x[0],
+                })
+            }
+        };
+
+        let msg_data = user_space_memory
+            .check_slice::<u8>(registers.x[1].into(), registers.x[2])
+            .context(InvalidAddressSnafu {
+                cause: "message slice",
+            })?;
+
+        let msg = unsafe { core::str::from_utf8_unchecked(msg_data) };
+
+        let pid = current_thread.parent.as_ref().unwrap().id;
+        let tid = current_thread.id;
+
+        log::log!(level, "({pid}:{tid}) {msg}");
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests;

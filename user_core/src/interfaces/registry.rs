@@ -2,12 +2,12 @@
 
 use alloc::vec::Vec;
 use bytemuck::{Contiguous, bytes_of, from_bytes};
-use kernel_api::{Message, ProcessId, ThreadId};
+use kernel_api::{Message, ProcessId, QueueId, ThreadId};
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 
 use crate::{
-    rpc::{MessageHeader, MessageType, ResponseType},
+    rpc::{MessageHeader, ResponseType},
     tasks::send_request,
 };
 
@@ -94,19 +94,20 @@ pub struct LookupResponseBody {
 
 /// A client for interacting with a registry service via RPC.
 pub struct RegistryClient {
-    pid: ProcessId,
-    tid: Option<ThreadId>,
+    qid: QueueId,
 }
 
 impl RegistryClient {
     /// Create a new client, connecting to the server at `pid`/`tid`.
     #[must_use]
-    pub fn new(pid: ProcessId, tid: Option<ThreadId>) -> Self {
-        Self { pid, tid }
+    pub fn new(registry_queue: QueueId) -> Self {
+        Self {
+            qid: registry_queue,
+        }
     }
 
     fn encode_path_msg(op: OpCode, path: &Path) -> Vec<u8> {
-        let header = MessageHeader::new(MessageType::Request, op);
+        let header = MessageHeader::request(op);
         let mut msg = Vec::with_capacity(core::mem::size_of::<MessageHeader>() + path.len());
         msg.extend_from_slice(bytes_of(&header));
         msg.extend_from_slice(path.as_bytes());
@@ -117,7 +118,7 @@ impl RegistryClient {
         let response_header = from_bytes::<MessageHeader>(
             &response.payload()[0..core::mem::size_of::<MessageHeader>()],
         );
-        match ResponseType::from_integer(response_header.op_code()) {
+        match ResponseType::from_integer(response_header.opcode) {
             Some(ResponseType::Success) => {
                 Ok(&response.payload()[core::mem::size_of::<MessageHeader>()..])
             }
@@ -131,7 +132,7 @@ impl RegistryClient {
             Some(ResponseType::UnknownOpcode) => {
                 panic!("received unexpected response for register_provider: {response_header:?}")
             }
-            None => match ErrorCode::from_integer(response_header.op_code()) {
+            None => match ErrorCode::from_integer(response_header.opcode) {
                 Some(ErrorCode::NotFound) => Err(Error::NotFound),
                 Some(ErrorCode::NotRegistered) => Err(Error::NotRegistered),
                 _ => panic!(
@@ -151,12 +152,12 @@ impl RegistryClient {
         provider_tid: ThreadId,
     ) -> Result<(), Error> {
         let op = OpCode::RegisterProvider;
-        let header = MessageHeader::new(MessageType::Request, op);
+        let header = MessageHeader::request(op);
         let mut msg = Vec::new();
         msg.extend_from_slice(bytes_of(&header));
         let msg = postcard::to_extend(&RegisterProviderRequest { provider_tid, root }, msg)
             .context(SerdeSnafu)?;
-        let response = send_request(self.pid, self.tid, &msg, &[])
+        let response = send_request(self.qid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;
@@ -168,8 +169,8 @@ impl RegistryClient {
     /// # Errors
     /// Returns an error if the RPC call fails or returns an error.
     pub async fn unregister_provider(&self) -> Result<(), Error> {
-        let header = MessageHeader::new(MessageType::Request, OpCode::UnregisterProvider);
-        let response = send_request(self.pid, self.tid, bytes_of(&header), &[])
+        let header = MessageHeader::request(OpCode::UnregisterProvider);
+        let response = send_request(self.qid, bytes_of(&header), &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;
@@ -182,7 +183,7 @@ impl RegistryClient {
     /// Returns an error if the RPC call fails or returns an error.
     pub async fn lookup<'p>(&self, path: &'p Path) -> Result<LookupResult<'p>, Error> {
         let msg = Self::encode_path_msg(OpCode::LookupResource, path);
-        let response = send_request(self.pid, self.tid, &msg, &[])
+        let response = send_request(self.qid, &msg, &[])
             .context(SendSnafu)
             .context(RpcSnafu)?
             .await;

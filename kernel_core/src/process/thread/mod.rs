@@ -1,17 +1,16 @@
-//! Threads
+//! Thread data structures and policies.
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{sync::Arc, vec::Vec};
 
 use bytemuck::Contiguous;
-use crossbeam::queue::SegQueue;
-use kernel_api::{MessageHeader, ProcessId, SharedBufferInfo};
+use kernel_api::{ErrorCode, ExitReason};
 use log::{error, trace};
 use spin::Mutex;
 
 use crate::memory::{VirtualAddress, VirtualPointerMut};
 
-use super::{PendingMessage, Process};
+use super::{ManagerError, MessageQueue, PendingMessage, Process};
 
 pub mod scheduler;
 
@@ -203,16 +202,17 @@ pub struct Thread {
     /// (Stack base address, stack size in pages).
     pub stack: (VirtualAddress, usize),
 
-    /// The queue of pointers to unreceived messages for this thread.
-    pub inbox_queue: SegQueue<PendingMessage>,
-
-    /// Threads/processes that will be notified when this thread exits.
-    pub exit_subscribers: Mutex<Vec<(ProcessId, Option<Id>)>>,
+    /// Message queues that will be notified when this thread exits.
+    pub exit_subscribers: Mutex<Vec<Arc<MessageQueue>>>,
 
     /// If the thread is [`State::WaitingForMessage`], then this contains the user space locations
     /// that need to be written when a message is received.
     pub pending_message_receive:
         Mutex<Option<(VirtualPointerMut<VirtualAddress>, VirtualPointerMut<usize>)>>,
+
+    /// If the thread is [`State::WaitingForMessage`], then this contains the queue that the thread
+    /// is waiting to receive a message on.
+    pub pending_message_receive_queue: Mutex<Option<Arc<MessageQueue>>>,
 }
 
 impl Thread {
@@ -231,9 +231,9 @@ impl Thread {
             properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
             processor_state: Mutex::new(initial_processor_state),
             stack,
-            inbox_queue: SegQueue::new(),
             exit_subscribers: Mutex::default(),
             pending_message_receive: Mutex::default(),
+            pending_message_receive_queue: Mutex::default(),
         }
     }
 
@@ -264,6 +264,7 @@ impl Thread {
     /// Move the thread to the [`State::WaitingForMessage`] state.
     pub fn wait_for_message(
         &self,
+        queue: Arc<MessageQueue>,
         delivery_addr: VirtualPointerMut<VirtualAddress>,
         delivery_len: VirtualPointerMut<usize>,
     ) {
@@ -274,100 +275,111 @@ impl Thread {
             .pending_message_receive
             .lock()
             .replace((delivery_addr, delivery_len));
+        *self.pending_message_receive_queue.lock() = Some(queue);
         assert!(was_pending.is_none(), "thread cannot wait for more than one message at a time, was waiting to deliver to {was_pending:?}");
+    }
+
+    /// Attempt to receive a message if we are waiting for one.
+    /// If the queue was freed while we waited, `Err` is returned.
+    fn try_receive_pending(&self) -> Result<Option<PendingMessage>, ()> {
+        debug_assert_eq!(self.state(), State::WaitingForMessage);
+
+        let mut qu_guard = self.pending_message_receive_queue.lock();
+
+        let Some(qu) = qu_guard.clone() else {
+            return Ok(None);
+        };
+
+        if qu.dead.load(Ordering::Acquire) {
+            *qu_guard = None;
+            return Err(());
+        }
+
+        if let Some(msg) = qu.receive() {
+            *qu_guard = None;
+            Ok(Some(msg))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Given that the thread is in the [`State::WaitingForMessage`] state, check to see if a
     /// message has arrived. If it has, the message is delivered, the thread transitions to the
     /// [`State::Running`] state, and true is returned. Otherwise the thread continues to wait and
-    /// false is returned.
+    /// false is returned. If an error occurs that needs to be communicated to user space, this
+    /// function returns true and sets up the thread to receive the error.
     pub fn check_resume(&self) -> bool {
-        debug_assert_eq!(self.state(), State::WaitingForMessage);
-        if let Some(msg) = self.inbox_queue.pop() {
-            trace!("resuming thread #{} with message {msg:?}", self.id);
-            let proc = self.parent.as_ref().unwrap();
-            let pt = proc.page_tables.read();
-            // write message header
-            // SAFETY: this is fine because a message header can't span a page since messages are
-            // 64-byte aligned and the header is less than 64 bytes.
-            // TODO: this is still kinda sus
-            let phy_msg_addr = pt
-                .physical_address_of(msg.data_address)
-                .expect("message data address is mapped in process page tables");
-            unsafe {
-                self.write_message_header(phy_msg_addr.into(), &msg);
+        match self.try_receive_pending() {
+            Ok(None) => false,
+            Ok(Some(msg)) => {
+                trace!("resuming thread #{} with message {msg:?}", self.id);
+                let proc = self.parent.as_ref().unwrap();
+                let pt = proc.page_tables.read();
+
+                let (user_delivery_address, user_delivery_length) =
+                    self.pending_message_receive.lock().take().unwrap();
+                let return_value = &mut self.processor_state.lock().registers.x[0];
+                *return_value = if let Some(delivery_addr) =
+                    pt.physical_address_of(user_delivery_address.cast())
+                {
+                    if let Some(delivery_len) = pt.physical_address_of(user_delivery_length.cast())
+                    {
+                        // actually deliver the message by writing the output addresses provided by user space
+                        let delivery_addr: *mut VirtualAddress = delivery_addr.cast().into();
+                        let delivery_len: *mut usize = delivery_len.cast().into();
+                        unsafe {
+                            delivery_addr.write(msg.data_address);
+                            delivery_len.write(msg.data_length);
+                        }
+                        // return zero for success
+                        0
+                    } else {
+                        error!("process #{}, user space message length pointer was unmapped: {user_delivery_length:?}", proc.id);
+                        ErrorCode::InvalidPointer.into_integer()
+                    }
+                } else {
+                    error!("process #{}, user space message address pointer was unmapped: {user_delivery_address:?}", proc.id);
+                    ErrorCode::InvalidPointer.into_integer()
+                };
+                self.set_state(State::Running);
+                true
             }
-            // deliver message to user space
-            let (user_delivery_address, user_delivery_length) =
-                self.pending_message_receive.lock().take().unwrap();
-            let Some(delivery_addr) = pt.physical_address_of(user_delivery_address.cast()) else {
-                error!("process #{}, user space message address pointer was unmapped: {user_delivery_address:?}", proc.id);
-                return false;
-            };
-            let Some(delivery_len) = pt.physical_address_of(user_delivery_length.cast()) else {
-                error!("process #{}, user space message length pointer was unmapped: {user_delivery_length:?}", proc.id);
-                return false;
-            };
-            let delivery_addr: *mut VirtualAddress = delivery_addr.cast().into();
-            let delivery_len: *mut usize = delivery_len.cast().into();
-            unsafe {
-                delivery_addr.write(msg.data_address);
-                delivery_len.write(msg.data_length);
+            Err(()) => {
+                // the queue was freed while we waited, return an error.
+                self.pending_message_receive.lock().take();
+                self.processor_state.lock().registers.x[0] = ErrorCode::QueueFreed.into_integer();
+                self.set_state(State::Running);
+                true
             }
-            // set up return value
-            self.processor_state.lock().registers.x[0] = 0;
-            self.set_state(State::Running);
-            true
-        } else {
-            false
         }
     }
+}
 
-    /// Write the message header into the inbox, using `msg_base` as the base address of the message.
-    unsafe fn write_message_header(&self, msg_base: VirtualAddress, msg: &PendingMessage) {
-        let header: *mut MessageHeader = msg_base.cast::<MessageHeader>().as_ptr();
-        header.write(MessageHeader {
-            sender_pid: msg.sender_process_id,
-            sender_tid: msg.sender_thread_id,
-            num_buffers: msg.buffer_handles.len(),
-        });
-
-        let mut buffers: *mut SharedBufferInfo = msg_base
-            .byte_add(size_of::<MessageHeader>())
-            .cast()
-            .as_ptr();
-        let parent = self.parent.as_ref().unwrap();
-        for buffer in msg.buffer_handles.iter().copied() {
-            let b = parent
-                .shared_buffers
-                .get(buffer)
-                .expect("pending message contains valid buffer handles");
-            buffers.write(SharedBufferInfo {
-                flags: b.flags,
-                buffer,
-                length: b.length,
-            });
-            buffers = buffers.add(1);
-        }
-    }
-
-    /// Receive a message, returning the message's address in the process' virtual address space.
-    /// The message header will be written as the first part of the message.
-    /// The length is returned in bytes, and includes the header.
+/// An interface for managing threads.
+#[cfg_attr(test, mockall::automock)]
+pub trait ThreadManager {
+    /// Spawn a new thread with the given parent process.
+    /// The `stack_size` is in pages.
     ///
-    /// # Safety
-    /// This function is only safe to call if the current EL0 page tables are the process' page
-    /// tables, because it directly writes the message header assuming that the address is mapped.
-    /// This is an optimization and the restriction could be lifted.
-    pub unsafe fn receive_message_immediately(&self) -> Option<(VirtualAddress, usize)> {
-        let msg = self.inbox_queue.pop()?;
+    /// # Errors
+    /// Returns an error if the thread could not be spawned due to resource requirements or
+    /// invalid inputs.
+    fn spawn_thread(
+        &self,
+        parent_process: Arc<Process>,
+        entry_point: VirtualAddress,
+        stack_size: usize,
+        user_data: usize,
+    ) -> Result<Arc<Thread>, ManagerError>;
 
-        trace!("thread #{} received message {msg:?}", self.id);
+    /// Cause a thread to exit, with a given `reason`.
+    /// Returns true if this was the last thread in the process.
+    ///
+    /// Exiting a thread must be infailable.
+    fn exit_thread(&self, thread: &Arc<Thread>, reason: ExitReason) -> bool;
 
-        self.write_message_header(msg.data_address, &msg);
-
-        Some((msg.data_address, msg.data_length))
-    }
+    /// Get the thread associated with a thread ID.
+    fn thread_for_id(&self, thread_id: Id) -> Option<Arc<Thread>>;
 }
 
 /// Abstract scheduler policy

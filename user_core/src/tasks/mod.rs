@@ -8,7 +8,7 @@ use core::task::Waker;
 
 use alloc::boxed::Box;
 use executor::Executor;
-use kernel_api::spawn_thread;
+use kernel_api::QueueId;
 use spin::once::Once;
 
 use crate::rpc::Service;
@@ -30,32 +30,15 @@ pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
         .spawn(Box::new(f));
 }
 
-fn task_thread_entry(_: usize) -> ! {
-    EXECUTOR
-        .get()
-        .expect("executor initialized")
-        .task_poll_loop()
-}
-
 /// Run the task executor with a root task and a service for handling RPC requests.
-///
-/// The `service` will listen as the current thread, which is assumed to be the designated receiver.
-///
-/// # Panics
-/// Panics if a second task thread cannot be spawned.
-pub fn run(service: &impl Service, root: impl Future<Output = ()> + Send + 'static) -> ! {
-    let exec = EXECUTOR.call_once(Executor::default);
+pub fn run(
+    msg_queue: QueueId,
+    service: &impl Service,
+    root: impl Future<Output = ()> + Send + 'static,
+) -> ! {
+    let exec = EXECUTOR.call_once(|| Executor::new(msg_queue));
     exec.spawn(Box::new(root));
-    spawn_thread(&kernel_api::ThreadCreateInfo {
-        entry: task_thread_entry,
-        stack_size: 1024,
-        user_data: 0,
-    })
-    .expect("spawn task polling thread");
-    // TODO: if a service wants to spawn two services running on two different threads, then the second
-    // service thread needs to call `exec.designated_receiver_message_loop()` with that new service.
-    // Otherwise receiving a request on a worker thread drops the message.
-    exec.designated_receiver_message_loop(service)
+    exec.run(service)
 }
 
 /// The state of a future that is waiting to receive a value of type `T`.

@@ -6,7 +6,7 @@ use alloc::{
 };
 use device_tree::{DeviceTree, fdt::Token};
 use hashbrown::HashMap;
-use kernel_api::{ThreadId, read_env_value, write_log};
+use kernel_api::{QueueId, write_log};
 use snafu::ResultExt;
 use user_core::interfaces::{
     registry::{Path, RegistryClient},
@@ -95,7 +95,7 @@ impl Setup<'_, '_> {
     }
 
     /// Spawn and configure the root system services and drivers.
-    pub async fn setup(self) -> Result<(), Error> {
+    pub async fn setup(self, initramfs_queue: QueueId) -> Result<(), Error> {
         // Configure the root supervisor default exit policy
         self.supervisor
             .configure(&SupervisorConfig {
@@ -110,15 +110,9 @@ impl Setup<'_, '_> {
                 what: "configure root supervisor with default exit policy",
             })?;
 
-        // this is implied because `tasks::run` always runs the service on the designated receiver thread.
-        let initramfs_service_thread = ThreadId::new(read_env_value(
-            kernel_api::EnvironmentValue::DesignatedReceiverThreadId,
-        ) as u32)
-        .unwrap();
-
         // Register the initramfs service with the registry
         self.registry
-            .register_provider(self.config.initramfs_root, initramfs_service_thread)
+            .register_provider(self.config.initramfs_root, initramfs_queue)
             .await
             .context(RegistrySnafu {
                 what: "register initramfs provider with root registry",

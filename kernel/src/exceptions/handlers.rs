@@ -6,18 +6,14 @@ use log::{debug, error};
 
 use crate::{
     memory::{page_allocator, SystemActiveUserSpaceTables},
-    process::{
-        thread::{restore_current_thread_state, save_current_thread_state, SCHEDULER},
-        PROCESS_MANAGER, SYS_CALL_POLICY,
-    },
+    process::{thread::THREAD_MANAGER, SYS_CALL_POLICY},
 };
 use kernel_core::{
     exceptions::ExceptionSyndromeRegister,
     memory::PageAllocator,
     process::{
         system_calls::SysCallEffect,
-        thread::{Registers, Scheduler},
-        ProcessManager,
+        thread::{Registers, ThreadManager},
     },
 };
 
@@ -40,10 +36,12 @@ extern "C" {
 unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usize, far: usize) {
     let esr = ExceptionSyndromeRegister(esr as u64);
 
+    let thread_manager = THREAD_MANAGER.get().unwrap();
+
     let regs = regs
         .as_mut()
         .expect("asm exception vector code passes non-null ptr to registers object");
-    let current_thread = save_current_thread_state(regs);
+    let current_thread = thread_manager.save_current_thread_state(regs);
 
     if esr.ec().is_system_call() {
         let user_space_mem = SystemActiveUserSpaceTables::new(page_allocator().page_size());
@@ -53,11 +51,11 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             .dispatch_system_call(esr.iss() as u16, &current_thread, regs, &user_space_mem);
         match result {
             Ok(SysCallEffect::Return(result)) => {
-                restore_current_thread_state(regs, result);
+                thread_manager.restore_current_thread_state(regs, result);
             }
             Ok(SysCallEffect::ScheduleNextThread) => {
-                SCHEDULER.get().unwrap().next_time_slice();
-                restore_current_thread_state(regs, None);
+                thread_manager.next_time_slice();
+                thread_manager.restore_current_thread_state(regs, None);
             }
             Err(e) => {
                 debug!(
@@ -67,10 +65,10 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
                     current_thread.id,
                     snafu::Report::from_error(&e)
                 );
-                restore_current_thread_state(regs, e.to_code().into_integer());
+                thread_manager.restore_current_thread_state(regs, e.to_code().into_integer());
             }
         }
-    } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_kernel_data_page_fault() {
+    } else if esr.ec().is_user_space_code_page_fault() || esr.ec().is_user_space_data_page_fault() {
         error!(
             "user space page fault in thread #{}, process #{}! {}, FAR={far:x}, registers = {:x?}",
             current_thread.id,
@@ -79,15 +77,10 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
             regs
         );
 
-        PROCESS_MANAGER
-            .get()
-            .unwrap()
-            .exit_thread(&current_thread, ExitReason::page_fault())
-            .expect("kill thread");
+        thread_manager.exit_thread(&current_thread, ExitReason::page_fault());
 
-        SCHEDULER.get().unwrap().next_time_slice();
-
-        restore_current_thread_state(regs, None);
+        thread_manager.next_time_slice();
+        thread_manager.restore_current_thread_state(regs, None);
     } else {
         panic!(
             "synchronous exception! {}, FAR={far:x}, registers = {:x?}",
@@ -101,13 +94,14 @@ unsafe extern "C" fn handle_interrupt(regs: *mut Registers, _esr: usize, _far: u
     let regs = regs
         .as_mut()
         .expect("asm exception vector code passes non-null ptr to registers object");
-    save_current_thread_state(regs);
+    let thread_manager = THREAD_MANAGER.get().unwrap();
+    thread_manager.save_current_thread_state(regs);
     super::interrupt::HANDLER_POLICY
         .get()
         .expect("interrupt handler policy to be initialized before interrupts are enabled")
         .process_interrupts()
         .expect("interrupt handlers to complete successfully");
-    restore_current_thread_state(regs, None);
+    thread_manager.restore_current_thread_state(regs, None);
 }
 
 #[no_mangle]
