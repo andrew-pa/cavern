@@ -70,28 +70,6 @@ fn invalid_syscall_number() {
 }
 
 #[test]
-fn read_current_thread_id() {
-    let pa = MockPageAllocator::new();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-
-    let thread = fake_thread();
-
-    let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
-
-    let usm = MockActiveUserSpaceTables::new();
-
-    let mut registers = Registers::default();
-    registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
-
-    assert_matches!(
-        policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers, &usm),
-        Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
-    );
-}
-
-#[test]
 fn normal_exit_thread() {
     let pa = MockPageAllocator::new();
     let pm = MockProcessManager::new();
@@ -138,7 +116,8 @@ fn exit_thread_exits_process() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         crate::process::Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(8).unwrap(),
@@ -195,7 +174,8 @@ fn normal_spawn_thread() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         crate::process::Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(8).unwrap(),
@@ -256,7 +236,8 @@ fn normal_send() {
     let sender_proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -265,7 +246,8 @@ fn normal_send() {
     let receiver_proc = crate::process::tests::create_test_process(
         ProcessId::new(8).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(81).unwrap(),
@@ -363,7 +345,8 @@ fn normal_receive_would_block() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -404,7 +387,8 @@ fn normal_receive_block() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -459,7 +443,8 @@ fn normal_receive_immediate() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(7).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -530,7 +515,8 @@ fn normal_spawn_process() {
     let parent_proc = crate::process::tests::create_test_process(
         ProcessId::new(10).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(11).unwrap(),
@@ -542,6 +528,7 @@ fn normal_spawn_process() {
         num_sections: 0,
         sections: core::ptr::null(),
         supervisor: None,
+        registry: None,
         privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
         notify_on_exit: false,
         inbox_size: 0,
@@ -558,7 +545,8 @@ fn normal_spawn_process() {
     let new_proc = crate::process::tests::create_test_process(
         new_proc_id,
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(21).unwrap(),
@@ -626,7 +614,8 @@ fn normal_kill_process() {
     let parent_proc = crate::process::tests::create_test_process(
         ProcessId::new(30).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(31).unwrap(),
@@ -637,7 +626,8 @@ fn normal_kill_process() {
     let target_proc = crate::process::tests::create_test_process(
         ProcessId::new(40).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         target_thread_id,
@@ -683,7 +673,8 @@ fn normal_allocate_heap_pages() {
     let parent_proc = crate::process::tests::create_test_process(
         ProcessId::new(50).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(51).unwrap(),
@@ -723,7 +714,8 @@ fn normal_free_heap_pages() {
     let parent_proc = crate::process::tests::create_test_process(
         ProcessId::new(60).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(61).unwrap(),
@@ -771,7 +763,8 @@ fn normal_transfer_to_shared_buffer() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(70).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(71).unwrap(),
@@ -831,7 +824,8 @@ fn normal_transfer_from_shared_buffer() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(80).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(81).unwrap(),
@@ -890,7 +884,8 @@ fn normal_free_message_no_buffers() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(100).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(101).unwrap(),
@@ -927,7 +922,8 @@ fn normal_free_shared_buffers() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(110).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(111).unwrap(),
@@ -974,7 +970,8 @@ fn normal_exit_notification_subscription_process() {
     let current_proc = crate::process::tests::create_test_process(
         ProcessId::new(120).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(121).unwrap(),
@@ -990,7 +987,8 @@ fn normal_exit_notification_subscription_process() {
     let target_proc = crate::process::tests::create_test_process(
         ProcessId::new(130).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(131).unwrap(),
@@ -1037,7 +1035,8 @@ fn normal_exit_notification_subscription_thread() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(140).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(141).unwrap(),
@@ -1093,7 +1092,8 @@ fn create_message_queue_success() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(200).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(201).unwrap(),
@@ -1137,7 +1137,8 @@ fn create_message_queue_bad_ptr() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(202).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(203).unwrap(),
@@ -1171,7 +1172,8 @@ fn free_message_queue_success() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(210).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(211).unwrap(),
@@ -1219,7 +1221,8 @@ fn free_message_queue_not_found() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(212).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(213).unwrap(),
@@ -1256,7 +1259,8 @@ fn free_message_with_buffers_and_flag() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(220).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(221).unwrap(),
@@ -1321,7 +1325,8 @@ fn write_log_success() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(230).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(231).unwrap(),
@@ -1358,7 +1363,8 @@ fn write_log_invalid_level() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(232).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(233).unwrap(),
@@ -1396,7 +1402,8 @@ fn exit_notification_unsubscribe() {
     let current_proc = crate::process::tests::create_test_process(
         ProcessId::new(240).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(241).unwrap(),
@@ -1448,7 +1455,8 @@ fn exit_notification_invalid_flags() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(242).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(243).unwrap(),
@@ -1489,7 +1497,8 @@ fn transfer_to_shared_buffer_out_of_bounds() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(250).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(251).unwrap(),
@@ -1549,7 +1558,8 @@ fn transfer_from_shared_buffer_out_of_bounds() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(300).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(301).unwrap(),
@@ -1610,7 +1620,8 @@ fn transfer_to_shared_buffer_insufficient_permissions() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(302).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(303).unwrap(),
@@ -1671,7 +1682,8 @@ fn transfer_from_shared_buffer_insufficient_permissions() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(304).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(305).unwrap(),
@@ -1732,7 +1744,8 @@ fn allocate_heap_pages_zero_size_invalid_length() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(306).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(307).unwrap(),
@@ -1767,7 +1780,8 @@ fn free_heap_pages_zero_size_invalid_length() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(308).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(309).unwrap(),
@@ -1818,7 +1832,8 @@ fn kill_process_not_found() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(310).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(311).unwrap(),
@@ -1855,7 +1870,8 @@ fn send_zero_length_message_invalid_length() {
     let sender = crate::process::tests::create_test_process(
         ProcessId::new(312).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(313).unwrap(),
@@ -1864,7 +1880,8 @@ fn send_zero_length_message_invalid_length() {
     let receiver = crate::process::tests::create_test_process(
         ProcessId::new(314).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(315).unwrap(),
@@ -1911,7 +1928,8 @@ fn free_shared_buffers_not_found() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(316).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(317).unwrap(),
@@ -1962,7 +1980,8 @@ fn create_message_queue_out_of_handles() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(318).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(319).unwrap(),
@@ -2004,7 +2023,8 @@ fn read_env_value_page_size() {
     let proc = crate::process::tests::create_test_process(
         ProcessId::new(320).unwrap(),
         Properties {
-            supervisor: None,
+            supervisor_queue: None,
+            registry_queue: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(321).unwrap(),
@@ -2029,5 +2049,150 @@ fn read_env_value_page_size() {
             &usm
         ),
         Ok(SysCallEffect::Return(size)) if size == pa.page_size().into()
+    );
+}
+
+#[test]
+fn read_process_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: None,
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentProcessId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == pid.get()
+    );
+}
+
+#[test]
+fn read_supervisor_queue_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let qid = QueueId::new(789).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: Some(qid),
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentSupervisorQueueId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == qid.get()
+    );
+}
+
+#[test]
+fn read_registry_queue_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let qid = QueueId::new(789).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: None,
+            registry_queue: Some(qid),
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentRegistryQueueId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == qid.get()
+    );
+}
+
+#[test]
+fn read_current_thread_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(320).unwrap(),
+        Properties {
+            supervisor_queue: None,
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == current_thread.id.get()
     );
 }

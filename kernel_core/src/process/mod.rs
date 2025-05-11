@@ -94,10 +94,16 @@ unsafe fn copy_image_section_data_to_process_memory(
 
 /// Properties describing a process
 pub struct Properties {
-    /// The supervisor process for this process.
+    /// The inherited queue ID for communicating with this process' assigned supervisor.
     ///
     /// None means that this process is the root process (of which there should only be one).
-    pub supervisor: Option<Arc<Process>>,
+    pub supervisor_queue: Option<QueueId>,
+
+    /// The inherited queue ID for communicating with this process' assigned registry.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
+    pub registry_queue: Option<QueueId>,
+
     /// Level of privilege this process has.
     pub privilege: PrivilegeLevel,
 }
@@ -732,7 +738,8 @@ pub mod tests {
         let proc = create_test_process(
             ProcessId::new(1).unwrap(),
             Properties {
-                supervisor: None,
+                supervisor_queue: None,
+                registry_queue: None,
                 privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),
@@ -747,7 +754,8 @@ pub mod tests {
         let proc = create_test_process(
             ProcessId::new(1).unwrap(),
             Properties {
-                supervisor: None,
+                supervisor_queue: None,
+                registry_queue: None,
                 privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),

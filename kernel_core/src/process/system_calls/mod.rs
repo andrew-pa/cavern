@@ -301,14 +301,21 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             "reading value {value_to_read:?} for thread {}",
             current_thread.id
         );
+        let current_proc = current_thread
+            .parent
+            .as_ref()
+            .expect("kernel threads don't make syscalls");
         match value_to_read {
-            EnvironmentValue::CurrentProcessId => current_thread
-                .parent
-                .as_ref()
-                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::CurrentProcessId => current_proc.id.get() as usize,
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::CurrentSupervisorQueueId => todo!(),
-            EnvironmentValue::CurrentRegistryQueueId => todo!(),
+            EnvironmentValue::CurrentSupervisorQueueId => current_proc
+                .props
+                .supervisor_queue
+                .map_or(0, |id| id.get() as usize),
+            EnvironmentValue::CurrentRegistryQueueId => current_proc
+                .props
+                .registry_queue
+                .map_or(0, |id| id.get() as usize),
             EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
         }
     }

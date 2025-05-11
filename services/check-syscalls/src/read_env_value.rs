@@ -5,6 +5,7 @@ use crate::Testable;
 fn process_id() {
     assert_eq!(read_env_value(EnvironmentValue::CurrentProcessId), 1);
 }
+
 fn thread_id() {
     // this value depends on the number of processors since each processor gets an idle thread
     assert!(read_env_value(EnvironmentValue::CurrentThreadId) >= 1);
@@ -20,7 +21,27 @@ fn invalid_env_value() {
     assert_eq!(read_env_value(bad_env_value), 0);
 }
 
+fn supervisor_id() {
+    // we are the root process
+    assert_eq!(
+        read_env_value(EnvironmentValue::CurrentSupervisorQueueId),
+        0
+    );
+}
+
+fn registry_id() {
+    // we are the root process
+    assert_eq!(read_env_value(EnvironmentValue::CurrentRegistryQueueId), 0);
+}
+
 pub const TESTS: (&str, &[&dyn Testable]) = (
     "read_env_value",
-    &[&process_id, &thread_id, &page_size, &invalid_env_value],
+    &[
+        &process_id,
+        &thread_id,
+        &page_size,
+        &invalid_env_value,
+        &supervisor_id,
+        &registry_id,
+    ],
 );
