@@ -301,14 +301,16 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             "reading value {value_to_read:?} for thread {}",
             current_thread.id
         );
+        let parent = current_thread.parent.as_ref();
         match value_to_read {
-            EnvironmentValue::CurrentProcessId => current_thread
-                .parent
-                .as_ref()
-                .map_or(0, |p| p.id.get() as usize),
+            EnvironmentValue::CurrentProcessId => parent.map_or(0, |p| p.id.get() as usize),
             EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::CurrentSupervisorQueueId => todo!(),
-            EnvironmentValue::CurrentRegistryQueueId => todo!(),
+            EnvironmentValue::CurrentSupervisorQueueId => {
+                parent.map_or(0, |p| p.props.supervisor_queue.unwrap().get() as usize)
+            }
+            EnvironmentValue::CurrentRegistryQueueId => {
+                parent.map_or(0, |p| p.props.registry_queue.unwrap().get() as usize)
+            }
             EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
         }
     }

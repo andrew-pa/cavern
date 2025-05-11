@@ -2073,3 +2073,113 @@ fn read_env_value_page_size() {
         Ok(SysCallEffect::Return(size)) if size == pa.page_size().into()
     );
 }
+
+#[test]
+fn read_process_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: None,
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentProcessId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == pid.get()
+    );
+}
+
+#[test]
+fn read_supervisor_queue_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let qid = QueueId::new(789).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: Some(qid),
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentSupervisorQueueId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == qid.get()
+    );
+}
+
+#[test]
+fn read_registry_queue_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let pid = ProcessId::new(320).unwrap();
+    let qid = QueueId::new(789).unwrap();
+    let proc = crate::process::tests::create_test_process(
+        pid,
+        Properties {
+            supervisor_queue: None,
+            registry_queue: Some(qid),
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentRegistryQueueId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == qid.get()
+    );
+}
