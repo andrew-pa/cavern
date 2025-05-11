@@ -197,6 +197,8 @@ pub struct ProcessCreateInfo {
     pub sections: *const ImageSection,
     /// The new process' supervisor, or None to inherit.
     pub supervisor: Option<ProcessId>,
+    /// The new process' registry, or None to inherit.
+    pub registry: Option<ProcessId>,
     /// The new process' privilege level (must be less than or equal to the current privilege level).
     pub privilege_level: PrivilegeLevel,
     /// Whether to notify this process via a message when the spawned process exits.

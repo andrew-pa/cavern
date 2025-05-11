@@ -94,10 +94,16 @@ unsafe fn copy_image_section_data_to_process_memory(
 
 /// Properties describing a process
 pub struct Properties {
-    /// The supervisor process for this process.
+    /// The assigned supervisor process for this process.
     ///
     /// None means that this process is the root process (of which there should only be one).
     pub supervisor: Option<Arc<Process>>,
+
+    /// The assigned registry process for this process.
+    ///
+    /// None means that this process is the root process (of which there should only be one).
+    pub registry: Option<Arc<Process>>,
+
     /// Level of privilege this process has.
     pub privilege: PrivilegeLevel,
 }
@@ -733,6 +739,7 @@ pub mod tests {
             ProcessId::new(1).unwrap(),
             Properties {
                 supervisor: None,
+                registry: None,
                 privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),
@@ -748,6 +755,7 @@ pub mod tests {
             ProcessId::new(1).unwrap(),
             Properties {
                 supervisor: None,
+                registry: None,
                 privilege: kernel_api::PrivilegeLevel::Driver,
             },
             ThreadId::new(1).unwrap(),

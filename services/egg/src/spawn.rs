@@ -86,6 +86,7 @@ pub fn spawn_root_process(
         num_sections: sections.len(),
         sections: sections.as_ptr(),
         supervisor: Some(self_pid),
+        registry: Some(self_pid),
         privilege_level: PrivilegeLevel::Driver,
         notify_on_exit: false,
         inbox_size: 256,

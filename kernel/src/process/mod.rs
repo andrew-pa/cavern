@@ -48,6 +48,10 @@ impl ProcessManager for SystemProcessManager {
                     .supervisor
                     .and_then(|sid| self.process_for_id(sid))
                     .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
+                registry: info
+                    .registry
+                    .and_then(|sid| self.process_for_id(sid))
+                    .or_else(|| parent.as_ref().and_then(|p| p.props.registry.clone())),
                 privilege: info.privilege_level,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },

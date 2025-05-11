@@ -104,6 +104,7 @@ pub fn spawn_init_process(
         num_sections: sections.len(),
         sections: sections.as_ptr(),
         supervisor: None,
+        registry: None,
         privilege_level: PrivilegeLevel::Driver,
         notify_on_exit: false,
         inbox_size: 256,
