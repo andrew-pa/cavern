@@ -23,7 +23,10 @@ fn invalid_env_value() {
 
 fn supervisor_id() {
     // we are the root process
-    assert_eq!(read_env_value(EnvironmentValue::CurrentSupervisorQueueId), 0);
+    assert_eq!(
+        read_env_value(EnvironmentValue::CurrentSupervisorQueueId),
+        0
+    );
 }
 
 fn registry_id() {
@@ -33,5 +36,12 @@ fn registry_id() {
 
 pub const TESTS: (&str, &[&dyn Testable]) = (
     "read_env_value",
-    &[&process_id, &thread_id, &page_size, &invalid_env_value],
+    &[
+        &process_id,
+        &thread_id,
+        &page_size,
+        &invalid_env_value,
+        &supervisor_id,
+        &registry_id,
+    ],
 );

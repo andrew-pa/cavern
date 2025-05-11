@@ -70,28 +70,6 @@ fn invalid_syscall_number() {
 }
 
 #[test]
-fn read_current_thread_id() {
-    let pa = MockPageAllocator::new();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-
-    let thread = fake_thread();
-
-    let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
-
-    let usm = MockActiveUserSpaceTables::new();
-
-    let mut registers = Registers::default();
-    registers.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
-
-    assert_matches!(
-        policy.dispatch_system_call(CallNumber::ReadEnvValue.into_integer(), &thread, &registers, &usm),
-        Ok(SysCallEffect::Return(x)) if x as u32 == thread.id.get()
-    );
-}
-
-#[test]
 fn normal_exit_thread() {
     let pa = MockPageAllocator::new();
     let pm = MockProcessManager::new();
@@ -2181,5 +2159,40 @@ fn read_registry_queue_id() {
             &usm
         ),
         Ok(SysCallEffect::Return(v)) if v as u32 == qid.get()
+    );
+}
+
+#[test]
+fn read_current_thread_id() {
+    let pa = &*PAGE_ALLOCATOR;
+    let proc = crate::process::tests::create_test_process(
+        ProcessId::new(320).unwrap(),
+        Properties {
+            supervisor_queue: None,
+            registry_queue: None,
+            privilege: kernel_api::PrivilegeLevel::Privileged,
+        },
+        ThreadId::new(321).unwrap(),
+    )
+    .unwrap();
+    let current_thread = proc.threads.read().first().unwrap().clone();
+
+    let pm = MockProcessManager::new();
+    let tm = MockThreadManager::new();
+    let qm = MockQueueManager::new();
+    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+    let mut regs = Registers::default();
+    regs.x[0] = EnvironmentValue::CurrentThreadId.into_integer();
+
+    assert_matches!(
+        policy.dispatch_system_call(
+            CallNumber::ReadEnvValue.into_integer(),
+            &current_thread,
+            &regs,
+            &usm
+        ),
+        Ok(SysCallEffect::Return(v)) if v as u32 == current_thread.id.get()
     );
 }
