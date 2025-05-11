@@ -139,6 +139,7 @@ fn exit_thread_exits_process() {
         ProcessId::new(7).unwrap(),
         crate::process::Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(8).unwrap(),
@@ -196,6 +197,7 @@ fn normal_spawn_thread() {
         ProcessId::new(7).unwrap(),
         crate::process::Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(8).unwrap(),
@@ -257,6 +259,7 @@ fn normal_send() {
         ProcessId::new(7).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -266,6 +269,7 @@ fn normal_send() {
         ProcessId::new(8).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(81).unwrap(),
@@ -364,6 +368,7 @@ fn normal_receive_would_block() {
         ProcessId::new(7).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -405,6 +410,7 @@ fn normal_receive_block() {
         ProcessId::new(7).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -460,6 +466,7 @@ fn normal_receive_immediate() {
         ProcessId::new(7).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(80).unwrap(),
@@ -531,6 +538,7 @@ fn normal_spawn_process() {
         ProcessId::new(10).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(11).unwrap(),
@@ -542,6 +550,7 @@ fn normal_spawn_process() {
         num_sections: 0,
         sections: core::ptr::null(),
         supervisor: None,
+        registry: None,
         privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
         notify_on_exit: false,
         inbox_size: 0,
@@ -559,6 +568,7 @@ fn normal_spawn_process() {
         new_proc_id,
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(21).unwrap(),
@@ -627,6 +637,7 @@ fn normal_kill_process() {
         ProcessId::new(30).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(31).unwrap(),
@@ -638,6 +649,7 @@ fn normal_kill_process() {
         ProcessId::new(40).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         target_thread_id,
@@ -684,6 +696,7 @@ fn normal_allocate_heap_pages() {
         ProcessId::new(50).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(51).unwrap(),
@@ -724,6 +737,7 @@ fn normal_free_heap_pages() {
         ProcessId::new(60).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(61).unwrap(),
@@ -772,6 +786,7 @@ fn normal_transfer_to_shared_buffer() {
         ProcessId::new(70).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(71).unwrap(),
@@ -832,6 +847,7 @@ fn normal_transfer_from_shared_buffer() {
         ProcessId::new(80).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(81).unwrap(),
@@ -891,6 +907,7 @@ fn normal_free_message_no_buffers() {
         ProcessId::new(100).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(101).unwrap(),
@@ -928,6 +945,7 @@ fn normal_free_shared_buffers() {
         ProcessId::new(110).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(111).unwrap(),
@@ -975,6 +993,7 @@ fn normal_exit_notification_subscription_process() {
         ProcessId::new(120).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(121).unwrap(),
@@ -991,6 +1010,7 @@ fn normal_exit_notification_subscription_process() {
         ProcessId::new(130).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(131).unwrap(),
@@ -1038,6 +1058,7 @@ fn normal_exit_notification_subscription_thread() {
         ProcessId::new(140).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(141).unwrap(),
@@ -1094,6 +1115,7 @@ fn create_message_queue_success() {
         ProcessId::new(200).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(201).unwrap(),
@@ -1138,6 +1160,7 @@ fn create_message_queue_bad_ptr() {
         ProcessId::new(202).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(203).unwrap(),
@@ -1172,6 +1195,7 @@ fn free_message_queue_success() {
         ProcessId::new(210).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(211).unwrap(),
@@ -1220,6 +1244,7 @@ fn free_message_queue_not_found() {
         ProcessId::new(212).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(213).unwrap(),
@@ -1257,6 +1282,7 @@ fn free_message_with_buffers_and_flag() {
         ProcessId::new(220).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(221).unwrap(),
@@ -1322,6 +1348,7 @@ fn write_log_success() {
         ProcessId::new(230).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(231).unwrap(),
@@ -1359,6 +1386,7 @@ fn write_log_invalid_level() {
         ProcessId::new(232).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(233).unwrap(),
@@ -1397,6 +1425,7 @@ fn exit_notification_unsubscribe() {
         ProcessId::new(240).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(241).unwrap(),
@@ -1449,6 +1478,7 @@ fn exit_notification_invalid_flags() {
         ProcessId::new(242).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(243).unwrap(),
@@ -1490,6 +1520,7 @@ fn transfer_to_shared_buffer_out_of_bounds() {
         ProcessId::new(250).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(251).unwrap(),
@@ -1550,6 +1581,7 @@ fn transfer_from_shared_buffer_out_of_bounds() {
         ProcessId::new(300).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(301).unwrap(),
@@ -1611,6 +1643,7 @@ fn transfer_to_shared_buffer_insufficient_permissions() {
         ProcessId::new(302).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(303).unwrap(),
@@ -1672,6 +1705,7 @@ fn transfer_from_shared_buffer_insufficient_permissions() {
         ProcessId::new(304).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(305).unwrap(),
@@ -1733,6 +1767,7 @@ fn allocate_heap_pages_zero_size_invalid_length() {
         ProcessId::new(306).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(307).unwrap(),
@@ -1768,6 +1803,7 @@ fn free_heap_pages_zero_size_invalid_length() {
         ProcessId::new(308).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(309).unwrap(),
@@ -1819,6 +1855,7 @@ fn kill_process_not_found() {
         ProcessId::new(310).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(311).unwrap(),
@@ -1856,6 +1893,7 @@ fn send_zero_length_message_invalid_length() {
         ProcessId::new(312).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(313).unwrap(),
@@ -1865,6 +1903,7 @@ fn send_zero_length_message_invalid_length() {
         ProcessId::new(314).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(315).unwrap(),
@@ -1912,6 +1951,7 @@ fn free_shared_buffers_not_found() {
         ProcessId::new(316).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(317).unwrap(),
@@ -1963,6 +2003,7 @@ fn create_message_queue_out_of_handles() {
         ProcessId::new(318).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(319).unwrap(),
@@ -2005,6 +2046,7 @@ fn read_env_value_page_size() {
         ProcessId::new(320).unwrap(),
         Properties {
             supervisor: None,
+            registry: None,
             privilege: kernel_api::PrivilegeLevel::Privileged,
         },
         ThreadId::new(321).unwrap(),
