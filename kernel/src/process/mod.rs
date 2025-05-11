@@ -44,14 +44,12 @@ impl ProcessManager for SystemProcessManager {
             page_allocator(),
             id,
             Properties {
-                supervisor: info
+                supervisor_queue: info
                     .supervisor
-                    .and_then(|sid| self.process_for_id(sid))
-                    .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor.clone())),
-                registry: info
+                    .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor_queue)),
+                registry_queue: info
                     .registry
-                    .and_then(|sid| self.process_for_id(sid))
-                    .or_else(|| parent.as_ref().and_then(|p| p.props.registry.clone())),
+                    .or_else(|| parent.as_ref().and_then(|p| p.props.registry_queue)),
                 privilege: info.privilege_level,
             },
             unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
@@ -79,7 +77,7 @@ impl ProcessManager for SystemProcessManager {
             }
         }
 
-        if process.props.supervisor.is_none() {
+        if process.props.supervisor_queue.is_none() {
             // the root process has exited
             qemu_exit::AArch64::new().exit(match reason.tag {
                 kernel_api::ExitReasonTag::User => reason.user_code,
