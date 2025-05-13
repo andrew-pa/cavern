@@ -5,8 +5,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, QueueId,
-    SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId,
+    QueueId, SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -408,6 +408,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             None
         };
 
+        let notify_on_exit = uinfo
+            .notify_on_exit
+            .map(|q| self.queue_by_id_checked(q, &parent))
+            .transpose()?;
+
         let user_sections = user_space_memory
             .check_slice(uinfo.sections.into(), uinfo.num_sections)
             .context(InvalidAddressSnafu {
@@ -437,7 +442,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             supervisor: uinfo.supervisor,
             registry: uinfo.registry,
             privilege_level: uinfo.privilege_level,
-            notify_on_exit: None,
             inbox_size: uinfo.inbox_size,
         };
 
@@ -446,6 +450,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             .process_manager
             .spawn_process(Some(parent), &info)
             .context(ManagerSnafu)?;
+
+        // if the user requested an exit subscription, add it
+        if let Some(q) = notify_on_exit {
+            proc.exit_subscribers.lock().push(q);
+        }
 
         // create the initial queue
         let qu = self
@@ -612,6 +621,30 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         .context(ManagerSnafu)
     }
 
+    /// Look up a queue
+    fn queue_by_id_checked(
+        &self,
+        queue_id: QueueId,
+        current_process: &Arc<Process>,
+    ) -> Result<Arc<MessageQueue>, Error> {
+        let qu = self
+            .queue_manager
+            .queue_for_id(queue_id)
+            .context(NotFoundSnafu {
+                reason: "queue id",
+                id: queue_id.get() as usize,
+            })?;
+        ensure!(
+            qu.owner
+                .upgrade()
+                .is_some_and(|q| q.id == current_process.id),
+            NotPermittedSnafu {
+                reason: "queue not owned by current process"
+            }
+        );
+        Ok(qu)
+    }
+
     #[allow(clippy::unused_self)]
     fn syscall_receive<T: ActiveUserSpaceTables>(
         &self,
@@ -620,7 +653,10 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<SysCallEffect, Error> {
         let flag_bits: usize = registers.x[0];
-        let queue_id: Option<QueueId> = QueueId::new(registers.x[1] as _);
+        let queue_id = QueueId::new(registers.x[1] as _).context(InvalidHandleSnafu {
+            reason: "queue id is zero",
+            handle: 0u32,
+        })?;
         let u_out_msg = registers.x[2].into();
         let out_msg: &mut VirtualAddress =
             user_space_memory
@@ -639,20 +675,9 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             reason: "invalid bits",
             bits: flag_bits,
         })?;
-        let qu = queue_id
-            .and_then(|qid| self.queue_manager.queue_for_id(qid))
-            .context(NotFoundSnafu {
-                reason: "queue id",
-                id: queue_id.map_or(0, ProcessId::get) as usize,
-            })?;
-        ensure!(
-            qu.owner
-                .upgrade()
-                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
-            NotPermittedSnafu {
-                reason: "queue not owned by current process"
-            }
-        );
+
+        let qu = self.queue_by_id_checked(queue_id, current_thread.parent.as_ref().unwrap())?;
+
         if let Some(msg) = qu.receive() {
             *out_msg = msg.data_address;
             *out_len = msg.data_length;
