@@ -5,8 +5,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, QueueId,
-    SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
+    CallNumber, ErrorCode, ExitReason, Message, ProcessId, QueueId, SharedBufferCreateInfo,
+    ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -160,6 +160,8 @@ pub struct SystemCalls<
     queue_manager: &'m QM,
 }
 
+mod read_env_value;
+
 impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
     SystemCalls<'pa, 'm, PA, PM, TM, QM>
 {
@@ -290,33 +292,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 self.syscall_free_msg_queue(registers)?;
                 Ok(SysCallEffect::Return(0))
             }
-        }
-    }
-
-    fn syscall_read_env_value(&self, current_thread: &Arc<Thread>, registers: &Registers) -> usize {
-        let Some(value_to_read) = EnvironmentValue::from_integer(registers.x[0]) else {
-            return 0;
-        };
-        trace!(
-            "reading value {value_to_read:?} for thread {}",
-            current_thread.id
-        );
-        let current_proc = current_thread
-            .parent
-            .as_ref()
-            .expect("kernel threads don't make syscalls");
-        match value_to_read {
-            EnvironmentValue::CurrentProcessId => current_proc.id.get() as usize,
-            EnvironmentValue::CurrentThreadId => current_thread.id.get() as usize,
-            EnvironmentValue::CurrentSupervisorQueueId => current_proc
-                .props
-                .supervisor_queue
-                .map_or(0, |id| id.get() as usize),
-            EnvironmentValue::CurrentRegistryQueueId => current_proc
-                .props
-                .registry_queue
-                .map_or(0, |id| id.get() as usize),
-            EnvironmentValue::PageSizeInBytes => self.page_allocator.page_size().into(),
         }
     }
 
