@@ -21,7 +21,7 @@ use crate::{
 
 use super::*;
 
-fn fake_thread() -> Arc<Thread> {
+pub fn fake_thread() -> Arc<Thread> {
     Arc::new(Thread::new(
         NonZeroU32::new(777).unwrap(),
         None,
@@ -61,98 +61,6 @@ fn invalid_syscall_number() {
     assert_matches!(
         policy.dispatch_system_call(
             system_call_number_that_is_invalid,
-            &thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::ScheduleNextThread)
-    );
-}
-
-#[test]
-fn normal_exit_thread() {
-    let pa = MockPageAllocator::new();
-    let pm = MockProcessManager::new();
-    let mut tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-
-    let exit_code = 7;
-
-    let thread = fake_thread();
-
-    let thread2 = thread.clone();
-    tm.expect_exit_thread()
-        .once()
-        .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
-        .returning(|_, _| false);
-
-    let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
-
-    let usm = MockActiveUserSpaceTables::new();
-
-    let mut registers = Registers::default();
-    registers.x[0] = exit_code as usize;
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::ExitCurrentThread.into_integer(),
-            &thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::ScheduleNextThread)
-    );
-}
-
-#[test]
-fn exit_thread_exits_process() {
-    let pa = MockPageAllocator::new();
-    let mut pm = MockProcessManager::new();
-    let mut tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-
-    let exit_code = 7;
-
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(7).unwrap(),
-        crate::process::Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(8).unwrap(),
-    )
-    .unwrap();
-
-    let thread = Arc::new(Thread::new(
-        ThreadId::new(9).unwrap(),
-        Some(proc.clone()),
-        State::Running,
-        ProcessorState::new_for_user_thread(VirtualAddress::null(), VirtualAddress::null(), 0),
-        (VirtualAddress::null(), 0),
-    ));
-
-    let thread2 = thread.clone();
-    tm.expect_exit_thread()
-        .once()
-        .withf(move |t, r| t.id == thread2.id && *r == ExitReason::user(exit_code))
-        .returning(|_, _| true);
-
-    pm.expect_kill_process()
-        .once()
-        .withf(move |p, r| p.id == proc.id && *r == ExitReason::user(exit_code))
-        .returning(|_, _| ());
-
-    let policy = SystemCalls::new(&pa, &pm, &tm, &qm);
-
-    let usm = MockActiveUserSpaceTables::new();
-
-    let mut registers = Registers::default();
-    registers.x[0] = exit_code as usize;
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::ExitCurrentThread.into_integer(),
             &thread,
             &registers,
             &usm

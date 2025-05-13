@@ -160,6 +160,7 @@ pub struct SystemCalls<
     queue_manager: &'m QM,
 }
 
+mod exit_current_thread;
 mod read_env_value;
 mod spawn_thread;
 
@@ -294,18 +295,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_exit_current_thread(&self, current_thread: &Arc<Thread>, registers: &Registers) {
-        let code: u32 = registers.x[0] as _;
-        debug!("thread #{} exited with code 0x{code:x}", current_thread.id);
-        kill_thread_entirely(
-            self.process_manager,
-            self.thread_manager,
-            self.queue_manager,
-            current_thread,
-            ExitReason::user(code),
-        );
     }
 
     fn syscall_spawn_process<T: ActiveUserSpaceTables>(
