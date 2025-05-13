@@ -1,7 +1,7 @@
 //! System calls from user space.
 #![allow(clippy::needless_pass_by_value)]
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
@@ -162,6 +162,7 @@ pub struct SystemCalls<
 
 mod exit_current_thread;
 mod read_env_value;
+mod spawn_process;
 mod spawn_thread;
 
 impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
@@ -295,110 +296,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_spawn_process<T: ActiveUserSpaceTables>(
-        &self,
-        parent: Arc<Process>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
-    ) -> Result<(), Error> {
-        let uinfo: &kernel_api::ProcessCreateInfo = user_space_memory
-            .check_ref(registers.x[0].into())
-            .context(InvalidAddressSnafu {
-                cause: "process info",
-            })?;
-
-        let out_process_id = user_space_memory
-            .check_mut_ref(registers.x[1].into())
-            .context(InvalidAddressSnafu {
-                cause: "output process id",
-            })?;
-
-        let out_queue_id = if registers.x[2] > 0 {
-            Some(
-                user_space_memory
-                    .check_mut_ref(registers.x[2].into())
-                    .context(InvalidAddressSnafu {
-                        cause: "output queue id",
-                    })?,
-            )
-        } else {
-            None
-        };
-
-        let notify_on_exit = uinfo
-            .notify_on_exit
-            .map(|q| self.queue_by_id_checked(q, &parent))
-            .transpose()?;
-
-        let user_sections = user_space_memory
-            .check_slice(uinfo.sections.into(), uinfo.num_sections)
-            .context(InvalidAddressSnafu {
-                cause: "process image sections slice",
-            })?;
-
-        // check each section's data slice
-        let sections = user_sections
-            .iter()
-            .map(|s| {
-                Ok(crate::process::ImageSection {
-                    base_address: s.base_address.into(),
-                    data_offset: s.data_offset,
-                    total_size: s.total_size,
-                    data: user_space_memory
-                        .check_slice(s.data.into(), s.data_size)
-                        .context(InvalidAddressSnafu {
-                            cause: "process image section data slice",
-                        })?,
-                    kind: s.kind,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let info = crate::process::ProcessCreateInfo {
-            sections: &sections,
-            supervisor: uinfo.supervisor,
-            registry: uinfo.registry,
-            privilege_level: uinfo.privilege_level,
-            inbox_size: uinfo.inbox_size,
-        };
-
-        debug!("spawning process {info:?}, parent #{}", parent.id);
-        let proc = self
-            .process_manager
-            .spawn_process(Some(parent), &info)
-            .context(ManagerSnafu)?;
-
-        // if the user requested an exit subscription, add it
-        if let Some(q) = notify_on_exit {
-            proc.exit_subscribers.lock().push(q);
-        }
-
-        // create the initial queue
-        let qu = self
-            .queue_manager
-            .create_queue(&proc)
-            .context(ManagerSnafu)?;
-
-        // spawn the main thread with an 8 MiB stack
-        self.thread_manager
-            .spawn_thread(
-                proc.clone(),
-                uinfo.entry_point.into(),
-                8 * 1024 * 1024 / self.page_allocator.page_size(),
-                qu.id.get() as usize,
-            )
-            .context(ManagerSnafu)?;
-
-        debug!("process #{} spawned (main queue #{})", proc.id, qu.id);
-
-        *out_process_id = proc.id;
-        if let Some(oqi) = out_queue_id {
-            *oqi = qu.id;
-        }
-
-        Ok(())
     }
 
     fn syscall_kill_process(

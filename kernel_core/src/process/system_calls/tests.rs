@@ -3,7 +3,7 @@
 use core::{mem::MaybeUninit, num::NonZeroU32, ptr};
 use std::assert_matches::assert_matches;
 
-use kernel_api::{flags::SharedBufferFlags, MessageHeader, ProcessCreateInfo, SharedBufferInfo};
+use kernel_api::{flags::SharedBufferFlags, MessageHeader, SharedBufferInfo};
 use mockall::predicate::{eq, function};
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     process::{
         queue::{MessageQueue, MockQueueManager},
         tests::PAGE_ALLOCATOR,
-        thread::{MockThreadManager, ProcessorState, State},
+        thread::{MockThreadManager, State},
         MockProcessManager, PendingMessage, Properties, QueueId,
     },
 };
@@ -343,211 +343,6 @@ fn normal_receive_immediate() {
     // Check header content (sender info isn't available here anymore)
     let msg = unsafe { Message::from_slice(&message[..size_of::<MessageHeader>()]) };
     assert_eq!(msg.header().num_buffers, 0);
-}
-
-#[test]
-fn normal_spawn_process() {
-    let mut pm = MockProcessManager::new();
-    let mut tm = MockThreadManager::new();
-    let mut qm = MockQueueManager::new();
-    let parent_proc = crate::process::tests::create_test_process(
-        ProcessId::new(10).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(11).unwrap(),
-    )
-    .unwrap();
-
-    let dummy_info: ProcessCreateInfo = ProcessCreateInfo {
-        entry_point: 0,
-        num_sections: 0,
-        sections: core::ptr::null(),
-        supervisor: None,
-        registry: None,
-        privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
-        notify_on_exit: None,
-        inbox_size: 0,
-    };
-    let info_ptr = &dummy_info as *const _;
-    let mut process_id: u32 = 0;
-    let process_id_ptr = &mut process_id as *mut u32;
-    let mut queue_id: u32 = 0;
-    let queue_id_ptr = &mut queue_id as *mut u32;
-
-    let parent_thread = parent_proc.threads.read().first().unwrap().clone();
-    // Create a new process that will be returned by spawn_process.
-    let new_proc_id = ProcessId::new(20).unwrap();
-    let new_proc = crate::process::tests::create_test_process(
-        new_proc_id,
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(21).unwrap(),
-    )
-    .unwrap();
-
-    // Expect spawn_process to be called with the proper parent.
-    let parent_clone = parent_proc.clone();
-    let new_proc2 = new_proc.clone();
-    pm.expect_spawn_process()
-        .withf(move |p, _| p.as_ref().is_some_and(|p| p.id == parent_clone.id))
-        .return_once(move |_, _| Ok(new_proc2));
-
-    let new_queue_id = QueueId::new(34).unwrap();
-    qm.expect_create_queue()
-        .withf(move |o| o.id == new_proc_id)
-        .return_once(move |o| Ok(Arc::new(MessageQueue::new(new_queue_id, o))));
-
-    let new_thread_id = ThreadId::new(234).unwrap();
-    tm.expect_spawn_thread()
-        .with(
-            function(move |p: &Arc<Process>| p.id == new_proc_id),
-            eq(VirtualAddress::from(dummy_info.entry_point)),
-            eq(2048),
-            eq(new_queue_id.get() as usize),
-        )
-        .return_once(move |p, entry, stack_size, user_data| {
-            Ok(Arc::new(Thread::new(
-                new_thread_id,
-                Some(p),
-                State::Running,
-                ProcessorState::new_for_user_thread(entry, VirtualAddress::null(), user_data),
-                (VirtualAddress::null(), stack_size),
-            )))
-        });
-
-    let pa = &*PAGE_ALLOCATOR;
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let mut registers = Registers::default();
-    registers.x[0] = info_ptr as usize;
-    registers.x[1] = process_id_ptr as usize;
-    registers.x[2] = queue_id_ptr as usize;
-
-    // The current thread (from parent_proc) is used so that its parent is set.
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::SpawnProcess.into_integer(),
-            &parent_thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::Return(0))
-    );
-    assert_eq!(process_id, new_proc_id.get());
-    assert_eq!(queue_id, new_queue_id.get());
-}
-
-#[test]
-fn spawn_process_and_subscribe_to_exit() {
-    let mut pm = MockProcessManager::new();
-    let mut tm = MockThreadManager::new();
-    let mut qm = MockQueueManager::new();
-    let parent_proc = crate::process::tests::create_test_process(
-        ProcessId::new(10).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(11).unwrap(),
-    )
-    .unwrap();
-
-    let qid = QueueId::new(15).unwrap();
-    let qu = Arc::new(MessageQueue::new(qid, &parent_proc));
-    qm.expect_queue_for_id()
-        .with(eq(qid))
-        .return_once(|_| Some(qu));
-
-    let dummy_info: ProcessCreateInfo = ProcessCreateInfo {
-        entry_point: 0,
-        num_sections: 0,
-        sections: core::ptr::null(),
-        supervisor: None,
-        registry: None,
-        privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
-        notify_on_exit: Some(qid),
-        inbox_size: 0,
-    };
-    let info_ptr = &dummy_info as *const _;
-    let mut process_id: u32 = 0;
-    let process_id_ptr = &mut process_id as *mut u32;
-    let mut queue_id: u32 = 0;
-    let queue_id_ptr = &mut queue_id as *mut u32;
-
-    let parent_thread = parent_proc.threads.read().first().unwrap().clone();
-    // Create a new process that will be returned by spawn_process.
-    let new_proc_id = ProcessId::new(20).unwrap();
-    let new_proc = crate::process::tests::create_test_process(
-        new_proc_id,
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(21).unwrap(),
-    )
-    .unwrap();
-
-    // Expect spawn_process to be called with the proper parent.
-    let parent_clone = parent_proc.clone();
-    let new_proc2 = new_proc.clone();
-    pm.expect_spawn_process()
-        .withf(move |p, _| p.as_ref().is_some_and(|p| p.id == parent_clone.id))
-        .return_once(move |_, _| Ok(new_proc2));
-
-    let new_queue_id = QueueId::new(34).unwrap();
-    qm.expect_create_queue()
-        .withf(move |o| o.id == new_proc_id)
-        .return_once(move |o| Ok(Arc::new(MessageQueue::new(new_queue_id, o))));
-
-    let new_thread_id = ThreadId::new(234).unwrap();
-    tm.expect_spawn_thread()
-        .with(
-            function(move |p: &Arc<Process>| p.id == new_proc_id),
-            eq(VirtualAddress::from(dummy_info.entry_point)),
-            eq(2048),
-            eq(new_queue_id.get() as usize),
-        )
-        .return_once(move |p, entry, stack_size, user_data| {
-            Ok(Arc::new(Thread::new(
-                new_thread_id,
-                Some(p),
-                State::Running,
-                ProcessorState::new_for_user_thread(entry, VirtualAddress::null(), user_data),
-                (VirtualAddress::null(), stack_size),
-            )))
-        });
-
-    let pa = &*PAGE_ALLOCATOR;
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let mut registers = Registers::default();
-    registers.x[0] = info_ptr as usize;
-    registers.x[1] = process_id_ptr as usize;
-    registers.x[2] = queue_id_ptr as usize;
-
-    // The current thread (from parent_proc) is used so that its parent is set.
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::SpawnProcess.into_integer(),
-            &parent_thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::Return(0))
-    );
-    assert_eq!(process_id, new_proc_id.get());
-    assert_eq!(queue_id, new_queue_id.get());
-    assert!(new_proc.exit_subscribers.lock().iter().any(|q| q.id == qid));
 }
 
 #[test]
