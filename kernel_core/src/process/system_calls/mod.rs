@@ -6,7 +6,7 @@ use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
     CallNumber, ErrorCode, ExitReason, Message, ProcessId, QueueId, SharedBufferCreateInfo,
-    ThreadCreateInfo, ThreadId,
+    ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -161,6 +161,7 @@ pub struct SystemCalls<
 }
 
 mod read_env_value;
+mod spawn_thread;
 
 impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
     SystemCalls<'pa, 'm, PA, PM, TM, QM>
@@ -305,62 +306,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             current_thread,
             ExitReason::user(code),
         );
-    }
-
-    fn syscall_spawn_thread<T: ActiveUserSpaceTables>(
-        &self,
-        parent: Arc<Process>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
-    ) -> Result<(), Error> {
-        let info: &ThreadCreateInfo =
-            user_space_memory
-                .check_ref(registers.x[0].into())
-                .context(InvalidAddressSnafu {
-                    cause: "thread info",
-                })?;
-        let out_thread_id = user_space_memory
-            .check_mut_ref(registers.x[1].into())
-            .context(InvalidAddressSnafu {
-                cause: "output thread id",
-            })?;
-
-        let entry_ptr = VirtualAddress::from(info.entry as *mut ());
-        ensure!(
-            !entry_ptr.is_null(),
-            InvalidPointerSnafu {
-                reason: "thread entry point ptr",
-                ptr: entry_ptr
-            }
-        );
-        ensure!(
-            info.stack_size > 0,
-            InvalidLengthSnafu {
-                reason: "stack size <= 0",
-                length: info.stack_size
-            }
-        );
-
-        let notify_on_exit = info
-            .notify_on_exit
-            .map(|q| self.queue_by_id_checked(q, &parent))
-            .transpose()?;
-
-        debug!("spawning thread {info:?} in process #{}", parent.id);
-
-        let thread = self
-            .thread_manager
-            .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
-            .context(ManagerSnafu)?;
-
-        // if provided a queue, subscribe it to the thread exit
-        if let Some(qu) = notify_on_exit {
-            thread.exit_subscribers.lock().push(qu);
-        }
-
-        *out_thread_id = thread.id;
-
-        Ok(())
     }
 
     fn syscall_spawn_process<T: ActiveUserSpaceTables>(
