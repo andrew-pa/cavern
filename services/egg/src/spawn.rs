@@ -88,7 +88,7 @@ pub fn spawn_root_process(
         supervisor: Some(self_pid),
         registry: Some(self_pid),
         privilege_level: PrivilegeLevel::Driver,
-        notify_on_exit: false,
+        notify_on_exit: None,
         inbox_size: 256,
     };
 

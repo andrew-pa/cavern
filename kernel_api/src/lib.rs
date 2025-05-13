@@ -128,6 +128,8 @@ pub struct ThreadCreateInfo {
     pub stack_size: usize,
     /// The user paramter that will be passed to the entry point function.
     pub user_data: usize,
+    /// An optional queue to notify with an exit message when the spawned thread exits (same as [`exit_notification_subscription`]).
+    pub notify_on_exit: Option<QueueId>,
 }
 
 /// The unique ID of a process.
@@ -201,8 +203,8 @@ pub struct ProcessCreateInfo {
     pub registry: Option<QueueId>,
     /// The new process' privilege level (must be less than or equal to the current privilege level).
     pub privilege_level: PrivilegeLevel,
-    /// Whether to notify this process via a message when the spawned process exits.
-    pub notify_on_exit: bool,
+    /// An optional queue to notify with an exit message when the spawned process exits (same as [`exit_notification_subscription`]).
+    pub notify_on_exit: Option<QueueId>,
     /// The size of this process' message inbox, in message blocks.
     pub inbox_size: usize,
 }

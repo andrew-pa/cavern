@@ -530,7 +530,7 @@ fn normal_spawn_process() {
         supervisor: None,
         registry: None,
         privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
-        notify_on_exit: false,
+        notify_on_exit: None,
         inbox_size: 0,
     };
     let info_ptr = &dummy_info as *const _;
