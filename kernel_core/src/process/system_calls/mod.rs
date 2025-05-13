@@ -1,7 +1,7 @@
 //! System calls from user space.
 #![allow(clippy::needless_pass_by_value)]
 
-use alloc::{string::String, sync::Arc};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
@@ -384,12 +384,11 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         registers: &Registers,
         user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
     ) -> Result<(), Error> {
-        let info =
-            user_space_memory
-                .check_ref(registers.x[0].into())
-                .context(InvalidAddressSnafu {
-                    cause: "process info",
-                })?;
+        let uinfo: &kernel_api::ProcessCreateInfo = user_space_memory
+            .check_ref(registers.x[0].into())
+            .context(InvalidAddressSnafu {
+                cause: "process info",
+            })?;
 
         let out_process_id = user_space_memory
             .check_mut_ref(registers.x[1].into())
@@ -409,10 +408,43 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             None
         };
 
+        let user_sections = user_space_memory
+            .check_slice(uinfo.sections.into(), uinfo.num_sections)
+            .context(InvalidAddressSnafu {
+                cause: "process image sections slice",
+            })?;
+
+        // check each section's data slice
+        let sections = user_sections
+            .iter()
+            .map(|s| {
+                Ok(crate::process::ImageSection {
+                    base_address: s.base_address.into(),
+                    data_offset: s.data_offset,
+                    total_size: s.total_size,
+                    data: user_space_memory
+                        .check_slice(s.data.into(), s.data_size)
+                        .context(InvalidAddressSnafu {
+                            cause: "process image section data slice",
+                        })?,
+                    kind: s.kind,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let info = crate::process::ProcessCreateInfo {
+            sections: &sections,
+            supervisor: uinfo.supervisor,
+            registry: uinfo.registry,
+            privilege_level: uinfo.privilege_level,
+            notify_on_exit: None,
+            inbox_size: uinfo.inbox_size,
+        };
+
         debug!("spawning process {info:?}, parent #{}", parent.id);
         let proc = self
             .process_manager
-            .spawn_process(Some(parent), info)
+            .spawn_process(Some(parent), &info)
             .context(ManagerSnafu)?;
 
         // create the initial queue
@@ -425,7 +457,7 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
         self.thread_manager
             .spawn_thread(
                 proc.clone(),
-                info.entry_point.into(),
+                uinfo.entry_point.into(),
                 8 * 1024 * 1024 / self.page_allocator.page_size(),
                 qu.id.get() as usize,
             )

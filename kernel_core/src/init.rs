@@ -2,14 +2,17 @@
 
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
-use kernel_api::{ImageSection, ImageSectionKind, PrivilegeLevel, ProcessCreateInfo};
+use kernel_api::{ImageSectionKind, PrivilegeLevel};
 use log::{debug, trace};
 use snafu::{ResultExt, Snafu};
 use tar_no_std::TarArchiveRef;
 
 use crate::{
     memory::{page_table::MemoryProperties, PageSize, PhysicalAddress, PhysicalPointer},
-    process::{queue::QueueManager, thread::ThreadManager, ManagerError, ProcessManager},
+    process::{
+        queue::QueueManager, thread::ThreadManager, ImageSection, ManagerError, ProcessCreateInfo,
+        ProcessManager,
+    },
 };
 
 /// Errors that can occur while spawning the `init` process.
@@ -90,23 +93,20 @@ pub fn spawn_init_process(
                     0b101 | 0b001 => ImageSectionKind::Executable,
                     x => panic!("unexpected flags for program header: {x}"),
                 },
-                base_address,
+                base_address: base_address.into(),
                 data_offset,
                 total_size: data_offset + segment.p_memsz as usize,
-                data: data.as_ptr(),
-                data_size: data.len(),
+                data,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     let info = ProcessCreateInfo {
-        entry_point: bin.ehdr.e_entry as usize,
-        num_sections: sections.len(),
-        sections: sections.as_ptr(),
+        sections: &sections,
         supervisor: None,
         registry: None,
         privilege_level: PrivilegeLevel::Driver,
-        notify_on_exit: false,
+        notify_on_exit: None,
         inbox_size: 256,
     };
     debug!("init image = {info:?}");
@@ -152,10 +152,11 @@ pub fn spawn_init_process(
         .context(ProcessSnafu)?;
 
     // spawn the main init thread
+    let entry_point = (bin.ehdr.e_entry as usize).into();
     thread_man
         .spawn_thread(
             init_process.clone(),
-            info.entry_point.into(),
+            entry_point,
             8 * 1024 * 1024 / page_size,
             init_queue.id.get() as usize,
         )

@@ -1,6 +1,6 @@
 //! User space message queues.
 
-use core::sync::atomic::AtomicBool;
+use core::{fmt::Debug, sync::atomic::AtomicBool};
 
 use alloc::sync::{Arc, Weak};
 use crossbeam::queue::SegQueue;
@@ -77,6 +77,17 @@ impl MessageQueue {
     /// Receive a message from the queue, if there is one pending.
     pub fn receive(&self) -> Option<PendingMessage> {
         self.pending.pop()
+    }
+}
+
+impl Debug for MessageQueue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "<Queue #{} (owned by process #{})>",
+            self.id,
+            self.owner.upgrade().map(|p| p.id.get()).unwrap_or_default()
+        )
     }
 }
 

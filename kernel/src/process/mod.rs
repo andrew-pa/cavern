@@ -1,12 +1,12 @@
 //! Mechanisms for user-space processes/threads.
 use alloc::sync::Arc;
-use kernel_api::{ExitMessage, ExitReason, ProcessCreateInfo};
+use kernel_api::{ExitMessage, ExitReason};
 use kernel_core::{
     collections::HandleMap,
     platform::cpu::CoreInfo,
     process::{
-        system_calls::SystemCalls, Id, ManagerError, OutOfHandlesSnafu, Process, ProcessManager,
-        Properties, MAX_PROCESS_ID,
+        system_calls::SystemCalls, Id, ManagerError, OutOfHandlesSnafu, Process, ProcessCreateInfo,
+        ProcessManager, Properties, MAX_PROCESS_ID,
     },
 };
 use log::{debug, info, warn};
@@ -52,7 +52,7 @@ impl ProcessManager for SystemProcessManager {
                     .or_else(|| parent.as_ref().and_then(|p| p.props.registry_queue)),
                 privilege: info.privilege_level,
             },
-            unsafe { core::slice::from_raw_parts(info.sections, info.num_sections) },
+            info.sections,
             info.inbox_size,
         )?);
         self.processes.insert_with_handle(id, proc.clone());
