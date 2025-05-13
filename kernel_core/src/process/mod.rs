@@ -688,54 +688,6 @@ pub enum ManagerError {
     },
 }
 
-/// A section of memory in a process image.
-#[derive(Clone)]
-pub struct ImageSection<'a> {
-    /// The base address in the process' address space. This must be page aligned.
-    pub base_address: VirtualAddress,
-    /// Offset from the base address where the `data` will be copied to. Any bytes between the
-    /// start and the offset will be zeroed.
-    pub data_offset: usize,
-    /// The total size of the section in bytes (including the `data_offset` bytes).
-    /// Any bytes past the size of `data` will be zeroed.
-    pub total_size: usize,
-    /// The data that will be copied into the section.
-    pub data: &'a [u8],
-    /// The type of section this is.
-    pub kind: ImageSectionKind,
-}
-
-impl Debug for ImageSection<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ImageSection")
-            .field("base_address", &self.base_address)
-            .field("data_offset", &self.data_offset)
-            .field("total_size", &self.total_size)
-            .field("data.len()", &self.data.len())
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-/// Parameters for creating a new process.
-#[derive(Clone)]
-pub struct ProcessCreateInfo<'a> {
-    /// The main entry point in the process image.
-    pub entry_point: VirtualAddress,
-    /// The process image sections that will be loaded into the new process.
-    pub sections: &'a [ImageSection<'a>],
-    /// The new process' supervisor queue, or None to inherit.
-    pub supervisor: Option<QueueId>,
-    /// The new process' registry queue, or None to inherit.
-    pub registry: Option<QueueId>,
-    /// The new process' privilege level (must be less than or equal to the current privilege level).
-    pub privilege_level: PrivilegeLevel,
-    /// An optional queue to notify with an exit message when the spawned process exits (same as [`exit_notification_subscription`]).
-    pub notify_on_exit: Option<Arc<MessageQueue>>,
-    /// The size of this process' message inbox, in message blocks.
-    pub inbox_size: usize,
-}
-
 /// An interface for managing processes.
 #[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {

@@ -5,8 +5,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId,
-    QueueId, SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
+    CallNumber, EnvironmentValue, ErrorCode, ExitReason, Message, ProcessId, QueueId,
+    SharedBufferCreateInfo, ThreadCreateInfo, ThreadId,
 };
 use log::{debug, error, trace, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
