@@ -366,12 +366,22 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
 
+        let notify_on_exit = info
+            .notify_on_exit
+            .map(|q| self.queue_by_id_checked(q, &parent))
+            .transpose()?;
+
         debug!("spawning thread {info:?} in process #{}", parent.id);
 
         let thread = self
             .thread_manager
             .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
             .context(ManagerSnafu)?;
+
+        // if provided a queue, subscribe it to the thread exit
+        if let Some(qu) = notify_on_exit {
+            thread.exit_subscribers.lock().push(qu);
+        }
 
         *out_thread_id = thread.id;
 
