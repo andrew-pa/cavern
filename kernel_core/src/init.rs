@@ -106,7 +106,6 @@ pub fn spawn_init_process(
         supervisor: None,
         registry: None,
         privilege_level: PrivilegeLevel::Driver,
-        notify_on_exit: None,
         inbox_size: 256,
     };
     debug!("init image = {info:?}");

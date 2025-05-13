@@ -81,8 +81,6 @@ pub struct ProcessCreateInfo<'a> {
     pub registry: Option<QueueId>,
     /// The new process' privilege level (must be less than or equal to the current privilege level).
     pub privilege_level: PrivilegeLevel,
-    /// An optional queue to notify with an exit message when the spawned process exits (same as [`exit_notification_subscription`]).
-    pub notify_on_exit: Option<Arc<MessageQueue>>,
     /// The size of this process' message inbox, in message blocks.
     pub inbox_size: usize,
 }
