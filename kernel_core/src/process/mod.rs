@@ -41,6 +41,52 @@ pub type SharedBufferId = crate::collections::Handle;
 /// The largest possible shared buffer ID in the system.
 pub const MAX_SHARED_BUFFER_ID: Id = Id::new(0xffff).unwrap();
 
+/// A section of memory in a process image.
+#[derive(Clone)]
+pub struct ImageSection<'a> {
+    /// The base address in the process' address space. This must be page aligned.
+    pub base_address: VirtualAddress,
+    /// Offset from the base address where the `data` will be copied to. Any bytes between the
+    /// start and the offset will be zeroed.
+    pub data_offset: usize,
+    /// The total size of the section in bytes (including the `data_offset` bytes).
+    /// Any bytes past the size of `data` will be zeroed.
+    pub total_size: usize,
+    /// The data that will be copied into the section.
+    pub data: &'a [u8],
+    /// The type of section this is.
+    pub kind: ImageSectionKind,
+}
+
+impl Debug for ImageSection<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ImageSection")
+            .field("base_address", &self.base_address)
+            .field("data_offset", &self.data_offset)
+            .field("total_size", &self.total_size)
+            .field("data.len()", &self.data.len())
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+/// Parameters for creating a new process.
+#[derive(Debug, Clone)]
+pub struct ProcessCreateInfo<'a> {
+    /// The process image sections that will be loaded into the new process.
+    pub sections: &'a [ImageSection<'a>],
+    /// The new process' supervisor queue, or None to inherit.
+    pub supervisor: Option<QueueId>,
+    /// The new process' registry queue, or None to inherit.
+    pub registry: Option<QueueId>,
+    /// The new process' privilege level (must be less than or equal to the current privilege level).
+    pub privilege_level: PrivilegeLevel,
+    /// An optional queue to notify with an exit message when the spawned process exits (same as [`exit_notification_subscription`]).
+    pub notify_on_exit: Option<Arc<MessageQueue>>,
+    /// The size of this process' message inbox, in message blocks.
+    pub inbox_size: usize,
+}
+
 /// Convert an image section kind into the necessary memory properties to map the pages of that section.
 #[must_use]
 pub fn image_section_kind_as_properties(this: &ImageSectionKind) -> MemoryProperties {
@@ -281,7 +327,7 @@ impl Process {
             trace!("mapping setion {section:x?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
             page_tables
                 .map(
-                    section.base_address.into(),
+                    section.base_address,
                     memory,
                     size_in_pages,
                     MapBlockSize::Page,
@@ -291,7 +337,7 @@ impl Process {
             // trace!("process page tables after map: {page_tables:?}");
             // reserve the range with the allocator as well
             virt_alloc
-                .reserve_range(section.base_address.into(), size_in_pages)
+                .reserve_range(section.base_address, size_in_pages)
                 .context(MemorySnafu {
                     cause: "reserve image section in process virtual address space allocator",
                 })?;
@@ -644,54 +690,6 @@ pub enum ManagerError {
     },
 }
 
-/// A section of memory in a process image.
-#[derive(Clone)]
-pub struct ImageSection<'a> {
-    /// The base address in the process' address space. This must be page aligned.
-    pub base_address: VirtualAddress,
-    /// Offset from the base address where the `data` will be copied to. Any bytes between the
-    /// start and the offset will be zeroed.
-    pub data_offset: usize,
-    /// The total size of the section in bytes (including the `data_offset` bytes).
-    /// Any bytes past the size of `data` will be zeroed.
-    pub total_size: usize,
-    /// The data that will be copied into the section.
-    pub data: &'a [u8],
-    /// The type of section this is.
-    pub kind: ImageSectionKind,
-}
-
-impl Debug for ImageSection<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ImageSection")
-            .field("base_address", &self.base_address)
-            .field("data_offset", &self.data_offset)
-            .field("total_size", &self.total_size)
-            .field("data.len()", &self.data.len())
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-/// Parameters for creating a new process.
-#[derive(Clone)]
-pub struct ProcessCreateInfo<'a> {
-    /// The main entry point in the process image.
-    pub entry_point: VirtualAddress,
-    /// The process image sections that will be loaded into the new process.
-    pub sections: &'a [ImageSection<'a>],
-    /// The new process' supervisor queue, or None to inherit.
-    pub supervisor: Option<QueueId>,
-    /// The new process' registry queue, or None to inherit.
-    pub registry: Option<QueueId>,
-    /// The new process' privilege level (must be less than or equal to the current privilege level).
-    pub privilege_level: PrivilegeLevel,
-    /// An optional queue to notify with an exit message when the spawned process exits (same as [`exit_notification_subscription`]).
-    pub notify_on_exit: Option<Arc<MessageQueue>>,
-    /// The size of this process' message inbox, in message blocks.
-    pub inbox_size: usize,
-}
-
 /// An interface for managing processes.
 #[cfg_attr(test, mockall::automock)]
 pub trait ProcessManager {
@@ -700,6 +698,7 @@ pub trait ProcessManager {
     /// # Errors
     /// Returns an error if the process could not be spawned due to resource requirements or
     /// invalid inputs.
+    #[allow(clippy::elidable_lifetime_names)]
     fn spawn_process<'a>(
         &self,
         parent: Option<Arc<Process>>,
@@ -743,7 +742,7 @@ pub fn kill_thread_entirely(
 #[cfg(test)]
 pub mod tests {
     use core::ptr;
-    use kernel_api::{ImageSection, ImageSectionKind, MessageHeader, ProcessId};
+    use kernel_api::{ImageSectionKind, MessageHeader, ProcessId};
     use std::{
         sync::{Arc, LazyLock},
         vec::Vec,
@@ -753,7 +752,7 @@ pub mod tests {
 
     use crate::{
         memory::{tests::MockPageAllocator, PageAllocator as _, PageSize, VirtualAddress},
-        process::{MessageQueue, QueueId},
+        process::{ImageSection, MessageQueue, QueueId},
     };
 
     use super::{
@@ -866,15 +865,10 @@ pub mod tests {
 
         // Construct an ImageSection for testing.
         let section = ImageSection {
-            base_address: 0, // Not used in the copy function.
+            base_address: VirtualAddress::null(), // Not used in the copy function.
             data_offset,
             total_size,
-            data_size,
-            data: if data_size > 0 {
-                test_data.as_ptr()
-            } else {
-                ptr::null()
-            },
+            data: &test_data,
             kind: ImageSectionKind::ReadOnly,
         };
 
@@ -931,15 +925,10 @@ pub mod tests {
         }
 
         let section = ImageSection {
-            base_address: 0,
+            base_address: VirtualAddress::null(),
             data_offset,
             total_size,
-            data_size,
-            data: if data_size > 0 {
-                test_data.as_ptr()
-            } else {
-                ptr::null()
-            },
+            data: &test_data,
             kind: ImageSectionKind::ReadOnly,
         };
 
