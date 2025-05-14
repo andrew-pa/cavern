@@ -161,6 +161,7 @@ pub struct SystemCalls<
 }
 
 mod exit_current_thread;
+mod kill_process;
 mod read_env_value;
 mod spawn_process;
 mod spawn_thread;
@@ -296,45 +297,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_kill_process(
-        &self,
-        current_process: &Arc<Process>,
-        registers: &Registers,
-    ) -> Result<(), Error> {
-        let pid = ProcessId::new(registers.x[0] as u32).context(NotFoundSnafu {
-            reason: "process id is zero",
-            id: 0usize,
-        })?;
-
-        let proc = self
-            .process_manager
-            .process_for_id(pid)
-            .context(NotFoundSnafu {
-                reason: "process id",
-                id: pid.get() as usize,
-            })?;
-
-        // TODO: access control?
-        debug!("process #{} killing process #{pid}", current_process.id);
-
-        // Make a copy of the threads in the process. Exiting the thread will remove it from the parent process.
-        let threads = proc.threads.read().clone();
-        for t in threads {
-            self.thread_manager.exit_thread(&t, ExitReason::killed());
-        }
-
-        // Make a copy of the queues in the process. Freeing the queue will remove it from the parent process.
-        let queues = proc.owned_queues.lock().clone();
-        for qu in queues {
-            self.queue_manager.free_queue(&qu);
-        }
-
-        self.process_manager
-            .kill_process(&proc, ExitReason::killed());
-
-        Ok(())
     }
 
     fn syscall_allocate_heap_pages<T: ActiveUserSpaceTables>(
