@@ -9,6 +9,7 @@ use mockall::predicate::{eq, function};
 use crate::{
     memory::{
         active_user_space_tables::{AlwaysValidActiveUserSpaceTables, MockActiveUserSpaceTables},
+        page_table::MemoryProperties,
         MockPageAllocator, VirtualAddress, VirtualPointerMut,
     },
     process::{
@@ -343,47 +344,6 @@ fn normal_receive_immediate() {
     // Check header content (sender info isn't available here anymore)
     let msg = unsafe { Message::from_slice(&message[..size_of::<MessageHeader>()]) };
     assert_eq!(msg.header().num_buffers, 0);
-}
-
-#[test]
-fn normal_allocate_heap_pages() {
-    let pa = &*PAGE_ALLOCATOR;
-    let parent_proc = crate::process::tests::create_test_process(
-        ProcessId::new(50).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(51).unwrap(),
-    )
-    .unwrap();
-
-    let current_thread = parent_proc.threads.read().first().unwrap().clone();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let pages = 3;
-    let mut alloc_result: usize = 0;
-    let alloc_result_ptr = &mut alloc_result as *mut usize;
-
-    let mut registers = Registers::default();
-    registers.x[0] = pages;
-    registers.x[1] = alloc_result_ptr as usize;
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::AllocateHeapPages.into_integer(),
-            &current_thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::Return(0))
-    );
-    assert_ne!(alloc_result, 0);
 }
 
 #[test]
@@ -1412,42 +1372,6 @@ fn transfer_from_shared_buffer_insufficient_permissions() {
         Err(Error::Transfer {
             source: TransferError::InsufficentPermissions
         })
-    );
-}
-
-// 4 ────────────────────────────────────────────────────────────────────────────
-#[test]
-fn allocate_heap_pages_zero_size_invalid_length() {
-    let pa = &*PAGE_ALLOCATOR;
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(306).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(307).unwrap(),
-    )
-    .unwrap();
-    let current_thread = proc.threads.read().first().unwrap().clone();
-
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let mut regs = Registers::default();
-    regs.x[0] = 0; // size = 0 ⇒ invalid
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::AllocateHeapPages.into_integer(),
-            &current_thread,
-            &regs,
-            &usm
-        ),
-        Err(Error::InvalidAddress { .. })
     );
 }
 

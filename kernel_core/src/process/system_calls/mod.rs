@@ -14,7 +14,6 @@ use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use crate::{
     memory::{
         active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
-        page_table::MemoryProperties,
         PageAllocator, VirtualAddress, VirtualPointer,
     },
     process::{kill_thread_entirely, MessageQueue, SharedBuffer},
@@ -160,6 +159,8 @@ pub struct SystemCalls<
     queue_manager: &'m QM,
 }
 
+// system call handler impl modules
+mod allocate_heap_pages;
 mod exit_current_thread;
 mod kill_process;
 mod read_env_value;
@@ -297,42 +298,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_allocate_heap_pages<T: ActiveUserSpaceTables>(
-        &self,
-        current_process: &Arc<Process>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
-    ) -> Result<(), Error> {
-        let size: usize = registers.x[0];
-        let dst: &mut usize = user_space_memory
-            .check_mut_ref(registers.x[1].into())
-            .context(InvalidAddressSnafu {
-                cause: "output pointer",
-            })?;
-
-        debug!(
-            "allocating {size} pages for process #{}",
-            current_process.id
-        );
-
-        let addr = current_process
-            .allocate_memory(
-                self.page_allocator,
-                size,
-                MemoryProperties {
-                    user_space_access: true,
-                    writable: true,
-                    executable: true,
-                    ..Default::default()
-                },
-            )
-            .context(ManagerSnafu)?;
-
-        *dst = addr.into();
-
-        Ok(())
     }
 
     fn syscall_free_heap_pages(
