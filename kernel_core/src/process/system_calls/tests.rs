@@ -347,55 +347,6 @@ fn normal_receive_immediate() {
 }
 
 #[test]
-fn normal_free_heap_pages() {
-    let pa = &*PAGE_ALLOCATOR;
-    let parent_proc = crate::process::tests::create_test_process(
-        ProcessId::new(60).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(61).unwrap(),
-    )
-    .unwrap();
-
-    let mem = parent_proc
-        .allocate_memory(
-            pa,
-            1,
-            MemoryProperties {
-                owned: true,
-                user_space_access: true,
-                writable: true,
-                ..Default::default()
-            },
-        )
-        .expect("allocate");
-
-    let current_thread = parent_proc.threads.read().first().unwrap().clone();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let mut registers = Registers::default();
-    registers.x[0] = mem.into();
-    registers.x[1] = 1;
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::FreeHeapPages.into_integer(),
-            &current_thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::Return(0))
-    );
-}
-
-#[test]
 fn normal_transfer_to_shared_buffer() {
     let pa = &*PAGE_ALLOCATOR;
     let proc = crate::process::tests::create_test_process(
@@ -1376,56 +1327,6 @@ fn transfer_from_shared_buffer_insufficient_permissions() {
 }
 
 // 5 ────────────────────────────────────────────────────────────────────────────
-#[test]
-fn free_heap_pages_zero_size_invalid_length() {
-    let pa = &*PAGE_ALLOCATOR;
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(308).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(309).unwrap(),
-    )
-    .unwrap();
-    // Allocate one page so we have something to (incorrectly) free.
-    let ptr = proc
-        .allocate_memory(
-            pa,
-            1,
-            MemoryProperties {
-                owned: true,
-                user_space_access: true,
-                writable: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    let current_thread = proc.threads.read().first().unwrap().clone();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let mut regs = Registers::default();
-    regs.x[0] = usize::from(ptr); // valid pointer
-    regs.x[1] = 0; // size = 0 ⇒ invalid
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::FreeHeapPages.into_integer(),
-            &current_thread,
-            &regs,
-            &usm
-        ),
-        Err(Error::Manager {
-            source: ManagerError::PageTables { .. }
-        })
-    );
-}
 
 // 7 ────────────────────────────────────────────────────────────────────────────
 #[test]

@@ -162,6 +162,7 @@ pub struct SystemCalls<
 // system call handler impl modules
 mod allocate_heap_pages;
 mod exit_current_thread;
+mod free_heap_pages;
 mod kill_process;
 mod read_env_value;
 mod spawn_process;
@@ -298,22 +299,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_free_heap_pages(
-        &self,
-        current_process: &Arc<Process>,
-        registers: &Registers,
-    ) -> Result<(), Error> {
-        let ptr: VirtualAddress = registers.x[0].into();
-        let size: usize = registers.x[1];
-        debug!(
-            "freeing {size} pages @ {ptr:?} for process #{}",
-            current_process.id
-        );
-        current_process
-            .free_memory(self.page_allocator, ptr, size)
-            .context(ManagerSnafu)
     }
 
     fn syscall_send<T: ActiveUserSpaceTables>(
