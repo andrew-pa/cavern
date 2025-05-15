@@ -164,6 +164,7 @@ mod create_msg_queue;
 mod exit_current_thread;
 mod free_heap_pages;
 mod free_message;
+mod free_msg_queue;
 mod free_shared_buffers;
 mod kill_process;
 mod read_env_value;
@@ -329,23 +330,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    fn syscall_free_msg_queue(&self, registers: &Registers) -> Result<(), Error> {
-        let queue_id = QueueId::new(registers.x[0] as _).context(InvalidHandleSnafu {
-            reason: "queue id zero",
-            handle: 0u32,
-        })?;
-        let qu = self
-            .queue_manager
-            .queue_for_id(queue_id)
-            .context(NotFoundSnafu {
-                reason: "queue id",
-                id: queue_id.get() as usize,
-            })?;
-        debug!("freeing message queue #{}", qu.id);
-        self.queue_manager.free_queue(&qu);
-        Ok(())
     }
 
     fn syscall_exit_notification_subscription(
