@@ -163,6 +163,7 @@ mod allocate_heap_pages;
 mod exit_current_thread;
 mod free_heap_pages;
 mod free_message;
+mod free_shared_buffers;
 mod kill_process;
 mod read_env_value;
 mod receive;
@@ -327,25 +328,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    #[allow(clippy::unused_self)]
-    fn syscall_free_shared_buffers<AUST: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
-    ) -> Result<(), Error> {
-        let buffers: &[SharedBufferId] = user_space_memory
-            .check_slice(registers.x[0].into(), registers.x[1])
-            .context(InvalidAddressSnafu {
-                cause: "buffers slice",
-            })?;
-
-        let proc = current_thread.parent.as_ref().unwrap();
-
-        proc.free_shared_buffers(buffers.iter().copied())
-            .context(ManagerSnafu)
     }
 
     fn syscall_create_msg_queue<AUST: ActiveUserSpaceTables>(
