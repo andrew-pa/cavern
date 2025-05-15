@@ -168,6 +168,7 @@ mod receive;
 mod send;
 mod spawn_process;
 mod spawn_thread;
+mod transfer_to_shared_buffer;
 
 impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
     SystemCalls<'pa, 'm, PA, PM, TM, QM>
@@ -324,35 +325,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    #[allow(clippy::unused_self)]
-    fn syscall_transfer_to<AUST: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
-    ) -> Result<(), Error> {
-        let proc = current_thread.parent.as_ref().unwrap();
-        let buffer_handle =
-            SharedBufferId::new(registers.x[0] as u32).context(InvalidHandleSnafu {
-                reason: "buffer handle is zero",
-                handle: 0u32,
-            })?;
-        let buf = proc
-            .shared_buffers
-            .get(buffer_handle)
-            .context(InvalidHandleSnafu {
-                reason: "buffer handle not found",
-                handle: buffer_handle.get(),
-            })?;
-        let offset = registers.x[1];
-        let src = user_space_memory
-            .check_slice(registers.x[2].into(), registers.x[3])
-            .context(InvalidAddressSnafu {
-                cause: "source buffer",
-            })?;
-        buf.transfer_to(offset, src).context(TransferSnafu)
     }
 
     #[allow(clippy::unused_self)]

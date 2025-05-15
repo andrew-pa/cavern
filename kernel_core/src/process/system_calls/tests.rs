@@ -71,67 +71,6 @@ fn invalid_syscall_number() {
 }
 
 #[test]
-fn normal_transfer_to_shared_buffer() {
-    let pa = &*PAGE_ALLOCATOR;
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(70).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(71).unwrap(),
-    )
-    .unwrap();
-
-    let mem = proc
-        .allocate_memory(
-            pa,
-            1,
-            MemoryProperties {
-                owned: true,
-                user_space_access: true,
-                writable: true,
-                ..Default::default()
-            },
-        )
-        .expect("allocate");
-
-    // Insert a shared buffer into the process.
-    let buffer = Arc::new(crate::process::SharedBuffer {
-        owner: proc.clone(),
-        flags: kernel_api::flags::SharedBufferFlags::WRITE,
-        base_address: mem,
-        length: 1024,
-    });
-    let handle = proc.shared_buffers.insert(buffer).unwrap();
-
-    let current_thread = proc.threads.read().first().unwrap().clone();
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let src_data = [1u8, 2, 3, 4];
-    let mut registers = Registers::default();
-    registers.x[0] = handle.get() as usize;
-    registers.x[1] = 0; // offset
-    registers.x[2] = src_data.as_ptr() as usize;
-    registers.x[3] = src_data.len();
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::TransferToSharedBuffer.into_integer(),
-            &current_thread,
-            &registers,
-            &usm
-        ),
-        Ok(SysCallEffect::Return(0))
-    );
-}
-
-#[test]
 fn normal_transfer_from_shared_buffer() {
     let pa = &*PAGE_ALLOCATOR;
     let proc = crate::process::tests::create_test_process(
@@ -804,66 +743,6 @@ fn exit_notification_invalid_flags() {
 
 // --- Shared-buffer bounds check --------------------------------------------------------
 
-#[test]
-fn transfer_to_shared_buffer_out_of_bounds() {
-    let pa = &*PAGE_ALLOCATOR;
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(250).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(251).unwrap(),
-    )
-    .unwrap();
-    let mem = proc
-        .allocate_memory(
-            pa,
-            1,
-            MemoryProperties {
-                owned: true,
-                user_space_access: true,
-                writable: true,
-                ..MemoryProperties::default()
-            },
-        )
-        .expect("alloc");
-    let buf = Arc::new(SharedBuffer {
-        owner: proc.clone(),
-        flags: SharedBufferFlags::WRITE,
-        base_address: mem,
-        length: 32,
-    });
-    let handle = proc.shared_buffers.insert(buf).unwrap();
-    let current_thread = proc.threads.read().first().unwrap().clone();
-
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let data = [0u8; 32];
-    let mut regs = Registers::default();
-    regs.x[0] = handle.get() as usize;
-    regs.x[1] = 16; // offset
-    regs.x[2] = data.as_ptr() as usize; // copy 32 bytes
-    regs.x[3] = data.len();
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::TransferToSharedBuffer.into_integer(),
-            &current_thread,
-            &regs,
-            &usm
-        ),
-        Err(Error::Transfer {
-            source: TransferError::OutOfBounds
-        })
-    );
-}
-
 // 1 ────────────────────────────────────────────────────────────────────────────
 #[test]
 fn transfer_from_shared_buffer_out_of_bounds() {
@@ -927,66 +806,6 @@ fn transfer_from_shared_buffer_out_of_bounds() {
 }
 
 // 2 ────────────────────────────────────────────────────────────────────────────
-#[test]
-fn transfer_to_shared_buffer_insufficient_permissions() {
-    let pa = &*PAGE_ALLOCATOR;
-    let proc = crate::process::tests::create_test_process(
-        ProcessId::new(302).unwrap(),
-        Properties {
-            supervisor_queue: None,
-            registry_queue: None,
-            privilege: kernel_api::PrivilegeLevel::Privileged,
-        },
-        ThreadId::new(303).unwrap(),
-    )
-    .unwrap();
-    let mem = proc
-        .allocate_memory(
-            pa,
-            1,
-            MemoryProperties {
-                owned: true,
-                user_space_access: true,
-                writable: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    // READ-only buffer (no WRITE) →  TransferTo must fail.
-    let sb = Arc::new(SharedBuffer {
-        owner: proc.clone(),
-        flags: SharedBufferFlags::READ,
-        base_address: mem,
-        length: 32,
-    });
-    let handle = proc.shared_buffers.insert(sb).unwrap();
-    let current_thread = proc.threads.read().first().unwrap().clone();
-
-    let pm = MockProcessManager::new();
-    let tm = MockThreadManager::new();
-    let qm = MockQueueManager::new();
-    let policy = SystemCalls::new(pa, &pm, &tm, &qm);
-    let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
-
-    let data = [1u8; 8];
-    let mut regs = Registers::default();
-    regs.x[0] = handle.get() as usize;
-    regs.x[1] = 0; // offset
-    regs.x[2] = data.as_ptr() as usize;
-    regs.x[3] = data.len(); // within bounds but not permitted
-
-    assert_matches!(
-        policy.dispatch_system_call(
-            CallNumber::TransferToSharedBuffer.into_integer(),
-            &current_thread,
-            &regs,
-            &usm
-        ),
-        Err(Error::Transfer {
-            source: TransferError::InsufficentPermissions
-        })
-    );
-}
 
 // 3 ────────────────────────────────────────────────────────────────────────────
 #[test]
