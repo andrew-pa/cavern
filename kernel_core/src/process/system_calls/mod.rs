@@ -162,6 +162,7 @@ pub struct SystemCalls<
 mod allocate_heap_pages;
 mod exit_current_thread;
 mod free_heap_pages;
+mod free_message;
 mod kill_process;
 mod read_env_value;
 mod receive;
@@ -326,37 +327,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    #[allow(clippy::unused_self)]
-    fn syscall_free_message<AUST: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
-    ) -> Result<(), Error> {
-        let flags = FreeMessageFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
-            reason: "invalid bits",
-            bits: registers.x[0],
-        })?;
-
-        let ptr: VirtualAddress = registers.x[1].into();
-        let len = registers.x[2];
-
-        let proc = current_thread.parent.as_ref().unwrap();
-
-        if flags.contains(FreeMessageFlags::FREE_BUFFERS) {
-            let msg: &[u8] = user_space_memory
-                .check_slice(VirtualPointer::from(ptr).cast(), len)
-                .context(InvalidAddressSnafu { cause: "message" })?;
-            let msg = unsafe { Message::from_slice(msg) };
-            proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
-                .context(ManagerSnafu)?;
-        }
-
-        proc.free_message(ptr, len).context(ManagerSnafu)?;
-
-        Ok(())
     }
 
     #[allow(clippy::unused_self)]
