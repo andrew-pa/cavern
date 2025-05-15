@@ -162,6 +162,7 @@ pub struct SystemCalls<
 mod allocate_heap_pages;
 mod create_msg_queue;
 mod exit_current_thread;
+mod exit_notification_subscription;
 mod free_heap_pages;
 mod free_message;
 mod free_msg_queue;
@@ -330,95 +331,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    fn syscall_exit_notification_subscription(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-    ) -> Result<(), Error> {
-        let flags = ExitNotificationSubscriptionFlags::from_bits(registers.x[0]).context(
-            InvalidFlagsSnafu {
-                reason: "invalid flag bits",
-                bits: registers.x[0],
-            },
-        )?;
-
-        ensure!(
-            !flags.contains(
-                ExitNotificationSubscriptionFlags::PROCESS
-                    | ExitNotificationSubscriptionFlags::THREAD
-            ) && !flags.is_empty(),
-            InvalidFlagsSnafu {
-                reason: "process mode xor thread mode",
-                bits: registers.x[0]
-            }
-        );
-
-        let receiver_queue = QueueId::new(registers.x[2] as u32)
-            .context(InvalidHandleSnafu {
-                reason: "queue id is zero",
-                handle: 0u32,
-            })
-            .and_then(|qid| {
-                self.queue_manager.queue_for_id(qid).context(NotFoundSnafu {
-                    reason: "queue id not found",
-                    id: qid.get() as usize,
-                })
-            })?;
-
-        ensure!(
-            receiver_queue
-                .owner
-                .upgrade()
-                .is_some_and(|q| q.id == current_thread.parent.as_ref().unwrap().id),
-            NotPermittedSnafu {
-                reason: "must own queue to (un)subscribe it to exit notifications"
-            }
-        );
-
-        let process_subscription = |exit_subs: &mut alloc::vec::Vec<_>| {
-            if flags.contains(ExitNotificationSubscriptionFlags::UNSUBSCRIBE) {
-                exit_subs.retain_mut(|q: &mut Arc<MessageQueue>| q.id != receiver_queue.id);
-            } else if !exit_subs.iter().any(|q| q.id == receiver_queue.id) {
-                exit_subs.push(receiver_queue.clone());
-            }
-        };
-
-        if flags.contains(ExitNotificationSubscriptionFlags::PROCESS) {
-            let proc = ProcessId::new(registers.x[1] as u32)
-                .and_then(|id| self.process_manager.process_for_id(id))
-                .context(InvalidHandleSnafu {
-                    reason: "process id unknown",
-                    handle: registers.x[1] as u32,
-                })?;
-            debug!(
-                "subscribing queue #{} to exit of process #{}",
-                receiver_queue.id, proc.id
-            );
-            let mut s = proc.exit_subscribers.lock();
-            process_subscription(&mut s);
-        } else if flags.contains(ExitNotificationSubscriptionFlags::THREAD) {
-            let thread = ThreadId::new(registers.x[1] as u32)
-                .and_then(|id| self.thread_manager.thread_for_id(id))
-                .context(InvalidHandleSnafu {
-                    reason: "thread id unknown",
-                    handle: registers.x[1] as u32,
-                })?;
-            debug!(
-                "subscribing queue #{} to exit of thread #{}",
-                receiver_queue.id, thread.id
-            );
-            let mut s = thread.exit_subscribers.lock();
-            process_subscription(&mut s);
-        } else {
-            return Err(Error::InvalidFlags {
-                reason: "did not specific process or thread".into(),
-                bits: flags.bits(),
-            });
-        }
-
-        Ok(())
     }
 
     #[allow(clippy::unused_self)]
