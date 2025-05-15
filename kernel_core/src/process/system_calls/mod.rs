@@ -4,7 +4,7 @@
 use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
-    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
+    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags},
     CallNumber, ErrorCode, ExitReason, Message, ProcessId, QueueId, ThreadId,
 };
 use log::{debug, error, warn};
@@ -164,6 +164,7 @@ mod exit_current_thread;
 mod free_heap_pages;
 mod kill_process;
 mod read_env_value;
+mod receive;
 mod send;
 mod spawn_process;
 mod spawn_thread;
@@ -323,51 +324,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    #[allow(clippy::unused_self)]
-    fn syscall_receive<T: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
-    ) -> Result<SysCallEffect, Error> {
-        let flag_bits: usize = registers.x[0];
-        let queue_id = QueueId::new(registers.x[1] as _).context(InvalidHandleSnafu {
-            reason: "queue id is zero",
-            handle: 0u32,
-        })?;
-        let u_out_msg = registers.x[2].into();
-        let out_msg: &mut VirtualAddress =
-            user_space_memory
-                .check_mut_ref(u_out_msg)
-                .context(InvalidAddressSnafu {
-                    cause: "output message ptr",
-                })?;
-        let u_out_len = registers.x[3].into();
-        let out_len: &mut usize =
-            user_space_memory
-                .check_mut_ref(u_out_len)
-                .context(InvalidAddressSnafu {
-                    cause: "output message len",
-                })?;
-        let flags = ReceiveFlags::from_bits(flag_bits).context(InvalidFlagsSnafu {
-            reason: "invalid bits",
-            bits: flag_bits,
-        })?;
-
-        let qu = self.queue_by_id_checked(queue_id, current_thread.parent.as_ref().unwrap())?;
-
-        if let Some(msg) = qu.receive() {
-            *out_msg = msg.data_address;
-            *out_len = msg.data_length;
-            Ok(SysCallEffect::Return(0))
-        } else if flags.contains(ReceiveFlags::NONBLOCKING) {
-            Err(Error::WouldBlock)
-        } else {
-            current_thread.wait_for_message(qu, u_out_msg, u_out_len);
-            Ok(SysCallEffect::ScheduleNextThread)
-        }
     }
 
     #[allow(clippy::unused_self)]
