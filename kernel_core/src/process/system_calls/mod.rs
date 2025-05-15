@@ -5,10 +5,9 @@ use alloc::{string::String, sync::Arc};
 use bytemuck::Contiguous;
 use kernel_api::{
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
-    CallNumber, ErrorCode, ExitReason, Message, ProcessId, QueueId, SharedBufferCreateInfo,
-    ThreadId,
+    CallNumber, ErrorCode, ExitReason, Message, ProcessId, QueueId, ThreadId,
 };
-use log::{debug, error, trace, warn};
+use log::{debug, error, warn};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::{
@@ -16,7 +15,7 @@ use crate::{
         active_user_space_tables::{ActiveUserSpaceTables, ActiveUserSpaceTablesChecker},
         PageAllocator, VirtualAddress, VirtualPointer,
     },
-    process::{kill_thread_entirely, MessageQueue, SharedBuffer},
+    process::{kill_thread_entirely, MessageQueue},
 };
 
 use super::{
@@ -165,6 +164,7 @@ mod exit_current_thread;
 mod free_heap_pages;
 mod kill_process;
 mod read_env_value;
+mod send;
 mod spawn_process;
 mod spawn_thread;
 
@@ -299,54 +299,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
                 Ok(SysCallEffect::Return(0))
             }
         }
-    }
-
-    fn syscall_send<T: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, T>,
-    ) -> Result<(), Error> {
-        let dst_queue_id: Option<QueueId> = QueueId::new(registers.x[0] as _);
-        let message = user_space_memory
-            .check_slice(registers.x[1].into(), registers.x[2])
-            .context(InvalidAddressSnafu { cause: "message" })?;
-        let buffers: &[SharedBufferCreateInfo] = user_space_memory
-            .check_slice(registers.x[3].into(), registers.x[4])
-            .context(InvalidAddressSnafu { cause: "buffers" })?;
-        ensure!(
-            !message.is_empty() || !buffers.is_empty(),
-            InvalidLengthSnafu {
-                reason: "message must have at least non-zero size or non-zero number of buffers",
-                length: 0usize
-            }
-        );
-        let dst = dst_queue_id
-            .and_then(|qid| self.queue_manager.queue_for_id(qid))
-            .context(NotFoundSnafu {
-                reason: "destination queue id",
-                id: dst_queue_id.map_or(0, ProcessId::get) as usize,
-            })?;
-        let current_proc = current_thread.parent.as_ref().unwrap();
-        debug!(
-            "process #{} sending message to queue #{}",
-            current_proc.id, dst.id
-        );
-        if !buffers.is_empty() {
-            trace!("sending buffers {buffers:?}");
-        }
-        dst.send(
-            message,
-            buffers.iter().map(|b| {
-                Arc::new(SharedBuffer {
-                    owner: current_proc.clone(),
-                    flags: b.flags,
-                    base_address: VirtualAddress::from(b.base_address.cast()),
-                    length: b.length,
-                })
-            }),
-        )
-        .context(ManagerSnafu)
     }
 
     /// Look up a queue
