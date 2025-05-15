@@ -160,6 +160,7 @@ pub struct SystemCalls<
 
 // system call handler impl modules
 mod allocate_heap_pages;
+mod create_msg_queue;
 mod exit_current_thread;
 mod free_heap_pages;
 mod free_message;
@@ -328,28 +329,6 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
         );
         Ok(qu)
-    }
-
-    fn syscall_create_msg_queue<AUST: ActiveUserSpaceTables>(
-        &self,
-        current_thread: &Arc<Thread>,
-        registers: &Registers,
-        user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
-    ) -> Result<(), Error> {
-        let dst: &mut QueueId = user_space_memory
-            .check_mut_ref(registers.x[1].into())
-            .context(InvalidAddressSnafu {
-                cause: "output pointer",
-            })?;
-
-        let q = self
-            .queue_manager
-            .create_queue(current_thread.parent.as_ref().unwrap())
-            .context(ManagerSnafu)?;
-
-        *dst = q.id;
-
-        Ok(())
     }
 
     fn syscall_free_msg_queue(&self, registers: &Registers) -> Result<(), Error> {
