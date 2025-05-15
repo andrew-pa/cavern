@@ -331,16 +331,16 @@ mod tests {
     #[test]
     fn test_random_allocation_and_freeing() {
         use rand::seq::SliceRandom;
-        use rand::{thread_rng, Rng};
+        use rand::{rng, Rng};
 
         let bitset_size = 100;
         let bitset = HandleAllocator::new(NonZeroU32::new(bitset_size).unwrap());
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         // Randomly allocate handles
         let mut allocated = Vec::new();
         for _ in 0..bitset_size {
-            if rng.gen_bool(0.5) {
+            if rng.random_bool(0.5) {
                 if let Some(handle) = bitset.next_handle() {
                     allocated.push(handle);
                 }
