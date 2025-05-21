@@ -384,7 +384,7 @@ impl Process {
             address_space_id: RwLock::default(),
             inbox_allocator: Mutex::new(FreeListAllocator::new(
                 inbox_start,
-                inbox_size_in_pages,
+                inbox_size,
                 MESSAGE_BLOCK_SIZE,
             )),
             owned_queues: Mutex::default(),
@@ -551,6 +551,7 @@ impl Process {
         let payload_start =
             size_of::<MessageHeader>() + size_of::<SharedBufferInfo>() * buffers.len();
         let actual_message_size_in_bytes = message.len() + payload_start;
+        // trace!("delivering message of size {actual_message_size_in_bytes} to {self:?}");
 
         // allocate new memory for the message in the inbox
         let ptr = {
