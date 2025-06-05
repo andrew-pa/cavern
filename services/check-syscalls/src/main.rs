@@ -29,6 +29,7 @@ where
 
 mod heap;
 mod messages;
+mod processes;
 mod read_env_value;
 mod threads;
 
@@ -37,6 +38,7 @@ const TESTS: &[(&str, &[&dyn Testable])] = &[
     heap::TESTS,
     threads::TESTS,
     messages::TESTS,
+    processes::TESTS,
 ];
 
 /// The main entry point.
