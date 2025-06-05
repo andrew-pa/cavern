@@ -52,7 +52,13 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         let pid = current_thread.parent.as_ref().unwrap().id;
         let tid = current_thread.id;
 
-        log::log!(level, "({pid}:{tid}) {msg}");
+        log::logger().log(
+            &log::Record::builder()
+                .level(level)
+                .args(format_args!("({pid}:{tid}) {msg}"))
+                .module_path_static(Some("u"))
+                .build(),
+        );
 
         Ok(())
     }
