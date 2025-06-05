@@ -10,8 +10,8 @@
 
 use alloc::boxed::Box;
 use alloc::format;
+use core::mem;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::{mem, ptr};
 
 use bytemuck::cast_slice;
 use kernel_api::{
@@ -24,7 +24,6 @@ use kernel_api::{
 /// ---
 /// Test helpers
 /// ---
-
 /// Simple thread entry that immediately exits with the supplied code.
 fn simple_thread_entry(code: usize) -> ! {
     // Give the log a quick hint so we can trace ordering if needed.
@@ -131,7 +130,7 @@ fn test_threads_shared_address_space() {
     }
 
     // 5. Verify the final counter value.
-    let counter = unsafe { &*(counter_ptr as *const AtomicUsize) };
+    let counter = unsafe { counter_ptr.cast_const().as_ref().unwrap() };
     let expected = CONCURRENT_THREADS * CONCURRENT_ITERS;
     assert_eq!(
         counter.load(Ordering::SeqCst),
@@ -158,6 +157,7 @@ fn test_spawn_zero_stack() {
 /// ---
 /// Invalid parameter: null entry pointer ⇒ `InvalidPointer`
 /// ---
+#[allow(clippy::transmute_null_to_fn, invalid_value)]
 fn test_spawn_null_entry() {
     // SAFETY: we deliberately craft an invalid function pointer.
     let null_fn: fn(usize) -> ! = unsafe { mem::transmute::<usize, fn(usize) -> !>(0) };

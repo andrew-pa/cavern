@@ -96,7 +96,7 @@ mod tests {
 
         let mut out_qid = MaybeUninit::<QueueId>::uninit();
         let mut regs = Registers::default();
-        regs.x[1] = &mut out_qid as *mut _ as usize;
+        regs.x[0] = &mut out_qid as *mut _ as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -131,7 +131,7 @@ mod tests {
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut regs = Registers::default();
-        regs.x[1] = 0; // null pointer ⇒ invalid
+        regs.x[0] = 0; // null pointer ⇒ invalid
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -170,7 +170,7 @@ mod tests {
 
         let mut out_qid = MaybeUninit::<QueueId>::uninit();
         let mut regs = Registers::default();
-        regs.x[1] = &mut out_qid as *mut _ as usize;
+        regs.x[0] = &mut out_qid as *mut _ as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
