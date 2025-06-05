@@ -27,7 +27,7 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         user_space_memory: ActiveUserSpaceTablesChecker<'_, AUST>,
     ) -> Result<(), Error> {
         let dst: &mut QueueId = user_space_memory
-            .check_mut_ref(registers.x[1].into())
+            .check_mut_ref(registers.x[0].into())
             .context(InvalidAddressSnafu {
                 cause: "output pointer",
             })?;
@@ -96,7 +96,7 @@ mod tests {
 
         let mut out_qid = MaybeUninit::<QueueId>::uninit();
         let mut regs = Registers::default();
-        regs.x[1] = &mut out_qid as *mut _ as usize;
+        regs.x[0] = &mut out_qid as *mut _ as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -131,7 +131,7 @@ mod tests {
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
         let mut regs = Registers::default();
-        regs.x[1] = 0; // null pointer ⇒ invalid
+        regs.x[0] = 0; // null pointer ⇒ invalid
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -170,7 +170,7 @@ mod tests {
 
         let mut out_qid = MaybeUninit::<QueueId>::uninit();
         let mut regs = Registers::default();
-        regs.x[1] = &mut out_qid as *mut _ as usize;
+        regs.x[0] = &mut out_qid as *mut _ as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
