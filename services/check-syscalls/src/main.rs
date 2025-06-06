@@ -28,10 +28,16 @@ where
 }
 
 mod heap;
+mod messages;
 mod read_env_value;
 mod threads;
 
-const TESTS: &[(&str, &[&dyn Testable])] = &[read_env_value::TESTS, heap::TESTS, threads::TESTS];
+const TESTS: &[(&str, &[&dyn Testable])] = &[
+    read_env_value::TESTS,
+    heap::TESTS,
+    threads::TESTS,
+    messages::TESTS,
+];
 
 /// The main entry point.
 ///
