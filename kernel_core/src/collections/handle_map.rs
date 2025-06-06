@@ -242,11 +242,11 @@ impl<T> HandleMap<T> {
             return None;
         }
         let (table, leaf_index) = self.leaf_table_for_handle(handle)?;
-        let val = unsafe { table.take_value(leaf_index) };
+        let val = unsafe { table.take_value(leaf_index) }?;
         self.allocator
             .free_handle(handle)
             .expect("can free handle if it was in table");
-        val
+        Some(val)
     }
 }
 
