@@ -43,15 +43,7 @@ impl ProcessManager for SystemProcessManager {
         let proc = Arc::new(Process::new(
             page_allocator(),
             id,
-            Properties {
-                supervisor_queue: info
-                    .supervisor
-                    .or_else(|| parent.as_ref().and_then(|p| p.props.supervisor_queue)),
-                registry_queue: info
-                    .registry
-                    .or_else(|| parent.as_ref().and_then(|p| p.props.registry_queue)),
-                privilege: info.privilege_level,
-            },
+            Properties::new(info, parent.as_deref()),
             info.sections,
             info.inbox_size,
         )?);
