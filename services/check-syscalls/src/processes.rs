@@ -9,13 +9,13 @@ use kernel_api::{
     free_message_queue, kill_process, read_env_value, receive, spawn_process,
 };
 
-use crate::Testable;
+use crate::{MAIN_QUEUE, Testable};
 
 /// Simple assembly functions used as process entry points.
 unsafe extern "C" fn proc_exit_success() -> ! {
     unsafe {
         core::arch::asm!(
-            "mov x0, #0",
+            "mov x0, #7",
             "svc #0x107", // ExitCurrentThread
             options(noreturn)
         );
@@ -65,13 +65,14 @@ fn mk_proc_info(
         data: base as *const u8,
         kind: ImageSectionKind::Executable,
     }];
+    let mq = *MAIN_QUEUE.get().unwrap();
     (
         ProcessCreateInfo {
             entry_point: entry_addr,
             num_sections: 1,
             sections: section.as_ptr(),
-            supervisor: None,
-            registry: None,
+            supervisor: Some(mq),
+            registry: Some(mq),
             privilege_level: PrivilegeLevel::Unprivileged,
             notify_on_exit: notify,
             inbox_size: 64,
@@ -94,7 +95,7 @@ fn test_spawn_and_exit_notification() {
     assert_eq!(exit_msg.source, ExitSource::Process);
     assert_eq!(exit_msg.id, pid.get());
     assert_eq!(exit_msg.reason.tag, ExitReasonTag::User);
-    assert_eq!(exit_msg.reason.user_code, 0);
+    assert_eq!(exit_msg.reason.user_code, 7);
 
     msg.free(FreeMessageFlags::empty());
     free_message_queue(qid).unwrap();
@@ -150,7 +151,7 @@ fn test_kill_process_notification() {
 /// Attempting to kill an unknown process must yield `NotFound`.
 /// ---
 fn test_kill_process_not_found() {
-    let fake_pid = ProcessId::new(0xDEAD_BEEFu32).unwrap();
+    let fake_pid = ProcessId::new(0x0000_BEEFu32).unwrap();
     match kill_process(fake_pid) {
         Err(ErrorCode::NotFound) => {}
         other => panic!("expected NotFound, got {:?}", other),
@@ -198,7 +199,7 @@ fn test_exit_sub_unknown_process() {
     let qid = create_message_queue().expect("queue create");
     match kernel_api::exit_notification_subscription(
         ExitNotificationSubscriptionFlags::PROCESS,
-        0xCAFEBABEu32,
+        0xBEEF_BEEFu32,
         qid,
     ) {
         Err(ErrorCode::NotFound) => {}

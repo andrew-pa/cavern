@@ -201,6 +201,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "kernel_api",
+ "spin 0.10.0",
  "user_core",
 ]
 

@@ -7,3 +7,4 @@ edition = "2024"
 bytemuck = "1"
 kernel_api = { path = "../../kernel_api" }
 user_core = { path = "../../user_core" }
+spin = "0.10"
