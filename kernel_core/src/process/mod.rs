@@ -154,6 +154,24 @@ pub struct Properties {
     pub privilege: PrivilegeLevel,
 }
 
+impl Properties {
+    /// Create the properties for a new process given its create info and parent process.
+    #[must_use]
+    pub fn new(info: &ProcessCreateInfo, parent: Option<&Process>) -> Self {
+        let supervisor_queue = info
+            .supervisor
+            .or_else(|| parent.and_then(|p| p.props.supervisor_queue));
+        let registry_queue = info
+            .registry
+            .or_else(|| parent.and_then(|p| p.props.registry_queue));
+        Self {
+            supervisor_queue,
+            registry_queue,
+            privilege: info.privilege_level,
+        }
+    }
+}
+
 /// A buffer shared from an owner process to a borrower process.
 #[derive(Debug)]
 pub struct SharedBuffer {
