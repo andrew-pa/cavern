@@ -244,4 +244,39 @@ mod tests {
             Ok(SysCallEffect::Return(v)) if v as u32 == current_thread.id.get()
         );
     }
+
+    #[test]
+    fn invalid_env_value_returns_zero() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(330).unwrap(),
+            Properties {
+                supervisor_queue: None,
+                registry_queue: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(331).unwrap(),
+        )
+        .unwrap();
+        let current_thread = proc.threads.read().first().unwrap().clone();
+
+        let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let mut regs = Registers::default();
+        regs.x[0] = 9999; // not a valid EnvironmentValue discriminant
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::ReadEnvValue.into_integer(),
+                &current_thread,
+                &regs,
+                &usm
+            ),
+            Ok(SysCallEffect::Return(0))
+        );
+    }
 }

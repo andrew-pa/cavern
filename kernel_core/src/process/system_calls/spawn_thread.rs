@@ -255,4 +255,132 @@ mod tests {
             .iter()
             .any(|q| q.id == qid));
     }
+
+    #[test]
+    fn spawn_thread_null_entry_invalid_pointer() {
+        let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(60).unwrap(),
+            crate::process::Properties {
+                supervisor_queue: None,
+                registry_queue: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(61).unwrap(),
+        )
+        .unwrap();
+
+        use core::{mem::MaybeUninit, ptr};
+        let mut info = MaybeUninit::<ThreadCreateInfo>::uninit();
+        let info_bytes = info.as_mut_ptr() as *mut u8;
+        unsafe {
+            // entry field as a null pointer
+            ptr::write(info_bytes.cast::<usize>(), 0);
+            // stack_size field
+            ptr::write(
+                info_bytes
+                    .add(core::mem::size_of::<usize>())
+                    .cast::<usize>(),
+                1,
+            );
+            // user_data field
+            ptr::write(
+                info_bytes
+                    .add(2 * core::mem::size_of::<usize>())
+                    .cast::<usize>(),
+                0,
+            );
+            // notify_on_exit field
+            ptr::write(
+                info_bytes
+                    .add(3 * core::mem::size_of::<usize>())
+                    .cast::<u32>(),
+                0,
+            );
+            if core::mem::size_of::<ThreadCreateInfo>()
+                > 3 * core::mem::size_of::<usize>() + core::mem::size_of::<u32>()
+            {
+                ptr::write(
+                    info_bytes
+                        .add(3 * core::mem::size_of::<usize>() + core::mem::size_of::<u32>())
+                        .cast::<u32>(),
+                    0,
+                );
+            }
+        }
+        let info_ptr = info.as_ptr();
+        let mut thread_id = 0u32;
+        let thread_id_ptr = &raw mut thread_id;
+
+        let mut regs = Registers::default();
+        regs.x[0] = info_ptr as usize;
+        regs.x[1] = thread_id_ptr as usize;
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::SpawnThread.into_integer(),
+                &current_thread,
+                &regs,
+                &usm
+            ),
+            Err(Error::InvalidPointer { .. })
+        );
+    }
+
+    #[test]
+    fn spawn_thread_zero_stack_size_invalid_length() {
+        fn dummy(_: usize) -> ! {
+            unreachable!()
+        }
+
+        let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(62).unwrap(),
+            crate::process::Properties {
+                supervisor_queue: None,
+                registry_queue: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(63).unwrap(),
+        )
+        .unwrap();
+
+        let info = ThreadCreateInfo {
+            entry: dummy,
+            stack_size: 0,
+            user_data: 0,
+            notify_on_exit: None,
+        };
+        let info_ptr = &raw const info;
+        let mut thread_id = 0u32;
+        let thread_id_ptr = &raw mut thread_id;
+
+        let mut regs = Registers::default();
+        regs.x[0] = info_ptr as usize;
+        regs.x[1] = thread_id_ptr as usize;
+
+        let current_thread = proc.threads.read().first().unwrap().clone();
+
+        let policy = SystemCalls::new(&*PAGE_ALLOCATOR, &pm, &tm, &qm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(PAGE_ALLOCATOR.page_size());
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::SpawnThread.into_integer(),
+                &current_thread,
+                &regs,
+                &usm
+            ),
+            Err(Error::InvalidLength { .. })
+        );
+    }
 }

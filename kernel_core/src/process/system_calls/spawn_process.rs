@@ -350,4 +350,40 @@ mod tests {
         assert_eq!(queue_id, new_queue_id.get());
         assert!(new_proc.exit_subscribers.lock().iter().any(|q| q.id == qid));
     }
+
+    #[test]
+    fn spawn_process_invalid_info_ptr() {
+        let pa = &*PAGE_ALLOCATOR;
+        let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let parent_proc = crate::process::tests::create_test_process(
+            ProcessId::new(100).unwrap(),
+            Properties {
+                supervisor_queue: None,
+                registry_queue: None,
+                privilege: kernel_api::PrivilegeLevel::Privileged,
+            },
+            ThreadId::new(101).unwrap(),
+        )
+        .unwrap();
+        let parent_thread = parent_proc.threads.read().first().unwrap().clone();
+
+        let mut registers = Registers::default();
+        registers.x[0] = 0; // null pointer for ProcessCreateInfo
+        registers.x[1] = 0;
+        registers.x[2] = 0;
+
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::SpawnProcess.into_integer(),
+                &parent_thread,
+                &registers,
+                &usm
+            ),
+            Err(Error::InvalidAddress { .. })
+        );
+    }
 }
