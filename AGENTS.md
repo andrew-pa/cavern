@@ -2,12 +2,12 @@
 
 ## Overview
 This repo contains a Rust-based microkernel named **Cavern** along with
-support crates, services and documentation. The project uses a workspace with
+support crates, user space services and documentation. The project uses a workspace with
 multiple crates. Below is a high level outline of the top level directories:
 
 - `kernel/` – the microkernel binary. Contains the entry point and hardware
   specific code. Built for `aarch64-unknown-none`.
-- `kernel_core/` – policies, data structures and algorithms for the kernel that
+- `kernel_core/` – policies, data structures and algorithms for the kernel. These definitions
   can be unit tested on the host.
 - `kernel_api/` – public kernel API defining system calls and types shared with
   user space.
@@ -20,11 +20,12 @@ multiple crates. Below is a high level outline of the top level directories:
   - `check-syscalls/` – integration test program executed by the kernel in CI.
 - `spec/` – design documents for the OS and its components.
 - `initramfs_template/` – files included in the initial ramdisk image.
-- `vendor/` – external submodules (currently U‑Boot).
+- `vendor/` – external Git submodules (currently U‑Boot).
 - `.github/` – CI configuration; mirrors the commands in `justfile`.
 
 ## Contribution and Style
-- The codebase is written in Rust 2021/2024 edition and mostly `no_std`.
+- Always make sure your changes are in line with best practices for Hackability, Maintainability, Robustness, Extensibility, and Performance. See `spec/README.md` for more information on the overall vibes and direction in this project, if you need clarification.
+- The codebase is written in Rust 2021/2024 edition and mostly `no_std` (however unit tests in `kernel_core` can use the standard library).
 - Formatting and linting are enforced. Use `cargo fmt` and `cargo clippy` via the
   provided `just` tasks.
 - All public items should have documentation comments. Missing docs cause
@@ -32,9 +33,10 @@ multiple crates. Below is a high level outline of the top level directories:
 - Follow the existing 4‑space indentation and keep code readable and modular.
 - When adding new features, update or create relevant documentation under `spec/`
   if behaviour or interfaces change.
+- If you make any changes that would impact the contents of this file, include an update to this file as well.
 
 ### Commit and PR etiquette
-- Keep commits focused and descriptive.
+- Keep commits focused and descriptive. Small, frequent commits are best, and a PR can (and should) contain multiple commits.
 - PR bodies should contain a **Summary** of the changes with inline citations to
   modified files and a **Testing** section describing the checks that were run.
 - If any tests fail due to missing dependencies or network restrictions mention
@@ -71,17 +73,19 @@ Before committing, always run:
 2. `just check`
 3. `just test`
 
-These match the CI steps defined in `.github/workflows/build.yaml`.
+These match the CI steps defined in `.github/workflows/build.yaml`. 
+If `just check` produces warnings or errors, fix them before committing. 
+If `just test` fails and its not immediately obvious why with some investigation, that's ok, just inform the user. If you do find a fix, definitely fix them!
 
 ## Using the Repository
 - Start exploring in `spec/` for high level design. Kernel specific
   documentation lives in `spec/kernel.md` and service docs are under
-  `spec/services/`.
+  `spec/services/`. However, the spec documents are often slightly out of date. If they conflict, prefer documentation comments as being true.
 - The kernel entry point is in `kernel/src/main.rs`. Most logic lives in
-  `kernel_core/`.
+  `kernel_core/`. The public interface for the kernel is defined in `kernel_api/`, and the public definitions in that crate are authoritative.
 - When extending services or adding new ones, use `user_core` utilities for
   heap allocation, RPC and task management.
 - Integration tests (e.g. `check-syscalls`) are run via QEMU with
-  `just run-kernel-check`.
+  `just run-kernel-check`. This will probably not work in your environment, but that is ok because they will run in CI.
 
 Follow these notes to keep contributions consistent and maintainable.
