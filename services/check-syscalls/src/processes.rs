@@ -59,17 +59,17 @@ fn mk_proc_info(
     let base = entry_addr & !(page_size - 1);
     let entry_offset = entry_addr - base;
     let section = [ImageSection {
-        base_address: 0,
+        base_address: 0x1000,
         data_offset: 0,
         total_size: page_size,
         data_size: page_size,
         data: base as *const u8,
         kind: ImageSectionKind::Executable,
     }];
-            entry_point: entry_offset,
+    let mq = *MAIN_QUEUE.get().unwrap();
     (
         ProcessCreateInfo {
-            entry_point: entry_addr,
+            entry_point: 0x1000 + entry_offset,
             num_sections: 1,
             sections: section.as_ptr(),
             supervisor: Some(mq),
@@ -175,8 +175,8 @@ fn test_spawn_null_sections() {
         inbox_size: 0,
     };
     match spawn_process(&info) {
-        0xCAFE_BABE_u32,
-        other => panic!("expected InvalidPointer, got {:?}", other),
+        Err(ErrorCode::InvalidPointer) => {}
+        other => panic!("expected InvalidPointer, got {:?}", other)
     }
 }
 
