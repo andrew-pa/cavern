@@ -492,6 +492,7 @@ The `driver_request_address_region` call accepts the following flags:
 | Name           | Description                              |
 |----------------|------------------------------------------|
 | EnableCache    | By default, the mapping created will disable caching for the region. This will allow caching to take place. |
+| ReadOnly          | By default, the created mapping will be read-write. This will cause the mapping to be created in read-only mode, causing a page fault if a write occurs. |
 
 #### Errors
 - `OutOfBounds`: the physical base address is in an invalid region, like RAM or other invalid physical addresses.
@@ -511,16 +512,8 @@ The virtual base address pointer for the region is invalid to access after calli
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `ptr` | `*mut ()` | Pointer to the base address of the region. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-
-#### Flags
-The `driver_release_address_region` call accepts the following flags:
-
-| Name           | Description                              |
-|----------------|------------------------------------------|
 
 #### Errors
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 ### `driver_register_interrupt`
