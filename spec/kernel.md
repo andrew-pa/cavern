@@ -469,14 +469,14 @@ The `free_heap_pages` call accepts the following flags:
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 
-### `driver_request_address_region`
+### `driver_acquire_address_region`
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
 Creates a map in the caller's page tables for a region of physical address space.
 This region must be **outside** of the addresses mapped to RAM to preserve the integrity of user space.
 The driver is responsible for ensuring that access to these memory regions is safe.
-Only one driver can request any address at a time.
+Only one driver can map any address at a time.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
@@ -487,7 +487,7 @@ Only one driver can request any address at a time.
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
-The `driver_request_address_region` call accepts the following flags:
+The `driver_acquire_address_region` call accepts the following flags:
 
 | Name           | Description                              |
 |----------------|------------------------------------------|
@@ -505,7 +505,7 @@ The `driver_request_address_region` call accepts the following flags:
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Releases an address range previously mapped into the current process.
+Releases an address range previously mapped into (acquired by) the current process.
 The virtual base address pointer for the region is invalid to access after calling this function.
 
 #### Arguments
