@@ -25,6 +25,7 @@ unsafe extern "C" fn proc_exit_success() -> ! {
 static PROC_MSG: [u8; 4] = *b"ping";
 
 unsafe extern "C" fn proc_send_and_exit() -> ! {
+    // TODO: verify
     unsafe {
         core::arch::asm!(
             // x0 already holds the parent queue id
@@ -111,7 +112,17 @@ fn test_spawn_send_message() {
     let (pid, _child_qid) = spawn_process(&info).expect("spawn failed");
 
     let first = receive(ReceiveFlags::empty(), qid).expect("receive failed");
-    let second = receive(ReceiveFlags::empty(), qid).expect("receive failed");
+    let mut retries = 128;
+    let second = loop {
+        match receive(ReceiveFlags::NONBLOCKING, qid) {
+            Ok(m) => break m,
+            Err(ErrorCode::WouldBlock) => {
+                retries -= 1;
+                assert!(retries != 0, "second message never received");
+            }
+            Err(e) => panic!("failed to receive second message: {e}"),
+        }
+    };
     let (msg_proc, msg_exit) = if first.payload().len() == PROC_MSG.len() {
         (first, second)
     } else {
@@ -176,7 +187,7 @@ fn test_spawn_null_sections() {
     };
     match spawn_process(&info) {
         Err(ErrorCode::InvalidPointer) => {}
-        other => panic!("expected InvalidPointer, got {:?}", other)
+        other => panic!("expected InvalidPointer, got {:?}", other),
     }
 }
 

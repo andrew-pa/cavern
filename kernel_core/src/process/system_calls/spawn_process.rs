@@ -9,7 +9,10 @@ use crate::{
         PageAllocator,
     },
     process::{
-        queue::QueueManager, system_calls::InvalidHandleSnafu, thread::{Registers, ThreadManager}, Process, ProcessManager
+        queue::QueueManager,
+        system_calls::InvalidHandleSnafu,
+        thread::{Registers, ThreadManager},
+        Process, ProcessManager,
     },
 };
 
@@ -77,10 +80,13 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        ensure!(uinfo.supervisor.is_some() || parent.props.supervisor_queue.is_some(), 
+        ensure!(
+            uinfo.supervisor.is_some() || parent.props.supervisor_queue.is_some(),
             InvalidHandleSnafu {
-                reason: "Root process must provide supervisor queue for child processes", handle: 0u32
-        });
+                reason: "Root process must provide supervisor queue for child processes",
+                handle: 0u32
+            }
+        );
 
         let info = crate::process::ProcessCreateInfo {
             sections: &sections,
