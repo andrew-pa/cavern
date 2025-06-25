@@ -13,7 +13,7 @@ use crate::{
         queue::QueueManager,
         system_calls::{
             InvalidAddressSnafu, InvalidFlagsSnafu, InvalidLengthSnafu, ManagerSnafu,
-            NotPermittedSnafu,
+            NotPermittedSnafu, OutOfBoundsSnafu,
         },
         thread::{Registers, ThreadManager},
         ProcessManager, Thread,
@@ -47,6 +47,30 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             InvalidLengthSnafu {
                 reason: "zero size",
                 length: size
+            }
+        );
+
+        let bytes = size
+            .checked_mul(usize::from(self.page_allocator.page_size()))
+            .context(InvalidLengthSnafu {
+                reason: "size overflow",
+                length: size,
+            })?;
+        let (ram_start, ram_len) = self.page_allocator.memory_range();
+        let ram_start = usize::from(ram_start);
+        let ram_end = ram_start + ram_len;
+        let region_start = usize::from(base);
+        let region_end = region_start
+            .checked_add(bytes)
+            .context(InvalidLengthSnafu {
+                reason: "address overflow",
+                length: bytes,
+            })?;
+        ensure!(
+            region_end <= ram_start || region_start >= ram_end,
+            OutOfBoundsSnafu {
+                reason: "address in RAM",
+                ptr: region_start,
             }
         );
 
@@ -117,7 +141,10 @@ mod tests {
         let policy = SystemCalls::new(pa, &pm, &tm, &qm);
         let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
 
-        let phys = pa.allocate(1).unwrap();
+        let phys = {
+            let (start, len) = pa.memory_range();
+            PhysicalAddress::from(usize::from(start) + len + usize::from(pa.page_size()))
+        };
         let mut out: usize = 0;
         let mut regs = Registers::default();
         regs.x[0] = usize::from(phys);
@@ -143,7 +170,6 @@ mod tests {
 
         // cleanup
         let _ = proc.unmap_driver_region(out.into());
-        pa.free(phys, 1).unwrap();
     }
 
     #[test]
@@ -183,6 +209,45 @@ mod tests {
             Err(Error::InvalidAddress { .. })
         );
         pa.free(phys, 1).unwrap();
+    }
+
+    #[test]
+    fn acquire_address_in_ram() {
+        let pa = &*PAGE_ALLOCATOR;
+        let proc = crate::process::tests::create_test_process(
+            ProcessId::new(615).unwrap(),
+            Properties {
+                supervisor_queue: None,
+                registry_queue: None,
+                privilege: PrivilegeLevel::Driver,
+            },
+            ThreadId::new(616).unwrap(),
+        )
+        .unwrap();
+        let current_thread = proc.threads.read().first().unwrap().clone();
+        let pm = MockProcessManager::new();
+        let tm = MockThreadManager::new();
+        let qm = MockQueueManager::new();
+        let policy = SystemCalls::new(pa, &pm, &tm, &qm);
+        let usm = AlwaysValidActiveUserSpaceTables::new(pa.page_size());
+
+        let phys = PhysicalAddress::from(0x1000usize);
+        let mut out = 0usize;
+        let mut regs = Registers::default();
+        regs.x[0] = usize::from(phys);
+        regs.x[1] = 1;
+        regs.x[2] = (&mut out) as *mut usize as usize;
+        regs.x[3] = 0;
+
+        assert_matches!(
+            policy.dispatch_system_call(
+                CallNumber::DriverAcquireAddressRegion.into_integer(),
+                &current_thread,
+                &regs,
+                &usm
+            ),
+            Err(Error::OutOfBounds { .. })
+        );
     }
 
     #[test]

@@ -45,6 +45,14 @@ pub enum Error {
         /// The invalid pointer value.
         ptr: usize,
     },
+    /// A physical address range was outside of the valid range.
+    #[snafu(display("physical address out of bounds {reason}: 0x{ptr:x}"))]
+    OutOfBounds {
+        /// The reason the address was invalid.
+        reason: &'static str,
+        /// The offending pointer value.
+        ptr: usize,
+    },
     /// A pointer provided was to an address that was not mapped correctly.
     #[snafu(display("Invalid address for {cause}"))]
     InvalidAddress {
@@ -126,6 +134,7 @@ impl Error {
                 TransferError::InsufficentPermissions => ErrorCode::NotAllowed,
                 TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
             },
+            Error::OutOfBounds { .. } => ErrorCode::OutOfBounds,
             Error::NotPermitted { .. } => ErrorCode::NotAllowed,
         }
     }
