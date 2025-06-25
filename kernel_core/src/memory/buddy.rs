@@ -338,6 +338,13 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
 
         Ok(())
     }
+
+    fn memory_range(&self) -> (PhysicalAddress, usize) {
+        (
+            PhysicalAddress::from(self.base_addr.cast::<()>()),
+            self.end_addr as usize - self.base_addr as usize,
+        )
+    }
 }
 
 #[cfg(test)]

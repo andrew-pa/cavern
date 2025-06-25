@@ -88,6 +88,8 @@ pub enum CallNumber {
     WriteLogMessage,
     CreateMessageQueue,
     FreeMessageQueue,
+    DriverAcquireAddressRegion,
+    DriverReleaseAddressRegion,
 }
 
 impl CallNumber {

@@ -13,6 +13,17 @@ bitflags! {
 }
 
 bitflags! {
+    /// Flags for the `driver_acquire_address_region()` system call.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DriverAddressRegionFlags: usize {
+        /// Enables caching for the mapped region.
+        const ENABLE_CACHE = 0b01;
+        /// Map the region read-only.
+        const READ_ONLY = 0b10;
+    }
+}
+
+bitflags! {
     /// Flags that define the properties of a shared buffer.
     #[derive(Debug, Clone, Copy)]
     pub struct SharedBufferFlags: u32 {
