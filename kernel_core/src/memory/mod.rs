@@ -470,6 +470,10 @@ pub trait PageAllocator {
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
     fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error>;
+
+    /// Returns the range of physical memory managed by this allocator as a
+    /// starting address and length in bytes.
+    fn memory_range(&self) -> (PhysicalAddress, usize);
 }
 
 #[cfg(test)]
@@ -501,6 +505,18 @@ pub mod tests {
                         for _ in 0..10 {
                             assert_eq!(allocator.page_size(), page_size, "Page size should remain constant");
                         }
+                        $cleanup_allocator(cx, allocator);
+                    }
+
+                    // Test the reported memory range is aligned and non-zero
+                    #[test]
+                    fn memory_range_valid() {
+                        let (cx, allocator) = $setup_allocator();
+                        let page_size = usize::from(allocator.page_size());
+                        let (start, len) = allocator.memory_range();
+                        assert!(len > 0, "memory range length should be non-zero");
+                        assert!(start.is_aligned_to(page_size), "start not aligned to page size");
+                        assert_eq!(len % page_size, 0, "length must be page-size aligned");
                         $cleanup_allocator(cx, allocator);
                     }
 
@@ -923,6 +939,13 @@ pub mod tests {
             *total_allocated -= num_pages;
 
             Ok(())
+        }
+
+        fn memory_range(&self) -> (PhysicalAddress, usize) {
+            (
+                PhysicalAddress::null(),
+                self.max_pages * usize::from(self.page_size),
+            )
         }
     }
 
