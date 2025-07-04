@@ -7,12 +7,7 @@ use byteorder::{BigEndian, ByteOrder as _};
 use super::{Registers, Value, fdt};
 
 fn pad_end_4b(num_bytes: usize) -> usize {
-    num_bytes
-        + if num_bytes % 4 == 0 {
-            0
-        } else {
-            4 - (num_bytes % 4)
-        }
+    num_bytes.next_multiple_of(4)
 }
 
 /// Iterator over tree tokens in a device tree blob.
