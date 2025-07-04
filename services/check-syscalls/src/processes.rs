@@ -1,9 +1,11 @@
 //! Integration tests for process-related system calls.
 #![allow(clippy::cast_possible_truncation)]
 
-use bytemuck::cast_slice;
+use core::{arch::asm, mem::MaybeUninit};
+
+use bytemuck::{bytes_of, cast_slice};
 use kernel_api::{
-    ErrorCode, ExitMessage, ExitReasonTag, ExitSource, ImageSection, ImageSectionKind,
+    CallNumber, ErrorCode, ExitMessage, ExitReasonTag, ExitSource, ImageSection, ImageSectionKind,
     PrivilegeLevel, ProcessCreateInfo, ProcessId, QueueId, create_message_queue,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
     free_message_queue, kill_process, read_env_value, receive, spawn_process,
@@ -12,7 +14,7 @@ use kernel_api::{
 use crate::{MAIN_QUEUE, Testable};
 
 /// Simple assembly functions used as process entry points.
-unsafe extern "C" fn proc_exit_success() -> ! {
+unsafe extern "C" fn proc_exit_success(_: usize) -> ! {
     unsafe {
         core::arch::asm!(
             "mov x0, #7",
@@ -22,28 +24,73 @@ unsafe extern "C" fn proc_exit_success() -> ! {
     }
 }
 
-static PROC_MSG: [u8; 4] = *b"ping";
+const PROC_MSG: u32 = u32::from_le_bytes(*b"ping");
 
-unsafe extern "C" fn proc_send_and_exit() -> ! {
+unsafe extern "C" fn proc_send_and_exit(qu: usize) -> ! {
+    // receive the ID of the parent queue
+    let mut result: usize;
+    let mut out_len: MaybeUninit<usize> = MaybeUninit::uninit();
+    let mut out_msg: MaybeUninit<*mut u8> = MaybeUninit::uninit();
+    unsafe {
+        asm!(
+            "mov x0, {f:x}",
+            "mov x1, {q:x}",
+            "mov x2, {m:x}",
+            "mov x3, {l:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            f = in(reg) 0,
+            q = in(reg) qu,
+            m = in(reg) out_msg.as_mut_ptr(),
+            l = in(reg) out_len.as_mut_ptr(),
+            res = out(reg) result,
+            call_number = const core::mem::transmute::<_,u16>(CallNumber::Receive)
+        );
+    }
+    // exit on fail
+    if result != 0 {
+        unsafe {
+            asm!(
+                "mov x0, {r}",
+                "svc #0x107",
+                r = in(reg) result
+            );
+        }
+    }
+    // process message
+    let parent_qu: u32 = unsafe {
+        u32::from_le_bytes(
+            core::slice::from_raw_parts(out_msg.assume_init(), out_len.assume_init())
+                .try_into()
+                .unwrap(),
+        )
+    };
+    // send the return message and exit
     // TODO: verify
     unsafe {
-        core::arch::asm!(
-            // x0 already holds the parent queue id
-            "adrp x1, {msg}",
-            "add x1, x1, :lo12:{msg}",
+        asm!(
+            "mov x0, {qu:x}",
+            // write message to stack and load address in x1
+            "sub sp, sp, #8",
+            "ldr w1, ={msg}",
+            "str w1, [sp]",
+            "mov x1, sp",
+            // message is 4 bytes
             "mov x2, #4",
+            // no shared buffers
             "mov x3, xzr",
             "mov x4, xzr",
-            "svc #0x100", // Send
+            "svc #0x100", // Send TODO: right now we're just sending this to ourselves lol
             "mov x0, #0",
             "svc #0x107", // ExitCurrentThread
-            msg = sym PROC_MSG,
+            qu = in(reg) parent_qu,
+            msg = const PROC_MSG,
             options(noreturn)
         );
     }
 }
 
-unsafe extern "C" fn proc_spin() -> ! {
+unsafe extern "C" fn proc_spin(_: usize) -> ! {
     unsafe {
         core::arch::asm!("1: b 1b", options(noreturn));
     }
@@ -52,7 +99,7 @@ unsafe extern "C" fn proc_spin() -> ! {
 /// Build a minimal [`ProcessCreateInfo`] using a single executable page copied
 /// from the current process.
 fn mk_proc_info(
-    entry: unsafe extern "C" fn() -> !,
+    entry: unsafe extern "C" fn(usize) -> !,
     notify: Option<QueueId>,
 ) -> (ProcessCreateInfo, [ImageSection; 1]) {
     let page_size = read_env_value(kernel_api::EnvironmentValue::PageSizeInBytes);
@@ -109,7 +156,9 @@ fn test_spawn_and_exit_notification() {
 fn test_spawn_send_message() {
     let qid = create_message_queue().expect("queue create");
     let (info, _sections) = mk_proc_info(proc_send_and_exit, Some(qid));
-    let (pid, _child_qid) = spawn_process(&info).expect("spawn failed");
+    let (pid, child_qid) = spawn_process(&info).expect("spawn failed");
+
+    kernel_api::send(child_qid, bytes_of(&qid), &[]).expect("send parent queue to child");
 
     let first = receive(ReceiveFlags::empty(), qid).expect("receive failed");
     let mut retries = 128;
@@ -123,13 +172,13 @@ fn test_spawn_send_message() {
             Err(e) => panic!("failed to receive second message: {e}"),
         }
     };
-    let (msg_proc, msg_exit) = if first.payload().len() == PROC_MSG.len() {
+    let (msg_proc, msg_exit) = if first.payload().len() == 4 {
         (first, second)
     } else {
         (second, first)
     };
 
-    assert_eq!(msg_proc.payload(), PROC_MSG);
+    assert_eq!(msg_proc.payload(), PROC_MSG.to_le_bytes());
     msg_proc.free(FreeMessageFlags::empty());
 
     let exit_msg: &ExitMessage = cast_slice(msg_exit.payload()).first().unwrap();

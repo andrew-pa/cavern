@@ -1,5 +1,4 @@
 use kernel_api::{CallNumber, EnvironmentValue, read_env_value};
-
 use crate::Testable;
 
 fn process_id() {
