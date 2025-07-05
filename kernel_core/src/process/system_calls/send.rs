@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::{ProcessId, QueueId, SharedBufferCreateInfo};
 use log::{debug, trace};
@@ -67,7 +67,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
                 })
             }),
         )
-        .context(ManagerSnafu)
+        .with_context(|_| ManagerSnafu {
+            reason: format!("sending message to queue #{}", dst.id),
+        })
     }
 }
 

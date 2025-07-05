@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::SharedBufferId;
 use snafu::ResultExt;
@@ -37,7 +37,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         let proc = current_thread.parent.as_ref().unwrap();
 
         proc.free_shared_buffers(buffers.iter().copied())
-            .context(ManagerSnafu)
+            .with_context(|_| ManagerSnafu {
+                reason: format!("freeing shared buffers for process #{}", proc.id),
+            })
     }
 }
 
@@ -153,7 +155,8 @@ mod tests {
                 &usm
             ),
             Err(Error::Manager {
-                source: ManagerError::Missing { .. }
+                source: ManagerError::Missing { .. },
+                reason: _,
             })
         );
     }

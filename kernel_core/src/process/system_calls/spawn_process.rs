@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{format, sync::Arc, vec::Vec};
 
 use log::debug;
 use snafu::ResultExt;
@@ -91,7 +91,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         let proc = self
             .process_manager
             .spawn_process(Some(parent), &info)
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: "spawning process",
+            })?;
 
         // if the user requested an exit subscription, add it
         if let Some(q) = notify_on_exit {
@@ -102,7 +104,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         let qu = self
             .queue_manager
             .create_queue(&proc)
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: format!("creating initial queue for process #{}", proc.id),
+            })?;
 
         // spawn the main thread with an 8 MiB stack
         self.thread_manager
@@ -112,7 +116,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
                 8 * 1024 * 1024 / self.page_allocator.page_size(),
                 qu.id.get() as usize,
             )
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: format!("spawning main thread for process #{}", proc.id),
+            })?;
 
         debug!("process #{} spawned (main queue #{})", proc.id, qu.id);
 

@@ -70,7 +70,10 @@ pub enum Error {
         id: usize,
     },
     /// Error occurred in a manager mechanism.
+    #[snafu(display("Manager error: {reason}"))]
     Manager {
+        /// Human readable explanation.
+        reason: String,
         /// Underlying error.
         source: ManagerError,
     },
@@ -101,7 +104,7 @@ impl Error {
             }
             Error::InvalidHandle { .. } | Error::NotFound { .. } => ErrorCode::NotFound,
             Error::WouldBlock => ErrorCode::WouldBlock,
-            Error::Manager { source } => match source {
+            Error::Manager { source, .. } => match source {
                 ManagerError::Memory { source, .. } => match source {
                     crate::memory::Error::OutOfMemory => ErrorCode::OutOfMemory,
                     crate::memory::Error::InvalidSize => ErrorCode::InvalidLength,

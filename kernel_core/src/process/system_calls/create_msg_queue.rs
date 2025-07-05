@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::QueueId;
 use snafu::ResultExt;
@@ -35,7 +35,12 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         let q = self
             .queue_manager
             .create_queue(current_thread.parent.as_ref().unwrap())
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: format!(
+                    "creating message queue for process #{}",
+                    current_thread.parent.as_ref().unwrap().id
+                ),
+            })?;
 
         *dst = q.id;
 
@@ -180,7 +185,8 @@ mod tests {
                 &usm
             ),
             Err(Error::Manager {
-                source: ManagerError::OutOfHandles
+                source: ManagerError::OutOfHandles,
+                reason: _,
             })
         );
     }

@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use log::debug;
 use snafu::ResultExt;
@@ -31,7 +31,12 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         );
         current_process
             .free_memory(self.page_allocator, ptr, size)
-            .context(ManagerSnafu)
+            .with_context(|_| ManagerSnafu {
+                reason: format!(
+                    "freeing {size} pages at {ptr:?} for process #{}",
+                    current_process.id
+                ),
+            })
     }
 }
 
@@ -147,7 +152,8 @@ mod tests {
                 &usm
             ),
             Err(Error::Manager {
-                source: ManagerError::PageTables { .. }
+                source: ManagerError::PageTables { .. },
+                reason: _,
             })
         );
     }
