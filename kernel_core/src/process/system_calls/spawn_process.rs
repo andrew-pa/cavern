@@ -1,7 +1,7 @@
 use alloc::{format, sync::Arc, vec::Vec};
 
 use log::debug;
-use snafu::ResultExt;
+use snafu::{ensure, ResultExt};
 
 use crate::{
     memory::{
@@ -10,6 +10,7 @@ use crate::{
     },
     process::{
         queue::QueueManager,
+        system_calls::InvalidHandleSnafu,
         thread::{Registers, ThreadManager},
         Process, ProcessManager,
     },
@@ -78,6 +79,14 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+
+        ensure!(
+            uinfo.supervisor.is_some() || parent.props.supervisor_queue.is_some(),
+            InvalidHandleSnafu {
+                reason: "Root process must provide supervisor queue for child processes",
+                handle: 0u32
+            }
+        );
 
         let info = crate::process::ProcessCreateInfo {
             sections: &sections,
@@ -172,7 +181,7 @@ mod tests {
             entry_point: 0,
             num_sections: 0,
             sections: core::ptr::null(),
-            supervisor: None,
+            supervisor: Some(QueueId::new(99).unwrap()),
             registry: None,
             privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
             notify_on_exit: None,
@@ -277,7 +286,7 @@ mod tests {
             entry_point: 0,
             num_sections: 0,
             sections: core::ptr::null(),
-            supervisor: None,
+            supervisor: Some(QueueId::new(99).unwrap()),
             registry: None,
             privilege_level: kernel_api::PrivilegeLevel::Unprivileged,
             notify_on_exit: Some(qid),

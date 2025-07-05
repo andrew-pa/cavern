@@ -4,8 +4,10 @@
 #![allow(clippy::cast_possible_truncation)]
 
 extern crate alloc;
+
 use alloc::format;
-use kernel_api::{exit_current_thread, write_log};
+use kernel_api::{QueueId, exit_current_thread, write_log};
+use spin::Once;
 
 #[global_allocator]
 static ALLOCATOR: user_core::heap::GlobalAllocator = user_core::heap::init_allocator();
@@ -29,6 +31,7 @@ where
 
 mod heap;
 mod messages;
+mod processes;
 mod read_env_value;
 mod threads;
 
@@ -37,14 +40,20 @@ const TESTS: &[(&str, &[&dyn Testable])] = &[
     heap::TESTS,
     threads::TESTS,
     messages::TESTS,
+    processes::TESTS,
 ];
+
+/// The ID for the main queue for this process (from the kernel).
+pub static MAIN_QUEUE: Once<QueueId> = Once::new();
 
 /// The main entry point.
 ///
 /// # Panics
 /// Right now we panic if any errors happen.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() {
+pub extern "C" fn _start(main_queue_id: u32) {
+    MAIN_QUEUE.call_once(|| QueueId::new(main_queue_id).unwrap());
+
     for (group_name, tests) in TESTS {
         write_log(
             3,
