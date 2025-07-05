@@ -45,6 +45,14 @@ pub enum Error {
         /// The invalid pointer value.
         ptr: usize,
     },
+    /// A physical address range was outside of the valid range.
+    #[snafu(display("physical address out of bounds {reason}: 0x{ptr:x}"))]
+    OutOfBounds {
+        /// The reason the address was invalid.
+        reason: &'static str,
+        /// The offending pointer value.
+        ptr: usize,
+    },
     /// A pointer provided was to an address that was not mapped correctly.
     #[snafu(display("Invalid address for {cause}"))]
     InvalidAddress {
@@ -126,6 +134,7 @@ impl Error {
                 TransferError::InsufficentPermissions => ErrorCode::NotAllowed,
                 TransferError::PageTables { .. } => ErrorCode::InvalidPointer,
             },
+            Error::OutOfBounds { .. } => ErrorCode::OutOfBounds,
             Error::NotPermitted { .. } => ErrorCode::NotAllowed,
         }
     }
@@ -158,6 +167,8 @@ pub struct SystemCalls<
 // system call handler impl modules
 mod allocate_heap_pages;
 mod create_msg_queue;
+mod driver_acquire_address_region;
+mod driver_release_address_region;
 mod exit_current_thread;
 mod exit_notification_subscription;
 mod free_heap_pages;
@@ -302,6 +313,18 @@ impl<'pa, 'm, PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: Queu
             }
             CallNumber::FreeMessageQueue => {
                 self.syscall_free_msg_queue(registers)?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::DriverAcquireAddressRegion => {
+                self.syscall_driver_acquire_address_region(
+                    current_thread,
+                    registers,
+                    user_space_memory,
+                )?;
+                Ok(SysCallEffect::Return(0))
+            }
+            CallNumber::DriverReleaseAddressRegion => {
+                self.syscall_driver_release_address_region(current_thread, registers)?;
                 Ok(SysCallEffect::Return(0))
             }
         }
