@@ -1,4 +1,4 @@
-use kernel_api::{EnvironmentValue, read_env_value};
+use kernel_api::{CallNumber, EnvironmentValue, read_env_value};
 
 use crate::Testable;
 
@@ -17,8 +17,19 @@ fn page_size() {
 }
 
 fn invalid_env_value() {
-    let bad_env_value = unsafe { core::mem::transmute::<usize, EnvironmentValue>(99usize) };
-    assert_eq!(read_env_value(bad_env_value), 0);
+    let value_to_read: u32 = 0xffff_0bad;
+    let mut result: usize;
+    unsafe {
+        core::arch::asm!(
+            "mov x0, {val_to_read:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            val_to_read = in(reg) value_to_read,
+            res = out(reg) result,
+            call_number = const core::mem::transmute::<_, u16>(CallNumber::ReadEnvValue)
+        );
+    }
+    assert_eq!(result, 0);
 }
 
 fn supervisor_id() {

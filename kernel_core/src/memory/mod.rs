@@ -102,7 +102,7 @@ impl<T> PhysicalPointer<T> {
     #[inline]
     #[must_use]
     pub const fn is_aligned_to(self, alignment: usize) -> bool {
-        self.0 % alignment == 0
+        self.0.is_multiple_of(alignment)
     }
 }
 

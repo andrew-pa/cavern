@@ -37,7 +37,7 @@ impl StringList<'_> {
 
     /// Iterate over the strings present in the list as C strings.
     #[must_use]
-    pub fn iter(&self) -> iter::StringListIter {
+    pub fn iter(&self) -> iter::StringListIter<'_> {
         iter::StringListIter {
             data: self.data,
             current_offset: 0,
@@ -75,7 +75,7 @@ impl Registers<'_> {
     ///
     /// These are yielded as `usize`.
     #[must_use]
-    pub fn iter(&self) -> iter::RegistersIter {
+    pub fn iter(&self) -> iter::RegistersIter<'_, '_> {
         iter::RegistersIter {
             regs: self,
             offset: 0,
@@ -382,7 +382,7 @@ impl DeviceTree<'_> {
     /// - the magic value is incorrect.
     /// - the total length reported in the header does not match the length of the slice.
     #[must_use]
-    pub fn from_bytes(buf: &[u8]) -> DeviceTree {
+    pub fn from_bytes(buf: &[u8]) -> DeviceTree<'_> {
         let header = fdt::BlobHeader { buf };
         Self::from_bytes_and_header(buf, header)
     }
@@ -414,13 +414,13 @@ impl DeviceTree<'_> {
 
     /// Get the header for the blob.
     #[must_use]
-    pub fn header(&self) -> fdt::BlobHeader {
+    pub fn header(&self) -> fdt::BlobHeader<'_> {
         self.header
     }
 
     /// Iterate over the raw flattened tree blob structure.
     #[must_use]
-    pub fn iter_structure(&self) -> iter::FlattenedTreeIter {
+    pub fn iter_structure(&self) -> iter::FlattenedTreeIter<'_> {
         iter::FlattenedTreeIter {
             current_offset: 0,
             dt: self,
@@ -435,7 +435,7 @@ impl DeviceTree<'_> {
     /// # Returns
     /// An iterator over the properties of the node in the tree, if present.
     #[must_use]
-    pub fn iter_node_properties(&self, path: &[u8]) -> Option<iter::NodePropertyIter> {
+    pub fn iter_node_properties(&self, path: &[u8]) -> Option<iter::NodePropertyIter<'_>> {
         let mut segments = path.split(|p| *p == b'/');
         let mut looking_for = segments.next()?;
         let mut tokens = self.iter_structure();
@@ -546,7 +546,7 @@ impl DeviceTree<'_> {
     /// # Returns
     /// The value of the property if found.
     #[must_use]
-    pub fn find_property(&self, path: &[u8]) -> Option<Value> {
+    pub fn find_property(&self, path: &[u8]) -> Option<Value<'_>> {
         let split = path.iter().rev().find_position(|p| **p == b'/')?.0;
         let (node_path, property_name) = path.split_at(path.len() - split);
 
@@ -557,7 +557,7 @@ impl DeviceTree<'_> {
 
     /// Iterate over the system reserved memory regions.
     #[must_use]
-    pub fn iter_reserved_memory_regions(&self) -> iter::MemRegionIter {
+    pub fn iter_reserved_memory_regions(&self) -> iter::MemRegionIter<'_> {
         iter::MemRegionIter::for_data(self.mem_map)
     }
 }
