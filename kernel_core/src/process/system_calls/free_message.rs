@@ -45,7 +45,7 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             let msg = unsafe { Message::from_slice(msg) };
             proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
                 .with_context(|_| ManagerSnafu {
-                    reason: alloc::string::String::from("freeing buffers of message"),
+                    reason: format!("freeing buffers of message: {:?}", msg.buffers()),
                 })?;
         }
 

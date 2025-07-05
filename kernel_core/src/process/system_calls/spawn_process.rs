@@ -92,7 +92,7 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             .process_manager
             .spawn_process(Some(parent), &info)
             .with_context(|_| ManagerSnafu {
-                reason: alloc::string::String::from("spawning process"),
+                reason: "spawning process",
             })?;
 
         // if the user requested an exit subscription, add it
