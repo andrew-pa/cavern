@@ -302,8 +302,6 @@ impl Process {
         let inbox_alloc =
             Self::setup_inbox(allocator, &mut page_tables, &mut virt_alloc, inbox_size)?;
 
-        trace!("process page tables: {page_tables:?}");
-
         Ok(Self {
             id,
             props,
