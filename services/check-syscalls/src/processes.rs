@@ -1,14 +1,11 @@
 //! Integration tests for process-related system calls.
 #![allow(clippy::cast_possible_truncation)]
 
-use core::{
-    arch::{asm, naked_asm},
-    mem::MaybeUninit,
-};
+use core::arch::naked_asm;
 
 use bytemuck::{bytes_of, cast_slice};
 use kernel_api::{
-    CallNumber, ErrorCode, ExitMessage, ExitReasonTag, ExitSource, ImageSection, ImageSectionKind,
+    ErrorCode, ExitMessage, ExitReasonTag, ExitSource, ImageSection, ImageSectionKind,
     PrivilegeLevel, ProcessCreateInfo, ProcessId, QueueId, create_message_queue,
     flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
     free_message_queue, kill_process, read_env_value, receive, spawn_process,

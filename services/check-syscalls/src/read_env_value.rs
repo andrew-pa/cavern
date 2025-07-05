@@ -1,5 +1,5 @@
-use kernel_api::{CallNumber, EnvironmentValue, read_env_value};
 use crate::Testable;
+use kernel_api::{CallNumber, EnvironmentValue, read_env_value};
 
 fn process_id() {
     assert_eq!(read_env_value(EnvironmentValue::CurrentProcessId), 1);
