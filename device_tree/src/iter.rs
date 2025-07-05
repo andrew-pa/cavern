@@ -1,5 +1,6 @@
 //! Device Tree iterators.
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::manual_is_multiple_of)]
 use core::ffi::CStr;
 
 use byteorder::{BigEndian, ByteOrder as _};

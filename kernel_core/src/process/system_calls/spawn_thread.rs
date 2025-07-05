@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::ThreadCreateInfo;
 use log::debug;
@@ -66,8 +66,10 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
 
         let thread = self
             .thread_manager
-            .spawn_thread(parent, entry_ptr, info.stack_size, info.user_data)
-            .context(ManagerSnafu)?;
+            .spawn_thread(parent.clone(), entry_ptr, info.stack_size, info.user_data)
+            .with_context(|_| ManagerSnafu {
+                reason: format!("spawning thread in process #{}", parent.id),
+            })?;
 
         // if provided a queue, subscribe it to the thread exit
         if let Some(qu) = notify_on_exit {

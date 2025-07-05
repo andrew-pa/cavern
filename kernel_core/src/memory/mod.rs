@@ -15,6 +15,8 @@
 //! | [`PhysicalPointer<T>`]| With conversion to kernel-space, unsafe. | A pointer to something in physical memory, i.e. the untranslated address space. Because the kernel virtual address space is identity mapped, these are trivially convertable to a [`VirtualPointer<T>`] or `*mut T`. All physical addresses are assumed to be mutable from the kernel's perspective. |
 //! | [`PhysicalAddress`]   | Same as `PhysicalPointer` but must assume type. | An address in the physical memory address space that is not associated with a type, but indicates some location.
 
+#![allow(clippy::manual_is_multiple_of)]
+
 use core::{marker::PhantomData, num::NonZeroUsize};
 use snafu::Snafu;
 

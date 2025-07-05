@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use log::debug;
 use snafu::ResultExt;
@@ -51,7 +51,12 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
                     ..Default::default()
                 },
             )
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: format!(
+                    "allocating {size} pages for process #{}",
+                    current_process.id
+                ),
+            })?;
 
         *dst = addr.into();
 

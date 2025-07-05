@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::{flags::FreeMessageFlags, Message};
 use snafu::{OptionExt, ResultExt};
@@ -44,10 +44,14 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
                 .context(InvalidAddressSnafu { cause: "message" })?;
             let msg = unsafe { Message::from_slice(msg) };
             proc.free_shared_buffers(msg.buffers().iter().map(|b| b.buffer))
-                .context(ManagerSnafu)?;
+                .with_context(|_| ManagerSnafu {
+                    reason: alloc::string::String::from("freeing buffers of message"),
+                })?;
         }
 
-        proc.free_message(ptr, len).context(ManagerSnafu)?;
+        proc.free_message(ptr, len).with_context(|_| ManagerSnafu {
+            reason: format!("freeing message at {ptr:?} ({len} bytes)"),
+        })?;
 
         Ok(())
     }
