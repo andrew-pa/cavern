@@ -1,7 +1,10 @@
 //! Integration tests for process-related system calls.
 #![allow(clippy::cast_possible_truncation)]
 
-use core::{arch::asm, mem::MaybeUninit};
+use core::{
+    arch::{asm, naked_asm},
+    mem::MaybeUninit,
+};
 
 use bytemuck::{bytes_of, cast_slice};
 use kernel_api::{
@@ -26,68 +29,35 @@ unsafe extern "C" fn proc_exit_success(_: usize) -> ! {
 
 const PROC_MSG: u32 = u32::from_le_bytes(*b"ping");
 
-unsafe extern "C" fn proc_send_and_exit(qu: usize) -> ! {
-    // receive the ID of the parent queue
-    let mut result: usize;
-    let mut out_len: MaybeUninit<usize> = MaybeUninit::uninit();
-    let mut out_msg: MaybeUninit<*mut u8> = MaybeUninit::uninit();
-    unsafe {
-        asm!(
-            "mov x0, {f:x}",
-            "mov x1, {q:x}",
-            "mov x2, {m:x}",
-            "mov x3, {l:x}",
-            "svc {call_number}",
-            "mov {res}, x0",
-            f = in(reg) 0,
-            q = in(reg) qu,
-            m = in(reg) out_msg.as_mut_ptr(),
-            l = in(reg) out_len.as_mut_ptr(),
-            res = out(reg) result,
-            call_number = const core::mem::transmute::<_,u16>(CallNumber::Receive)
-        );
-    }
-    // exit on fail
-    if result != 0 {
-        unsafe {
-            asm!(
-                "mov x0, {r}",
-                "svc #0x107",
-                r = in(reg) result
-            );
-        }
-    }
-    // process message
-    let parent_qu: u32 = unsafe {
-        u32::from_le_bytes(
-            core::slice::from_raw_parts(out_msg.assume_init(), out_len.assume_init())
-                .try_into()
-                .unwrap(),
-        )
-    };
-    // send the return message and exit
-    // TODO: verify
-    unsafe {
-        asm!(
-            "mov x0, {qu:x}",
-            // write message to stack and load address in x1
-            "sub sp, sp, #8",
-            "ldr w1, ={msg}",
-            "str w1, [sp]",
-            "mov x1, sp",
-            // message is 4 bytes
-            "mov x2, #4",
-            // no shared buffers
-            "mov x3, xzr",
-            "mov x4, xzr",
-            "svc #0x100", // Send TODO: right now we're just sending this to ourselves lol
-            "mov x0, #0",
-            "svc #0x107", // ExitCurrentThread
-            qu = in(reg) parent_qu,
-            msg = const PROC_MSG,
-            options(noreturn)
-        );
-    }
+#[unsafe(naked)]
+unsafe extern "C" fn proc_send_and_exit(_qu: usize) -> ! {
+    naked_asm!(
+        "mov x9, x0      // save parent queue id",
+        "sub sp, sp, #32 // allocate stack space for receive outputs and send buffer",
+        "mov x0, #0      // receive flags = 0",
+        "mov x1, x9      // queue id for receive",
+        "mov x2, sp      // out_msg ptr",
+        "add x3, sp, #8  // out_len ptr",
+        "svc #0x101     // syscall Receive",
+        "cmp x0, #0      // check result",
+        "b.ne 1f         // if non-zero error, jump to exit",
+        "ldr x5, [sp]    // load out_msg pointer",
+        "add x5, x5, #8", //skip the message header
+        "ldr w0, [x5]    // read parent queue id from message",
+        "add x6, sp, #16 // buffer for send payload",
+        "ldr w1, ={msg}  // load PROC_MSG constant",
+        "str w1, [x6]    // store payload word",
+        "mov x1, x6      // send payload ptr",
+        "mov x2, #4      // payload length = 4",
+        "mov x3, xzr     // no shared buffers",
+        "mov x4, xzr     // no flags",
+        "svc #0x100     // syscall Send",
+        "mov x0, #0      // exit code = 0",
+        "svc #0x107     // syscall ExitCurrentThread",
+        "1:",
+        "svc #0x107     // exit on error (x0 holds error)",
+        msg = const PROC_MSG,
+    );
 }
 
 unsafe extern "C" fn proc_spin(_: usize) -> ! {
@@ -241,15 +211,15 @@ fn test_spawn_null_sections() {
 }
 
 /// ---
-/// Misaligned section base address ⇒ `BadFormat`.
+/// Misaligned section base address ⇒ `InvalidPointer`.
 /// ---
 fn test_spawn_bad_format() {
     let (mut info, mut sections) = mk_proc_info(proc_exit_success, None);
     sections[0].base_address += 1; // not page aligned
     info.sections = sections.as_ptr();
     match spawn_process(&info) {
-        Err(ErrorCode::BadFormat) => {}
-        other => panic!("expected BadFormat, got {:?}", other),
+        Err(ErrorCode::InvalidPointer) => {}
+        other => panic!("expected InvalidPointer, got {:?}", other),
     }
 }
 

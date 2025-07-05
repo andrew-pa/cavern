@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 #![allow(clippy::cast_possible_truncation)]
+#![feature(naked_functions)]
 
 extern crate alloc;
 
