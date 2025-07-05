@@ -24,7 +24,7 @@ use crate::{
     collections::HandleMap,
     memory::{
         page_table::{MapBlockSize, MemoryProperties},
-        AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageTables,
+        AddressSpaceId, AddressSpaceIdPool, FreeListAllocator, PageAllocator, PageSize, PageTables,
         PhysicalAddress, VirtualAddress,
     },
 };
@@ -308,25 +308,51 @@ impl Process {
         image: &[ImageSection],
         inbox_size: usize,
     ) -> Result<Self, ManagerError> {
-        // TODO: this function is huge, it should be decomposed
         trace!("creating new process object #{id}");
 
         let mut page_tables = PageTables::empty(allocator).context(MemorySnafu {
             cause: "create new page tables for process",
         })?;
-        let page_size = allocator.page_size();
-        // Allocate memory for the process from the entire virtual memory address space.
-        let mut virt_alloc = FreeListAllocator::new(
+        let mut virt_alloc = Self::init_address_space_allocator(allocator.page_size());
+
+        Self::map_image_sections(allocator, &mut page_tables, &mut virt_alloc, image)?;
+
+        let inbox_alloc =
+            Self::setup_inbox(allocator, &mut page_tables, &mut virt_alloc, inbox_size)?;
+
+        Ok(Self {
+            id,
+            props,
+            threads: RwLock::default(),
+            page_tables: RwLock::new(page_tables),
+            address_space_allocator: Mutex::new(virt_alloc),
+            address_space_id: RwLock::default(),
+            inbox_allocator: Mutex::new(inbox_alloc),
+            owned_queues: Mutex::default(),
+            shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
+            exit_subscribers: Mutex::default(),
+        })
+    }
+
+    /// Create the address space allocator for a new process' virtual address space.
+    fn init_address_space_allocator(page_size: PageSize) -> FreeListAllocator {
+        FreeListAllocator::new(
             VirtualAddress::null().byte_add(page_size.into()),
             0x0000_ffff_ffff_ffff / page_size,
             page_size.into(),
-        );
+        )
+    }
 
-        // setup the process' memory space using the image
+    /// Initalize a new process' address space by mapping sections from an image.
+    fn map_image_sections(
+        allocator: &impl PageAllocator,
+        page_tables: &mut PageTables<'static>,
+        virt_alloc: &mut FreeListAllocator,
+        image: &[ImageSection],
+    ) -> Result<(), ManagerError> {
+        let page_size = allocator.page_size();
         for section in image {
-            // compute the size of the section
             let size_in_pages = section.total_size.div_ceil(page_size.into());
-            // allocate memory
             let memory = allocator
                 .allocate(size_in_pages)
                 .with_context(|_| MemorySnafu {
@@ -334,13 +360,13 @@ impl Process {
                         "allocate memory for image section {section:?} ({size_in_pages} pages)"
                     ),
                 })?;
-            // copy the data / zero the remainder
             unsafe {
                 copy_image_section_data_to_process_memory(section, memory);
             }
-            // map it into the process
             let props = image_section_kind_as_properties(&section.kind);
-            trace!("mapping setion {section:x?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}");
+            trace!(
+                "mapping setion {section:x?} to {memory:?}, # pages = {size_in_pages}, properties = {props:?}"
+            );
             page_tables
                 .map(
                     section.base_address,
@@ -350,16 +376,23 @@ impl Process {
                     &props,
                 )
                 .context(PageTablesSnafu)?;
-            // trace!("process page tables after map: {page_tables:?}");
-            // reserve the range with the allocator as well
             virt_alloc
                 .reserve_range(section.base_address, size_in_pages)
                 .context(MemorySnafu {
                     cause: "reserve image section in process virtual address space allocator",
                 })?;
         }
+        Ok(())
+    }
 
-        // allocate and map the message inbox
+    /// Setup a new process' inbox memory and allocator. Returns the inbox allocator.
+    fn setup_inbox(
+        allocator: &impl PageAllocator,
+        page_tables: &mut PageTables<'static>,
+        virt_alloc: &mut FreeListAllocator,
+        inbox_size: usize,
+    ) -> Result<FreeListAllocator, ManagerError> {
+        let page_size = allocator.page_size();
         let inbox_size_in_pages = (inbox_size * MESSAGE_BLOCK_SIZE).div_ceil(page_size.into());
         let inbox_start = virt_alloc
             .alloc(inbox_size_in_pages)
@@ -390,25 +423,11 @@ impl Process {
                 },
             )
             .context(PageTablesSnafu)?;
-
-        trace!("process page tables: {page_tables:?}");
-
-        Ok(Self {
-            id,
-            props,
-            threads: RwLock::default(),
-            page_tables: RwLock::new(page_tables),
-            address_space_allocator: Mutex::new(virt_alloc),
-            address_space_id: RwLock::default(),
-            inbox_allocator: Mutex::new(FreeListAllocator::new(
-                inbox_start,
-                inbox_size,
-                MESSAGE_BLOCK_SIZE,
-            )),
-            owned_queues: Mutex::default(),
-            shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
-            exit_subscribers: Mutex::default(),
-        })
+        Ok(FreeListAllocator::new(
+            inbox_start,
+            inbox_size,
+            MESSAGE_BLOCK_SIZE,
+        ))
     }
 
     /// Get or allocate an address space ID for this process.
