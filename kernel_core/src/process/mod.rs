@@ -289,6 +289,9 @@ pub struct Process {
     /// Buffers that have been shared with this process from other processes.
     pub shared_buffers: HandleMap<SharedBuffer>,
 
+    /// Regions of memory mapped via driver address region system call.
+    pub driver_mappings: Mutex<Vec<(VirtualAddress, usize)>>,
+
     /// Threads/processes that will be notified when this process exits.
     pub exit_subscribers: Mutex<Vec<Arc<MessageQueue>>>,
 }
@@ -317,7 +320,7 @@ impl Process {
 
         Self::map_image_sections(allocator, &mut page_tables, &mut virt_alloc, image)?;
 
-        let inbox_alloc =
+        let inbox_allocator =
             Self::setup_inbox(allocator, &mut page_tables, &mut virt_alloc, inbox_size)?;
 
         Ok(Self {
@@ -327,9 +330,10 @@ impl Process {
             page_tables: RwLock::new(page_tables),
             address_space_allocator: Mutex::new(virt_alloc),
             address_space_id: RwLock::default(),
-            inbox_allocator: Mutex::new(inbox_alloc),
+            inbox_allocator: Mutex::new(inbox_allocator),
             owned_queues: Mutex::default(),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
+            driver_mappings: Mutex::default(),
             exit_subscribers: Mutex::default(),
         })
     }
@@ -423,6 +427,7 @@ impl Process {
                 },
             )
             .context(PageTablesSnafu)?;
+
         Ok(FreeListAllocator::new(
             inbox_start,
             inbox_size,
@@ -526,6 +531,52 @@ impl Process {
     ) -> Result<VirtualAddress, ManagerError> {
         assert!(!props.owned);
         self.map_arbitrary(base_addr, size_in_pages, props)
+    }
+
+    /// Map a device memory region at `base_addr` for a driver process, returning the base
+    /// address in the process' virtual address space.
+    ///
+    /// # Errors
+    /// Returns an error if the page table mapping could not be created.
+    pub fn map_driver_region(
+        &self,
+        base_addr: PhysicalAddress,
+        size_in_pages: usize,
+        props: &MemoryProperties,
+    ) -> Result<VirtualAddress, ManagerError> {
+        assert_eq!(self.props.privilege, PrivilegeLevel::Driver);
+        let va = self.map_borrowed_memory(base_addr, size_in_pages, props)?;
+        self.driver_mappings.lock().push((va, size_in_pages));
+        Ok(va)
+    }
+
+    /// Unmap a region previously mapped with [`map_driver_region`].
+    ///
+    /// # Errors
+    /// Returns an error if the mapping is unknown, if the page table fails to unmap the
+    /// region, or if the virtual address space fails to free.
+    pub fn unmap_driver_region(&self, va: VirtualAddress) -> Result<(), ManagerError> {
+        assert_eq!(self.props.privilege, PrivilegeLevel::Driver);
+        let mut mappings = self.driver_mappings.lock();
+        let index =
+            mappings
+                .iter()
+                .position(|(addr, _)| *addr == va)
+                .ok_or(ManagerError::Missing {
+                    cause: "driver mapping",
+                })?;
+        let (_, size) = mappings.remove(index);
+        self.page_tables
+            .write()
+            .unmap(va, size, MapBlockSize::Page)
+            .context(PageTablesSnafu)?;
+        self.address_space_allocator
+            .lock()
+            .free(va, size)
+            .context(MemorySnafu {
+                cause: "free virtual addresses",
+            })?;
+        Ok(())
     }
 
     /// Free previously allocated memory in the process' virtual memory space, including the

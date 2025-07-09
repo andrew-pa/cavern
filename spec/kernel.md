@@ -469,29 +469,30 @@ The `free_heap_pages` call accepts the following flags:
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 
-### `driver_request_address_region`
+### `driver_acquire_address_region`
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
 Creates a map in the caller's page tables for a region of physical address space.
 This region must be **outside** of the addresses mapped to RAM to preserve the integrity of user space.
 The driver is responsible for ensuring that access to these memory regions is safe.
-Only one driver can request any address at a time.
+Only one driver can map any address at a time.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `base_address` | usize | The physical base address of the region. |
 | `size` | usize | The number of pages in the region. |
 | `dest_ptr` | `*mut *mut ()` | Pointer to location to write the virtual address of the region in the calling process' address space. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
-The `driver_request_address_region` call accepts the following flags:
+The `driver_acquire_address_region` call accepts the following flags:
 
 | Name           | Description                              |
 |----------------|------------------------------------------|
 | EnableCache    | By default, the mapping created will disable caching for the region. This will allow caching to take place. |
+| ReadOnly          | By default, the created mapping will be read-write. This will cause the mapping to be created in read-only mode, causing a page fault if a write occurs. |
 
 #### Errors
 - `OutOfBounds`: the physical base address is in an invalid region, like RAM or other invalid physical addresses.
@@ -504,23 +505,15 @@ The `driver_request_address_region` call accepts the following flags:
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Releases an address range previously mapped into the current process.
+Releases an address range previously mapped into (acquired by) the current process.
 The virtual base address pointer for the region is invalid to access after calling this function.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `ptr` | `*mut ()` | Pointer to the base address of the region. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-
-#### Flags
-The `driver_release_address_region` call accepts the following flags:
-
-| Name           | Description                              |
-|----------------|------------------------------------------|
 
 #### Errors
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the base address pointer was null or invalid.
 
 ### `driver_register_interrupt`
@@ -536,10 +529,10 @@ If the handler panics, then a message will be sent to the driver containing the 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `desc`     | `*const InterruptDesc` | Description of the interrupt to register for. |
 | `handler_pgrm` | `*const InterruptHandlerProgram` | The program to execute to handle an interrupt. |
 | `handler_id` | `*mut handler ID` | Returns the ID of the handler. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
 The `driver_register_interrupt` call accepts the following flags:
@@ -567,8 +560,8 @@ Unregisters a previously registered interrupt handler. The handler will no longe
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `handler_id` | handler ID | The ID of the handler returned from `driver_register_interrupt`. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `handler_id` | handler ID | The ID of the handler returned from `driver_register_interrupt`. |
 
 #### Flags
 The `driver_unregister_interrupt` call accepts the following flags:

@@ -3,7 +3,9 @@ use core::{arch::asm, mem::MaybeUninit, ptr};
 
 use crate::{
     Message, QueueId, SharedBufferCreateInfo, SharedBufferId,
-    flags::{ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags},
+    flags::{
+        DriverAddressRegionFlags, ExitNotificationSubscriptionFlags, FreeMessageFlags, ReceiveFlags,
+    },
 };
 
 use super::{
@@ -579,6 +581,59 @@ pub fn write_log(level: usize, msg: &str) -> Result<(), ErrorCode> {
             ml = in(reg) msg.len(),
             res = out(reg) result,
             call_number = const CallNumber::WriteLogMessage.into_num()
+        );
+    }
+    process_result(result)
+}
+
+/// Map a physical address region into the current driver process.
+///
+/// # Errors
+/// - `OutOfBounds`, `InUse`, `InvalidLength`, `InvalidFlags`, or `InvalidPointer` depending on the failure.
+pub fn driver_acquire_address_region(
+    flags: DriverAddressRegionFlags,
+    base_address: usize,
+    size: usize,
+) -> Result<*mut u8, ErrorCode> {
+    let mut result: usize;
+    let mut out = MaybeUninit::uninit();
+    unsafe {
+        asm!(
+            "mov x0, {f:x}",
+            "mov x1, {b:x}",
+            "mov x2, {s:x}",
+            "mov x3, {p:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            f = in(reg) flags.bits(),
+            b = in(reg) base_address,
+            s = in(reg) size,
+            p = in(reg) out.as_mut_ptr(),
+            res = out(reg) result,
+            call_number = const CallNumber::DriverAcquireAddressRegion.into_num(),
+        );
+    }
+    if result == 0 {
+        unsafe { Ok(out.assume_init()) }
+    } else {
+        Err(ErrorCode::from_integer(result).expect("error code"))
+    }
+}
+
+/// Release a previously acquired address region.
+///
+/// # Errors
+/// - `InvalidPointer` if the pointer was not returned from `driver_acquire_address_region`.
+pub fn driver_release_address_region(ptr: *mut u8) -> Result<(), ErrorCode> {
+    let mut result: usize;
+    unsafe {
+        asm!(
+            "mov x0, {p:x}",
+            "svc {call_number}",
+            "mov {res}, x0",
+            p = in(reg) ptr,
+            res = out(reg) result,
+            call_number = const CallNumber::DriverReleaseAddressRegion.into_num(),
         );
     }
     process_result(result)
