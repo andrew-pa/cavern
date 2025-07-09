@@ -481,10 +481,10 @@ Only one driver can map any address at a time.
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `base_address` | usize | The physical base address of the region. |
 | `size` | usize | The number of pages in the region. |
 | `dest_ptr` | `*mut *mut ()` | Pointer to location to write the virtual address of the region in the calling process' address space. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
 The `driver_acquire_address_region` call accepts the following flags:
@@ -529,10 +529,10 @@ If the handler panics, then a message will be sent to the driver containing the 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 | `desc`     | `*const InterruptDesc` | Description of the interrupt to register for. |
 | `handler_pgrm` | `*const InterruptHandlerProgram` | The program to execute to handle an interrupt. |
 | `handler_id` | `*mut handler ID` | Returns the ID of the handler. |
-| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
 The `driver_register_interrupt` call accepts the following flags:
@@ -560,8 +560,8 @@ Unregisters a previously registered interrupt handler. The handler will no longe
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `handler_id` | handler ID | The ID of the handler returned from `driver_register_interrupt`. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+| `handler_id` | handler ID | The ID of the handler returned from `driver_register_interrupt`. |
 
 #### Flags
 The `driver_unregister_interrupt` call accepts the following flags:

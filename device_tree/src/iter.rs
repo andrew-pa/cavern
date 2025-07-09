@@ -8,7 +8,7 @@ use super::{Registers, Value, fdt};
 
 fn pad_end_4b(num_bytes: usize) -> usize {
     num_bytes
-        + if num_bytes % 4 == 0 {
+        + if num_bytes.is_multiple_of(4) {
             0
         } else {
             4 - (num_bytes % 4)
