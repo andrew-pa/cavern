@@ -533,20 +533,30 @@ impl Process {
         self.map_arbitrary(base_addr, size_in_pages, props)
     }
 
-    /// Map a device memory region for a driver process.
+    /// Map a device memory region at `base_addr` for a driver process, returning the base
+    /// address in the process' virtual address space.
+    ///
+    /// # Errors
+    /// Returns an error if the page table mapping could not be created.
     pub fn map_driver_region(
         &self,
         base_addr: PhysicalAddress,
         size_in_pages: usize,
         props: &MemoryProperties,
     ) -> Result<VirtualAddress, ManagerError> {
+        assert_eq!(self.props.privilege, PrivilegeLevel::Driver);
         let va = self.map_borrowed_memory(base_addr, size_in_pages, props)?;
         self.driver_mappings.lock().push((va, size_in_pages));
         Ok(va)
     }
 
     /// Unmap a region previously mapped with [`map_driver_region`].
+    ///
+    /// # Errors
+    /// Returns an error if the mapping is unknown, if the page table fails to unmap the
+    /// region, or if the virtual address space fails to free.
     pub fn unmap_driver_region(&self, va: VirtualAddress) -> Result<(), ManagerError> {
+        assert_eq!(self.props.privilege, PrivilegeLevel::Driver);
         let mut mappings = self.driver_mappings.lock();
         let index =
             mappings

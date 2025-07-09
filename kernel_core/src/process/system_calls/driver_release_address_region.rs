@@ -134,7 +134,8 @@ mod tests {
                 &regs,
                 &usm
             ),
-            Err(Error::NotFound { .. })
+            Err(Error::Manager { reason, source: _ })
+                if reason == "unmap driver region at v:0xdeadbeef from process address space"
         );
     }
 }
