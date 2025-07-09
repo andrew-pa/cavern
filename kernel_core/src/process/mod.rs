@@ -320,7 +320,7 @@ impl Process {
 
         Self::map_image_sections(allocator, &mut page_tables, &mut virt_alloc, image)?;
 
-        let inbox_alloc =
+        let inbox_allocator =
             Self::setup_inbox(allocator, &mut page_tables, &mut virt_alloc, inbox_size)?;
 
         Ok(Self {
@@ -330,11 +330,7 @@ impl Process {
             page_tables: RwLock::new(page_tables),
             address_space_allocator: Mutex::new(virt_alloc),
             address_space_id: RwLock::default(),
-            inbox_allocator: Mutex::new(FreeListAllocator::new(
-                inbox_start,
-                inbox_size,
-                MESSAGE_BLOCK_SIZE,
-            )),
+            inbox_allocator: Mutex::new(inbox_allocator),
             owned_queues: Mutex::default(),
             shared_buffers: HandleMap::new(MAX_SHARED_BUFFER_ID),
             driver_mappings: Mutex::default(),

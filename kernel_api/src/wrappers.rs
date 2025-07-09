@@ -591,24 +591,24 @@ pub fn write_log(level: usize, msg: &str) -> Result<(), ErrorCode> {
 /// # Errors
 /// - `OutOfBounds`, `InUse`, `InvalidLength`, `InvalidFlags`, or `InvalidPointer` depending on the failure.
 pub fn driver_acquire_address_region(
+    flags: DriverAddressRegionFlags,
     base_address: usize,
     size: usize,
-    flags: DriverAddressRegionFlags,
 ) -> Result<*mut u8, ErrorCode> {
     let mut result: usize;
     let mut out = MaybeUninit::uninit();
     unsafe {
         asm!(
-            "mov x0, {b:x}",
-            "mov x1, {s:x}",
-            "mov x2, {p:x}",
-            "mov x3, {f:x}",
+            "mov x0, {f:x}",
+            "mov x1, {b:x}",
+            "mov x2, {s:x}",
+            "mov x3, {p:x}",
             "svc {call_number}",
             "mov {res}, x0",
+            f = in(reg) flags.bits(),
             b = in(reg) base_address,
             s = in(reg) size,
             p = in(reg) out.as_mut_ptr(),
-            f = in(reg) flags.bits(),
             res = out(reg) result,
             call_number = const CallNumber::DriverAcquireAddressRegion.into_num(),
         );

@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::{flags::DriverAddressRegionFlags, PrivilegeLevel};
 use snafu::{ensure, OptionExt, ResultExt};
@@ -40,8 +40,13 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             }
         );
 
-        let base: PhysicalAddress = registers.x[0].into();
-        let size: usize = registers.x[1];
+        let flags =
+            DriverAddressRegionFlags::from_bits(registers.x[0]).context(InvalidFlagsSnafu {
+                reason: "invalid flag bits",
+                bits: registers.x[0],
+            })?;
+        let base: PhysicalAddress = registers.x[1].into();
+        let size: usize = registers.x[2];
         ensure!(
             size > 0,
             InvalidLengthSnafu {
@@ -75,14 +80,8 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
         );
 
         let out_ptr: &mut usize = user_space_memory
-            .check_mut_ref(registers.x[2].into())
+            .check_mut_ref(registers.x[3].into())
             .context(InvalidAddressSnafu { cause: "output" })?;
-
-        let flags =
-            DriverAddressRegionFlags::from_bits(registers.x[3]).context(InvalidFlagsSnafu {
-                reason: "invalid flag bits",
-                bits: registers.x[3],
-            })?;
 
         let mut props = MemoryProperties {
             user_space_access: true,
@@ -98,8 +97,12 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
 
         let va = proc
             .map_driver_region(base, size, &props)
-            .context(ManagerSnafu)?;
+            .with_context(|_| ManagerSnafu {
+                reason: format!("map driver region @ {base:?} of size {size} with {props:?} into process address space")
+            })?;
+
         *out_ptr = va.into();
+
         Ok(())
     }
 }
@@ -147,10 +150,10 @@ mod tests {
         };
         let mut out: usize = 0;
         let mut regs = Registers::default();
-        regs.x[0] = usize::from(phys);
-        regs.x[1] = 1;
-        regs.x[2] = (&mut out) as *mut usize as usize;
-        regs.x[3] = 0;
+        regs.x[0] = 0;
+        regs.x[1] = usize::from(phys);
+        regs.x[2] = 1;
+        regs.x[3] = (&mut out) as *mut usize as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -194,10 +197,10 @@ mod tests {
 
         let phys = pa.allocate(1).unwrap();
         let mut regs = Registers::default();
-        regs.x[0] = usize::from(phys);
-        regs.x[1] = 1;
-        regs.x[2] = 0; // invalid pointer
-        regs.x[3] = 0;
+        regs.x[0] = 0;
+        regs.x[1] = usize::from(phys);
+        regs.x[2] = 1;
+        regs.x[3] = 0; // invalid pointer
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -234,10 +237,10 @@ mod tests {
         let phys = PhysicalAddress::from(0x1000usize);
         let mut out = 0usize;
         let mut regs = Registers::default();
-        regs.x[0] = usize::from(phys);
-        regs.x[1] = 1;
-        regs.x[2] = (&mut out) as *mut usize as usize;
-        regs.x[3] = 0;
+        regs.x[0] = 0;
+        regs.x[1] = usize::from(phys);
+        regs.x[2] = 1;
+        regs.x[3] = (&mut out) as *mut usize as usize;
 
         assert_matches!(
             policy.dispatch_system_call(
@@ -273,10 +276,10 @@ mod tests {
         let phys = pa.allocate(1).unwrap();
         let mut out: usize = 0;
         let mut regs = Registers::default();
-        regs.x[0] = usize::from(phys);
-        regs.x[1] = 1;
-        regs.x[2] = (&mut out) as *mut usize as usize;
-        regs.x[3] = 0;
+        regs.x[0] = 0;
+        regs.x[1] = usize::from(phys);
+        regs.x[2] = 1;
+        regs.x[3] = (&mut out) as *mut usize as usize;
 
         assert_matches!(
             policy.dispatch_system_call(

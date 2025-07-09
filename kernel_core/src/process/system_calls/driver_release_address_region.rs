@@ -1,13 +1,13 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use kernel_api::PrivilegeLevel;
-use snafu::ensure;
+use snafu::{ensure, ResultExt};
 
 use crate::{
     memory::{PageAllocator, VirtualAddress},
     process::{
         queue::QueueManager,
-        system_calls::NotPermittedSnafu,
+        system_calls::{ManagerSnafu, NotPermittedSnafu},
         thread::{Registers, ThreadManager},
         ProcessManager, Thread,
     },
@@ -32,14 +32,9 @@ impl<PA: PageAllocator, PM: ProcessManager, TM: ThreadManager, QM: QueueManager>
             }
         );
         let va: VirtualAddress = registers.x[0].into();
-        match proc.unmap_driver_region(va) {
-            Ok(()) => Ok(()),
-            Err(crate::process::ManagerError::Missing { .. }) => Err(Error::NotFound {
-                reason: "mapping not found".into(),
-                id: usize::from(va),
-            }),
-            Err(other) => Err(Error::Manager { source: other }),
-        }
+        proc.unmap_driver_region(va).with_context(|_| ManagerSnafu {
+            reason: format!("unmap driver region at {va:?} from process address space"),
+        })
     }
 }
 
@@ -83,10 +78,10 @@ mod tests {
         let phys = pa.allocate(1).unwrap();
         let mut out: usize = 0;
         let mut regs = Registers::default();
-        regs.x[0] = usize::from(phys);
-        regs.x[1] = 1;
-        regs.x[2] = (&mut out) as *mut usize as usize;
-        regs.x[3] = 0;
+        regs.x[0] = 0;
+        regs.x[1] = usize::from(phys);
+        regs.x[2] = 1;
+        regs.x[3] = (&mut out) as *mut usize as usize;
         assert_matches!(
             policy.dispatch_system_call(
                 CallNumber::DriverAcquireAddressRegion.into_integer(),
