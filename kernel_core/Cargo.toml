@@ -14,11 +14,11 @@ bitfield = { version = "^0.19" }
 
 spin = "^0.10"
 crossbeam = { version = "0.8", default-features = false, features = ["alloc"] }
-hashbrown = "0.15"
+hashbrown = "0.16"
 arc-swap = { version = "^1", features = ["experimental-thread-local"] }
 
 serde = { version = "^1", default-features = false, features = ["derive"] }
-tar-no-std = "^0.3"
+tar-no-std = "^0.4"
 elf = { version = "^0.7", default-features = false, features = ["nightly"] }
 
 kernel_api = { path = "../kernel_api", default-features = false, features = [] }
