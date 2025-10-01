@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-hashbrown = { version = "0.15", features = ["serde"] }
+hashbrown = { version = "0.16", features = ["serde"] }
 snafu = { version = "0.8", default-features = false, features = ["unstable-core-error"] }
 bytemuck = "1"
 itertools = { version = "0.14", default-features = false, features = ["use_alloc"] }
@@ -14,7 +14,7 @@ serde = { version = "1", default-features = false, features = [ "derive", "alloc
 serde-json-core = "0.6"
 postcard = { version = "1", features = ["alloc"] }
 
-tar-no-std = "0.3"
+tar-no-std = "0.4"
 elf = { version = "0.7", default-features = false, features = ["nightly"] }
 
 kernel_api = { path = "../../kernel_api" }
