@@ -7,7 +7,7 @@ edition = "2024"
 kernel_api = { path = "../kernel_api" }
 bitfield = "0.19"
 bytemuck = "1"
-hashbrown = "0.15"
+hashbrown = "0.16"
 talc = "4"
 snafu = { version = "0.8", default-features = false, features=["unstable-core-error"] }
 
