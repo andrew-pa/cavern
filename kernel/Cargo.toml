@@ -20,4 +20,4 @@ qemu-exit = "3"
 
 [build-dependencies]
 vergen = { version = "^9", features = ["build", "cargo"]}
-vergen-git2 = { version = "^1", features = ["build"] }
+vergen-git2 = { version = "^9", features = ["build"] }
